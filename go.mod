@@ -1,0 +1,26 @@
+module github.com/fullof-work/sandbox-vswitch
+
+go 1.24.0
+
+require (
+	github.com/cilium/ebpf v0.20.0
+	github.com/insomniacslk/dhcp v0.0.0-20250109001534-8abf58130905
+	github.com/spf13/cobra v1.10.0
+	github.com/vishvananda/netlink v1.3.1
+	github.com/vishvananda/netns v0.0.5
+	golang.org/x/sys v0.37.0
+)
+
+require (
+	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/josharian/native v1.1.0 // indirect
+	github.com/mdlayher/packet v1.1.2 // indirect
+	github.com/mdlayher/socket v0.4.1 // indirect
+	github.com/pierrec/lz4/v4 v4.1.14 // indirect
+	github.com/spf13/pflag v1.0.9 // indirect
+	github.com/stretchr/testify v1.11.1 // indirect
+	github.com/u-root/uio v0.0.0-20230220225925-ffce2a382923 // indirect
+	golang.org/x/net v0.46.0 // indirect
+	golang.org/x/sync v0.17.0 // indirect
+)

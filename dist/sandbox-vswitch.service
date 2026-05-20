@@ -1,0 +1,31 @@
+[Unit]
+Description=Sandbox Virtual Switch
+DefaultDependencies=no
+After=local-fs.target systemd-networkd.service
+Wants=network-pre.target
+
+[Service]
+Type=notify
+WatchdogSec=60
+EnvironmentFile=/etc/sandbox-vswitch/switch.conf
+ExecStartPre=/bin/bash -c 'for ns in ${SWITCH_NETNS} ${PORT_NETNS} ${MGMT_NETNS}; do [ -z "$$ns" ] || ip netns add $$ns 2>/dev/null || true; done'
+ExecStartPre=/bin/bash -c 'if ! /usr/sbin/vswitch-ctl status ${SWITCH_NAME} && [ -n "${TRANSIT_DEV}" ]; then for i in $(seq 1 120); do ip link show "${TRANSIT_DEV}" &>/dev/null && exit 0; sleep 1; done; echo "Timeout waiting for ${TRANSIT_DEV}, available links:" >&2; ip -br link >&2; exit 1; fi'
+ExecStart=/usr/sbin/vswitch-ctl serve ${SWITCH_NAME} \
+    --netns=${SWITCH_NETNS} \
+    --mode=${PORT_MODE} \
+    --port-netns=${PORT_NETNS} \
+    --ports=${PORTS} \
+    --mac-addr=${MAC_ADDR} \
+    --floating-ip-base=${FLOATING_IP_BASE} \
+    --transit-dev=${TRANSIT_DEV} \
+    --transit-dev-addr=${TRANSIT_DEV_ADDR} \
+    --transit-dev-mtu=${TRANSIT_DEV_MTU} \
+    --mgmt-extract=${MGMT_NETNS}:${SWITCH_NAME}_m0:${MGMT_SERVICE_ROUTES}
+TimeoutStartSec=60
+TimeoutStopSec=30
+LimitMEMLOCK=infinity
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

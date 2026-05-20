@@ -1,0 +1,19 @@
+# Build output
+/build/
+/bin/
+
+# Go test / coverage artifacts
+*.test
+*.cover
+coverage.out
+coverage.html
+
+# Editors / IDEs
+/.idea/
+/.vscode/
+*.swp
+.DS_Store
+
+# Local Claude Code config (kept out of the repo)
+/.claude/
+/CLAUDE.md
