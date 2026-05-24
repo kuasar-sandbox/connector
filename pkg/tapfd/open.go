@@ -28,7 +28,11 @@ const tunDevice = "/dev/net/tun"
 // elsewhere, e.g. via SCM_RIGHTS).
 //
 // extraFlags is the TUNSETIFF ifr_flags bitmask excluding IFF_TAP (added
-// implicitly). The typical value for VMM use is unix.IFF_NO_PI.
+// implicitly). The canonical value for virtio-net VMM handoff is
+// unix.IFF_NO_PI|unix.IFF_VNET_HDR — the resulting queue fd carries a
+// virtio-net header, the framing cloud-hypervisor / Firecracker / QEMU
+// expect on a tap fd (docs/tapfd.md §4.5). The vnet_hdr flag attaches to
+// this fd here, regardless of how the persistent device was created.
 func OpenTap(tapName string, extraFlags uint16) (*os.File, error) {
 	if len(tapName) == 0 || len(tapName) >= 16 {
 		return nil, fmt.Errorf("invalid tap name %q (must be 1..15 chars)", tapName)

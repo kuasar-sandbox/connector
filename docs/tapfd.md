@@ -62,7 +62,7 @@ Layer 1  句柄交接 wire 协议（normative，§4）
 ### 4.2 fd 传递
 
 - provider **必须**通过 `SCM_RIGHTS` 携带 **至少 1 个** fd，并在 payload 的 `fd=` 中声明个数。一次交付多个 fd 即多队列：consumer 收取全部 N 个，并按 `fd=N` 校验。
-- 被传递的 fd **必须**是对 `/dev/net/tun` 执行 `TUNSETIFF(IFF_TAP | IFF_NO_PI)` 绑定到目标 tap 设备得到的队列 fd。
+- 被传递的 fd **必须**是对 `/dev/net/tun` 执行 `TUNSETIFF(IFF_TAP | IFF_NO_PI | IFF_VNET_HDR)` 绑定到目标 tap 设备得到的队列 fd。
 - provider **应当**以非阻塞模式（`O_NONBLOCK`）交付该 fd：tap 队列只有在 `TUNSETIFF` 之后才被内核登记进 poll，使用带运行时轮询的语言（如 Go）的 consumer 依赖此点。
 - 交接成功后，provider **应当**关闭其本地 fd；consumer 此时持有该队列的引用（生命周期见 §6）。
 
@@ -106,7 +106,9 @@ fd 是对 tun 队列的内核引用，跨 network namespace 有效；consumer **
 
 ### 4.5 fd 的 TUN flags
 
-v1 交付的 fd 固定设置 `IFF_TAP | IFF_NO_PI`，**不**含 `IFF_VNET_HDR`：fd 上没有 virtio-net header，TSO/GSO/checksum 等 offload 一律关闭。consumer 据此配置其后端，本协议不就 offload 进行协商。
+v1 交付的 fd 设置 `IFF_TAP | IFF_NO_PI | IFF_VNET_HDR`：fd 带 virtio-net header——这是 cloud-hypervisor、Firecracker、QEMU 等主流 virtio VMM 对 tap fd 的预期帧格式，免去 consumer 自行改装后端。consumer **应当**按其 virtio-net 版本设置 vnet_hdr 长度（`TUNSETVNETHDRSZ`，通常为 12 = `virtio_net_hdr_v1`）。
+
+offload（TSO/GSO/checksum）由 consuming VMM 与其 guest 按常规协商，**不**属于本协议；本协议不就 offload 做任何约定或限制。
 
 ---
 
@@ -180,7 +182,7 @@ R2（监听路径）一次握手的时序：
 consumer (runtime)                          provider helper（被 exec，环境 TAPFD_SOCKET=/run/vm5.sock）
  │ listen(AF_UNIX, /run/vm5.sock)
  │ exec helper（注入 TAPFD_SOCKET）────────▶ │ 读 TAPFD_SOCKET；（应当）校验接口可服务
- │                                           │ open(/dev/net/tun)+TUNSETIFF(IFF_TAP|IFF_NO_PI)
+ │                                           │ open(/dev/net/tun)+TUNSETIFF(IFF_TAP|IFF_NO_PI|IFF_VNET_HDR)
  │                                           │ payload: mac=.. mtu=1500 ip=169.254.1.5 fd=1\0
  │ recvmsg() ◀──────────────────────────────  │ sendmsg(payload, SCM_RIGHTS[tapfd]); close(fd); exit 0
  │ 解析 payload；取 fd；以 mac=.. 配置 virtio-net；把 fd 交给 VMM 后端（如 CH --net fd=、Firecracker tap-fd）

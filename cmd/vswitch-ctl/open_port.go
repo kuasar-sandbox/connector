@@ -163,7 +163,14 @@ func openPortAndSend(sw vswitch.Interface, switchName string, slotID uint32, soc
 	var tapFile *os.File
 	var mtu int
 	if err := switchNs.Do(func() error {
-		f, err := tapfd.OpenTap(tapName, unix.IFF_NO_PI)
+		// IFF_VNET_HDR makes the delivered queue fd carry a virtio-net
+		// header — the framing every mainstream virtio VMM (cloud-hypervisor,
+		// Firecracker, QEMU default) expects on a tap fd. The flag is a
+		// property of this attaching TUNSETIFF, not of the persistent device
+		// created by provision (verified: the queue's vnet_hdr state follows
+		// the open, not the create). Offload features (TSO/GSO/csum) are left
+		// to the consuming VMM to negotiate with its guest; see docs/tapfd.md §4.5.
+		f, err := tapfd.OpenTap(tapName, unix.IFF_NO_PI|unix.IFF_VNET_HDR)
 		if err != nil {
 			return err
 		}

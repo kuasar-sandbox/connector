@@ -505,7 +505,7 @@ port=1 mac=02:00:00:00:80:01 mtu=1500 ip=169.254.1.1 fd=1\0
 
 **fd 获取（provider helper 行为）**：
 
-- `open-port <sw> --port=N` 即 tapfd.md §5 的 helper：读环境变量 `TAPFD_SOCKET`（`fd=N` 或路径），进入 switch netns、`open(/dev/net/tun)` + `TUNSETIFF(IFF_TAP|IFF_NO_PI)`，经该套接字发送 fd + 元数据，成功后退出码 `0`。
+- `open-port <sw> --port=N` 即 tapfd.md §5 的 helper：读环境变量 `TAPFD_SOCKET`（`fd=N` 或路径），进入 switch netns、`open(/dev/net/tun)` + `TUNSETIFF(IFF_TAP|IFF_NO_PI|IFF_VNET_HDR)`（fd 带 virtio-net header，主流 virtio VMM 的预期帧格式；vnet_hdr 是该 attach 的属性，与持久设备的创建标志无关），经该套接字发送 fd + 元数据，成功后退出码 `0`。
 - `attach <sw> ... --open-port` 把 CAS 分配与 fd 交接合并为一步（同样读 `TAPFD_SOCKET`），省一次 fork/exec。
 
 **前置校验**（在触碰 socket / tap 之前即拒绝）：slot mode 必须是 tap；slot 必须已 provisioned（`slot.ifindex != 0`）且已 attached（`innerIP != Free && != Reserved`，故 `ip` 字段总是真实 IP）。

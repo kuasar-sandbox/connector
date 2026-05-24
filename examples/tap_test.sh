@@ -14,10 +14,11 @@
 #   T1. start --mode=tap succeeds without --port-netns
 #   T2. provision wrote slot.mode=tap and created <sw>-tX in switch-netns
 #   T3. attach succeeds; mode=tap surfaces in output JSON
-#   T4. open-port sends the tap fd via SCM_RIGHTS (verified by receiver)
+#   T4. open-port sends the tap fd via SCM_RIGHTS; fd carries IFF_VNET_HDR
 #   T5. Re-provision in veth mode (slot must be Reserved); device kind switches
 #   T6. attach on unprovisioned tap slot is rejected with ErrPortNotProvisioned
 #   T7. attach --open-port combined op delivers fd in one call
+#   T11. tap-mode connectivity: ARP round-trip through the handed-off vnet_hdr fd
 #
 # Usage:
 #   sudo bash examples/tap_test.sh setup
@@ -112,10 +113,14 @@ try:
     name = bytes(ifreq[:16]).rstrip(b'\x00').decode()
     flags_val = struct.unpack_from('H', ifreq, 16)[0]
     is_tap = bool(flags_val & 0x0002)  # IFF_TAP
+    # IFF_VNET_HDR (0x4000): the delivered fd must carry the virtio-net header
+    # framing that cloud-hypervisor / Firecracker / QEMU expect on a tap fd.
+    has_vnet_hdr = bool(flags_val & 0x4000)  # IFF_VNET_HDR
     with open(out_file, 'w') as f:
         f.write(f"meta_port={meta.get('port','?')} meta_mac={meta.get('mac','?')} "
                 f"meta_mtu={meta.get('mtu','?')} meta_ip={meta.get('ip','?')} "
-                f"meta_fd={meta.get('fd','?')} tap_name={name} is_tap={is_tap}")
+                f"meta_fd={meta.get('fd','?')} tap_name={name} is_tap={is_tap} "
+                f"has_vnet_hdr={has_vnet_hdr}")
     os.close(fd)
 except Exception as e:
     with open(out_file, 'w') as f:
@@ -124,6 +129,87 @@ conn.close()
 s.close()
 PYEOF
     # Give the listener a moment to bind.
+    for _ in {1..20}; do
+        if [ -S "$sock_path" ]; then return 0; fi
+        sleep 0.05
+    done
+    return 1
+}
+
+# ----- python connectivity probe: receives the tap fd, then drives REAL
+# data-plane traffic through it. It mirrors what a VMM does (pin the virtio-net
+# header size, then use the fd), confirms IFF_VNET_HDR is set, and performs an
+# ARP round-trip: write a vnet_hdr-framed ARP request for the mgmt IP and read
+# back the switch's proxied ARP reply (the eBPF data plane redirects it out the
+# same tap). A correct round-trip proves the handed-off fd actually carries
+# traffic with the right framing end-to-end; a vnet_hdr mismatch would corrupt
+# the frame and yield no valid reply. Writes "connectivity=OK ..." else "ERR ..".
+spawn_connectivity_probe() {
+    local sock_path="$1"
+    local out_file="$2"
+    rm -f "$sock_path" "$out_file"
+    python3 - "$sock_path" "$out_file" <<'PYEOF' &
+import fcntl, os, select, socket, struct, sys
+sock_path, out_file = sys.argv[1], sys.argv[2]
+
+def done(msg):
+    with open(out_file, 'w') as f:
+        f.write(msg)
+    sys.exit(0)
+
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(sock_path); s.listen(1)
+conn, _ = s.accept()
+msg, anc, _, _ = conn.recvmsg(512, socket.CMSG_LEN(struct.calcsize('i') * 4))
+fd = -1
+for level, ctype, data in anc:
+    if level == socket.SOL_SOCKET and ctype == socket.SCM_RIGHTS:
+        nfds = len(data) // struct.calcsize('i')
+        fds = struct.unpack(str(nfds) + 'i', data[:nfds * struct.calcsize('i')])
+        if fds:
+            fd = fds[0]
+        break
+if fd < 0:
+    done("ERR no_fd_received")
+try:
+    nul = msg.find(b'\x00'); nul = len(msg) if nul < 0 else nul
+    meta = dict(tok.split('=', 1) for tok in msg[:nul].decode().split() if '=' in tok)
+
+    # Mirror a VMM bring-up: pin the virtio-net header size (12 = virtio_net_hdr_v1)
+    # and confirm IFF_VNET_HDR is really set on the fd we were handed.
+    TUNSETVNETHDRSZ = 0x400454d8
+    TUNGETIFF = 0x800454D2
+    fcntl.ioctl(fd, TUNSETVNETHDRSZ, struct.pack('i', 12))
+    ifreq = bytearray(40); fcntl.ioctl(fd, TUNGETIFF, ifreq, True)
+    if not (struct.unpack_from('H', ifreq, 16)[0] & 0x4000):  # IFF_VNET_HDR
+        done("ERR fd_has_no_vnet_hdr")
+
+    port_mac = bytes.fromhex(meta['mac'].replace(':', ''))
+    inner_ip = socket.inet_aton(meta['ip'])
+    target_ip = socket.inet_aton('169.254.169.254')  # mgmt metadata service
+
+    # Ethernet(broadcast dst, port_mac src, ARP) + ARP request "who has target".
+    eth = b'\xff' * 6 + port_mac + b'\x08\x06'
+    arp = struct.pack('>HHBBH', 1, 0x0800, 6, 4, 1)     # eth/ip, hln6 pln4, request
+    arp += port_mac + inner_ip + b'\x00' * 6 + target_ip  # sha sip tha tip
+    os.write(fd, b'\x00' * 12 + eth + arp)               # prepend zero vnet_hdr
+
+    r, _, _ = select.select([fd], [], [], 2.0)
+    if not r:
+        done("ERR no_reply (arp proxy did not answer through the fd)")
+    pkt = os.read(fd, 2048)[12:]                          # strip vnet_hdr
+    if len(pkt) < 14 + 28:
+        done("ERR short_reply len=%d" % len(pkt))
+    op = struct.unpack('>H', pkt[14 + 6:14 + 8])[0]
+    sip = pkt[14 + 14:14 + 18]
+    sha = pkt[14 + 8:14 + 14]
+    ok = pkt[12:14] == b'\x08\x06' and op == 2 and sip == target_ip
+    done("connectivity=%s arp_op=%d reply_mac=%s reply_sip=%s" % (
+        "OK" if ok else "BAD", op,
+        ':'.join('%02x' % b for b in sha), socket.inet_ntoa(sip)))
+except Exception as e:
+    done("ERR %r" % (e,))
+PYEOF
     for _ in {1..20}; do
         if [ -S "$sock_path" ]; then return 0; fi
         sleep 0.05
@@ -209,12 +295,13 @@ test_t4_open_port_scm_rights() {
     got=$(cat "$out_file" 2>/dev/null || echo "NONE")
     # Expect: fd is the right tap AND metadata fields are populated correctly.
     if [[ "$got" == *"tap_name=${SW_NAME}-t1 is_tap=True"* ]] && \
+       [[ "$got" == *"has_vnet_hdr=True"* ]] && \
        [[ "$got" == *"meta_port=1"* ]] && \
        [[ "$got" == *"meta_mac=02:00:00:00:80:01"* ]] && \
        [[ "$got" == *"meta_mtu=1500"* ]] && \
        [[ "$got" == *"meta_ip=169.254.1.1"* ]] && \
        [[ "$got" == *"meta_fd=1"* ]]; then
-        pass "T4: fd + metadata delivered together via SCM_RIGHTS ($got)"
+        pass "T4: fd (vnet_hdr) + metadata delivered together via SCM_RIGHTS ($got)"
     else
         fail "T4: unexpected fd/metadata state: $got"
     fi
@@ -294,12 +381,41 @@ test_t7_attach_open_port_combined() {
     # in :01 (PortMACFixed = PortMAC(switch_mac, 1)); per-port unique MACs
     # require --port-mac-addr=per-port at start time.
     if [[ "$got" == *"tap_name=${SW_NAME}-t4 is_tap=True"* ]] && \
+       [[ "$got" == *"has_vnet_hdr=True"* ]] && \
        [[ "$got" == *"meta_port=4"* ]] && \
        [[ "$got" == *"meta_mac=02:00:00:00:80:01"* ]] && \
        [[ "$got" == *"meta_ip=169.254.4.1"* ]]; then
-        pass "T7: fd + metadata delivered via combined attach ($got)"
+        pass "T7: fd (vnet_hdr) + metadata delivered via combined attach ($got)"
     else
         fail "T7: unexpected fd/metadata state: $got"
+    fi
+}
+
+# ----- T11: tap-mode network connectivity through the handed-off fd -----
+test_t11_tap_connectivity() {
+    echo "[T11] tap-mode connectivity: ARP round-trip through the vnet_hdr fd"
+    local sock_path=/tmp/tap_test_recv_t11.sock
+    local out_file=/tmp/tap_test_fdfile_t11
+    spawn_connectivity_probe "$sock_path" "$out_file" || { fail "T11: failed to spawn probe"; return; }
+
+    # Port 4 is attached (T7); hand its tap fd to the probe, which then drives an
+    # ARP exchange over it. This is the end-to-end check that a VMM consuming the
+    # fd would actually have working L2/L3 connectivity with vnet_hdr framing.
+    if ! TAPFD_SOCKET="$sock_path" ${SWITCH_BIN} open-port ${SW_NAME} --port=4 > /dev/null; then
+        fail "T11: open-port failed"
+        return
+    fi
+
+    for _ in {1..40}; do
+        if [ -s "$out_file" ]; then break; fi
+        sleep 0.05
+    done
+    local got
+    got=$(cat "$out_file" 2>/dev/null || echo "NONE")
+    if [[ "$got" == *"connectivity=OK"* ]]; then
+        pass "T11: ARP round-trip succeeded through tap fd with vnet_hdr framing ($got)"
+    else
+        fail "T11: tap connectivity failed ($got)"
     fi
 }
 
@@ -456,6 +572,7 @@ run_tests() {
     test_t5_mode_switch_provision
     test_t6_attach_unprovisioned_tap_rejected
     test_t7_attach_open_port_combined
+    test_t11_tap_connectivity
     test_t10_open_port_gating
     test_t8_stop_deletes_taps
     test_t9_mode_switch_cleanup
