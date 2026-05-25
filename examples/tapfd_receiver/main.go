@@ -1,7 +1,9 @@
-// tapfd_receiver listens on a unix socket and prints the first tap fd +
-// metadata it receives from vswitch-ctl. Pair it with:
+// tapfd_receiver listens on a unix socket and prints the tap fd + metadata
+// (and the optional netns fd) it receives from vswitch-ctl. Pair it with:
 //
 //	TAPFD_SOCKET=/tmp/recv.sock vswitch-ctl open-port <sw> --port=N
+//
+// To also receive the tap's netns fd, add TAPFD_WANT_NETNS=1 to that command.
 //
 // Build: go build ./examples/tapfd_receiver
 // Run:   ./tapfd_receiver /tmp/recv.sock
@@ -41,12 +43,29 @@ func main() {
 	defer c.Close()
 
 	uc := c.(*net.UnixConn)
-	f, meta, err := tapfd.RecvFd(uc)
+	// RecvFdsWithNetns also surfaces the optional netns fd the provider sends
+	// when driven with TAPFD_WANT_NETNS=1; netnsFile is nil otherwise.
+	tapFiles, netnsFile, meta, err := tapfd.RecvFdsWithNetns(uc)
 	if err != nil {
-		log.Fatalf("RecvFd: %v", err)
+		log.Fatalf("RecvFdsWithNetns: %v", err)
 	}
-	defer f.Close()
+	defer func() {
+		for _, f := range tapFiles {
+			f.Close()
+		}
+		if netnsFile != nil {
+			netnsFile.Close()
+		}
+	}()
 
-	fmt.Printf("port=%d mac=%s mtu=%d ip=%s fd_count=%d local_fd=%d\n",
-		meta.Port, meta.MAC, meta.MTU, meta.InnerIP, meta.FDCount, f.Fd())
+	tapFD := int64(-1)
+	if len(tapFiles) > 0 {
+		tapFD = int64(tapFiles[0].Fd())
+	}
+	netnsFD := int64(-1)
+	if netnsFile != nil {
+		netnsFD = int64(netnsFile.Fd())
+	}
+	fmt.Printf("port=%d mac=%s mtu=%d ip=%s fd_count=%d tap_fd=%d netns_fd=%d\n",
+		meta.Port, meta.MAC, meta.MTU, meta.InnerIP, meta.FDCount, tapFD, netnsFD)
 }
