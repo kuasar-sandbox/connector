@@ -117,7 +117,7 @@ func runAttach(cmd *cobra.Command, args []string) error {
 			})
 			return fmt.Errorf("--open-port is only valid for tap-mode slots (port %d is %s)", output.Port, output.Mode)
 		}
-		fdInfo, err := attachSendTapFd(switchName, output, tapSocketSpec)
+		fdInfo, err := attachSendTapFd(switchName, output, tapSocketSpec, wantNetnsFD())
 		if err != nil {
 			// SCM_RIGHTS failed — undo the slot allocation so the caller's
 			// retry sees a clean state. The tap device stays (it was created
@@ -131,6 +131,7 @@ func runAttach(cmd *cobra.Command, args []string) error {
 		// Fold the open-port result into the attach output so callers get a
 		// single JSON document describing the combined operation.
 		output.TapSentTo = fdInfo.SentTo
+		output.TapNetnsSent = fdInfo.NetnsSent
 	}
 
 	return printJSON(output)
@@ -139,12 +140,12 @@ func runAttach(cmd *cobra.Command, args []string) error {
 // attachSendTapFd opens the freshly-attached tap port and sends its fd to the
 // destination socket. Lives in attach.go (not open_port.go) so the rollback
 // path stays close to the CAS code it reverses.
-func attachSendTapFd(switchName string, out *vswitch.AttachOutput, socketSpec string) (*OpenPortResult, error) {
+func attachSendTapFd(switchName string, out *vswitch.AttachOutput, socketSpec string, withNetnsFD bool) (*OpenPortResult, error) {
 	sw, err := vswitchOpen(switchName)
 	if err != nil {
 		return nil, err
 	}
 	defer sw.Close()
 	slotID := out.Port - 1
-	return openPortAndSend(sw, switchName, slotID, socketSpec)
+	return openPortAndSend(sw, switchName, slotID, socketSpec, withNetnsFD)
 }

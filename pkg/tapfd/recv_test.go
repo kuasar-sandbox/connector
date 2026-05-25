@@ -158,6 +158,131 @@ func TestRecvFdsMultiFd(t *testing.T) {
 	}
 }
 
+func TestRecvFdsWithNetnsRoundTrip(t *testing.T) {
+	sender, receiver := socketpairUnixConns(t)
+	defer sender.Close()
+	defer receiver.Close()
+
+	// One stand-in tap fd + one stand-in netns fd (the netns fd is sent last).
+	tapR, tapW, _ := os.Pipe()
+	nsR, nsW, _ := os.Pipe()
+	defer tapR.Close()
+	defer tapW.Close()
+	defer nsR.Close()
+	defer nsW.Close()
+
+	in := PortMetadata{
+		Port: 3, MAC: "02:00:00:00:80:03", MTU: 1500, InnerIP: "169.254.1.3",
+		FDCount: 1, NetnsFDCount: 1,
+	}
+	wire, err := in.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	go func() {
+		if err := SendFd(sender, wire, tapR.Fd(), nsR.Fd()); err != nil {
+			t.Errorf("SendFd: %v", err)
+		}
+	}()
+
+	tapFiles, netnsFile, gotMeta, err := RecvFdsWithNetns(receiver)
+	if err != nil {
+		t.Fatalf("RecvFdsWithNetns: %v", err)
+	}
+	defer func() {
+		for _, f := range tapFiles {
+			f.Close()
+		}
+		if netnsFile != nil {
+			netnsFile.Close()
+		}
+	}()
+
+	if len(tapFiles) != 1 {
+		t.Fatalf("got %d tap files, want 1", len(tapFiles))
+	}
+	if netnsFile == nil {
+		t.Fatal("expected a netns fd, got nil")
+	}
+	if *gotMeta != in {
+		t.Errorf("meta mismatch:\n got: %+v\nwant: %+v", *gotMeta, in)
+	}
+
+	// Prove the split is correct: writing into the tap pipe is readable through
+	// the first received fd, and the netns pipe through the netns fd.
+	tapW.Write([]byte("tap"))
+	tapW.Close()
+	buf := make([]byte, 8)
+	if n, _ := tapFiles[0].Read(buf); string(buf[:n]) != "tap" {
+		t.Errorf("tap fd read %q, want %q", buf[:n], "tap")
+	}
+	nsW.Write([]byte("ns"))
+	nsW.Close()
+	if n, _ := netnsFile.Read(buf); string(buf[:n]) != "ns" {
+		t.Errorf("netns fd read %q, want %q", buf[:n], "ns")
+	}
+}
+
+func TestRecvFdsDropsNetnsFD(t *testing.T) {
+	// The netns-unaware RecvFds returns only the tap fd(s) and closes the
+	// trailing netns fd so it doesn't leak.
+	sender, receiver := socketpairUnixConns(t)
+	defer sender.Close()
+	defer receiver.Close()
+
+	tapR, tapW, _ := os.Pipe()
+	nsR, nsW, _ := os.Pipe()
+	defer tapR.Close()
+	defer tapW.Close()
+	defer nsR.Close()
+	defer nsW.Close()
+
+	in := PortMetadata{Port: 1, MAC: "02:00:00:00:80:01", MTU: 1500, InnerIP: "1.2.3.4", FDCount: 1, NetnsFDCount: 1}
+	wire, err := in.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	go func() {
+		if err := SendFd(sender, wire, tapR.Fd(), nsR.Fd()); err != nil {
+			t.Errorf("SendFd: %v", err)
+		}
+	}()
+
+	files, gotMeta, err := RecvFds(receiver)
+	if err != nil {
+		t.Fatalf("RecvFds: %v", err)
+	}
+	defer closeFiles(files)
+	if len(files) != 1 {
+		t.Fatalf("RecvFds returned %d files, want 1 (netns fd dropped)", len(files))
+	}
+	if gotMeta.NetnsFDCount != 1 {
+		t.Errorf("meta.NetnsFDCount = %d, want 1", gotMeta.NetnsFDCount)
+	}
+}
+
+func TestRecvFdsWithNetnsCountMismatch(t *testing.T) {
+	sender, receiver := socketpairUnixConns(t)
+	defer sender.Close()
+	defer receiver.Close()
+
+	// Payload claims fd=1 netns_fd=1 (total 2) but only 1 fd is attached.
+	bogus := []byte("port=1 mac=02:00:00:00:80:01 mtu=1500 ip=1.2.3.4 fd=1 netns_fd=1\x00")
+	pr, pw, _ := os.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+
+	go func() {
+		rights := syscall.UnixRights(int(pr.Fd()))
+		_, _, _ = sender.WriteMsgUnix(bogus, rights, nil)
+	}()
+
+	if _, _, _, err := RecvFdsWithNetns(receiver); err == nil {
+		t.Fatal("expected fd count mismatch error, got nil")
+	}
+}
+
 func TestRecvFdFdCountMismatch(t *testing.T) {
 	sender, receiver := socketpairUnixConns(t)
 	defer sender.Close()
