@@ -79,6 +79,9 @@ type AttachOutput struct {
 	// TapSentTo is populated when attach was invoked with --open-port; it
 	// echoes the TAPFD_SOCKET destination that received the fd via SCM_RIGHTS.
 	TapSentTo string `json:"tap_sent_to,omitempty"`
+	// TapNetnsSent is true when the tap's netns fd was also delivered alongside
+	// the tap fd (requested via TAPFD_WANT_NETNS; see docs/tapfd.md §4.6).
+	TapNetnsSent bool `json:"tap_netns_sent,omitempty"`
 }
 
 // StatusOutput represents the JSON output of the status command.

@@ -39,6 +39,11 @@ socket as a stream-mode unix server. For the fd form, the orchestrator
 typically creates a socketpair, hands one end to the VMM, and passes the
 other end to this helper via fd inheritance.
 
+Set TAPFD_WANT_NETNS=1 to also deliver the tap's network namespace fd as a
+trailing SCM_RIGHTS fd (advertised via netns_fd=1 in the payload), letting the
+receiver enter the tap's netns with setns(2) — useful when the receiver needs
+to inspect the device in its namespace (docs/tapfd.md §4.6).
+
 Example (path):
   # VMM-side: socat UNIX-LISTEN:/run/vm1.sock,fork ...
   TAPFD_SOCKET=/run/vm1.sock vswitch-ctl open-port sw0 --port=3
@@ -53,6 +58,25 @@ Example (inherited fd):
 // the tapfd handoff (docs/tapfd.md §5.3): "fd=N" (inherited unix socket fd) or
 // a filesystem path the helper dials.
 const tapSocketEnv = "TAPFD_SOCKET"
+
+// tapNetnsEnv, when set to a truthy value, asks the helper to also deliver the
+// tap's network namespace fd as a trailing SCM_RIGHTS fd and advertise it via
+// the netns_fd payload key (docs/tapfd.md §4.3, §4.6). A consumer requests it
+// when it needs to enter the tap's netns (e.g. to read device metadata); a
+// consumer that doesn't request it just gets the tap fd.
+const tapNetnsEnv = "TAPFD_WANT_NETNS"
+
+// wantNetnsFD reports whether the consumer asked for the tap's netns fd via
+// tapNetnsEnv. Truthy = "1"/"true"/"yes"/"on" (case-insensitive); anything
+// else (including unset/empty) is false.
+func wantNetnsFD() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(tapNetnsEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
 
 var openPortPort int
 
@@ -110,7 +134,7 @@ func runOpenPort(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("port %d: %w (run 'attach' before 'open-port')", openPortPort, vswitch.ErrPortNotAttached)
 	}
 
-	result, err := openPortAndSend(sw, switchName, slotID, socketSpec)
+	result, err := openPortAndSend(sw, switchName, slotID, socketSpec, wantNetnsFD())
 	if err != nil {
 		return err
 	}
@@ -121,12 +145,13 @@ func runOpenPort(cmd *cobra.Command, args []string) error {
 // whether to print it (standalone open-port does; attach --open-port folds
 // the info into its own output).
 type OpenPortResult struct {
-	Port    uint32 `json:"port"`
-	TapDev  string `json:"tap_dev"`
-	SentTo  string `json:"sent_to"`
-	MAC     string `json:"mac"`
-	MTU     uint32 `json:"mtu"`
-	InnerIP string `json:"inner_ip"`
+	Port      uint32 `json:"port"`
+	TapDev    string `json:"tap_dev"`
+	SentTo    string `json:"sent_to"`
+	MAC       string `json:"mac"`
+	MTU       uint32 `json:"mtu"`
+	InnerIP   string `json:"inner_ip"`
+	NetnsSent bool   `json:"netns_sent"`
 }
 
 // openPortAndSend is the reusable core used by both 'open-port' and
@@ -137,7 +162,11 @@ type OpenPortResult struct {
 //
 // After a successful send, the local fd is closed (the receiver now holds
 // the only reference; the persistent tap survives via TUNSETPERSIST).
-func openPortAndSend(sw vswitch.Interface, switchName string, slotID uint32, socketSpec string) (*OpenPortResult, error) {
+//
+// When withNetnsFD is set, the switch netns fd is appended as the LAST
+// SCM_RIGHTS fd and advertised via netns_fd=1, letting the receiver enter the
+// tap's namespace with setns(2) (docs/tapfd.md §4.3).
+func openPortAndSend(sw vswitch.Interface, switchName string, slotID uint32, socketSpec string, withNetnsFD bool) (*OpenPortResult, error) {
 	tapName := fmt.Sprintf("%s-t%d", switchName, slotID+1)
 	cfg := sw.Config()
 	slot := sw.MmapSlots().GetSlot(slotID)
@@ -182,7 +211,7 @@ func openPortAndSend(sw vswitch.Interface, switchName string, slotID uint32, soc
 	}
 	defer tapFile.Close()
 
-	// 3) Build the metadata payload and send fd + payload atomically.
+	// 3) Build the metadata payload and send fd(s) + payload atomically.
 	portMAC := vswitch.GetPortMAC(cfg.SwitchMac[:], cfg.PortMac[:], slotID)
 	meta := &tapfd.PortMetadata{
 		Port:    slotID + 1,
@@ -191,29 +220,38 @@ func openPortAndSend(sw vswitch.Interface, switchName string, slotID uint32, soc
 		InnerIP: vswitch.Uint32ToIP(slot.InnerIp).String(),
 		FDCount: 1,
 	}
+	// The tap fd goes first; the netns fd (when requested) rides last so a
+	// receiver splits the ancillary by fd / netns_fd counts. switchNs.Handle()
+	// is the open netns fd, valid to send while switchNs stays open (closed by
+	// the deferred Close after the send completes).
+	fds := []uintptr{tapFile.Fd()}
+	if withNetnsFD {
+		meta.NetnsFDCount = 1
+		fds = append(fds, uintptr(switchNs.Handle()))
+	}
 	payload, err := meta.Marshal()
 	if err != nil {
 		return nil, fmt.Errorf("build metadata payload: %w", err)
 	}
-	if err := tapfd.SendFd(conn, payload, tapFile.Fd()); err != nil {
+	if err := tapfd.SendFd(conn, payload, fds...); err != nil {
 		return nil, fmt.Errorf("transfer tap fd: %w", err)
 	}
 
 	return &OpenPortResult{
-		Port:    slotID + 1,
-		TapDev:  tapName,
-		SentTo:  socketSpec,
-		MAC:     meta.MAC,
-		MTU:     meta.MTU,
-		InnerIP: meta.InnerIP,
+		Port:      slotID + 1,
+		TapDev:    tapName,
+		SentTo:    socketSpec,
+		MAC:       meta.MAC,
+		MTU:       meta.MTU,
+		InnerIP:   meta.InnerIP,
+		NetnsSent: withNetnsFD,
 	}, nil
 }
 
 // dialTapSocket parses a TAPFD_SOCKET value ("path" or "fd=N") and returns a
 // ready-to-write *net.UnixConn.
 func dialTapSocket(spec string) (*net.UnixConn, error) {
-	if strings.HasPrefix(spec, "fd=") {
-		nStr := strings.TrimPrefix(spec, "fd=")
+	if nStr, ok := strings.CutPrefix(spec, "fd="); ok {
 		n, err := strconv.Atoi(nStr)
 		if err != nil || n < 0 {
 			return nil, fmt.Errorf("invalid %s fd= value %q", tapSocketEnv, nStr)

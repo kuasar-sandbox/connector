@@ -36,6 +36,46 @@ func TestPortMetadataMarshalRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPortMetadataMarshalNetnsFD(t *testing.T) {
+	in := PortMetadata{
+		Port:         3,
+		MAC:          "02:00:00:00:80:03",
+		MTU:          1500,
+		InnerIP:      "169.254.1.3",
+		FDCount:      1,
+		NetnsFDCount: 1,
+	}
+	wire, err := in.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	// netns_fd is appended after fd when nonzero.
+	want := "port=3 mac=02:00:00:00:80:03 mtu=1500 ip=169.254.1.3 fd=1 netns_fd=1\x00"
+	if string(wire) != want {
+		t.Errorf("wire mismatch:\n got: %q\nwant: %q", string(wire), want)
+	}
+	out, err := ParsePayload(wire)
+	if err != nil {
+		t.Fatalf("ParsePayload: %v", err)
+	}
+	if *out != in {
+		t.Errorf("roundtrip mismatch:\n got: %+v\nwant: %+v", *out, in)
+	}
+}
+
+func TestPortMetadataMarshalOmitsNetnsFDWhenZero(t *testing.T) {
+	// Default (no netns fd) wire must be byte-for-byte identical to v1 so old
+	// receivers and the fd-count check are unaffected.
+	in := PortMetadata{Port: 1, MAC: "02:00:00:00:80:01", MTU: 1500, InnerIP: "1.2.3.4", FDCount: 1}
+	wire, err := in.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(wire), "netns_fd") {
+		t.Errorf("netns_fd must be omitted when NetnsFDCount=0, got %q", string(wire))
+	}
+}
+
 func TestPortMetadataMarshalValidates(t *testing.T) {
 	cases := []struct {
 		name string
