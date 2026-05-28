@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fullof-work/sandbox-vswitch/pkg/daemon"
-	"github.com/fullof-work/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/daemon"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
 )
 
 const (

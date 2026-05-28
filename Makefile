@@ -1,7 +1,7 @@
 # sandbox-vswitch Makefile
 SHELL := /bin/bash
 
-.PHONY: all generate build build-switch clean test test-integration test-all test-e2e bench release release-clean deps fmt lint vmlinux help
+.PHONY: all generate build build-switch build-tapfd-get tapfd-get clean test test-integration test-all test-e2e bench release release-clean deps fmt lint vet vmlinux help
 
 # ---------------------------------------------------------------------------
 # Architecture selection
@@ -76,8 +76,10 @@ generate:
 	@echo "==> Generating eBPF bytecode..."
 	$(GO) generate ./...
 
-# Build the vswitch-ctl binary for $(TARGET_ARCH).
-build: build-switch
+# Build every binary this repo ships for $(TARGET_ARCH): vswitch-ctl (the
+# dataplane CLI) and tapfd-get (the tapfd §5 provider helper).
+build: build-switch build-tapfd-get
+
 build-switch:
 	@echo "==> Building $(BINARY_NAME) ($(TARGET_ARCH))..."
 	@mkdir -p $(BINDIR)
@@ -85,11 +87,26 @@ build-switch:
 	$(call link_bin,$(BINARY_NAME))
 	@echo "==> Built $(BINARY)"
 
+build-tapfd-get:
+	@echo "==> Building tapfd-get ($(TARGET_ARCH))..."
+	@mkdir -p $(BINDIR)
+	GOOS=linux GOARCH=$(GO_ARCH) CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BINDIR)/tapfd-get ./cmd/tapfd-get
+	$(call link_bin,tapfd-get)
+	@echo "==> Built $(BINDIR)/tapfd-get"
+
+# Short alias matching the umbrella's collected-binary name.
+tapfd-get: build-tapfd-get
+
+# go vet across the module — parallels the other repos' `vet` target so the
+# umbrella can drive every repo's checks through `$(MAKE) -C <repo> vet`.
+vet:
+	$(GO) vet ./...
+
 # Remove build-generated binaries and coverage. Does NOT touch release tarballs
 # (use `release-clean`) or any source; only files produced by `build`/`test`.
 clean:
 	@echo "==> Cleaning build artifacts..."
-	rm -f bin/$(BINARY_NAME) bin/*/$(BINARY_NAME) $(COVERAGE)
+	rm -f bin/$(BINARY_NAME) bin/*/$(BINARY_NAME) bin/tapfd-get bin/*/tapfd-get $(COVERAGE)
 	-@rmdir bin/* bin 2>/dev/null || true
 
 # Run unit tests with coverage profile (architecture-neutral output).

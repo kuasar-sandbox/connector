@@ -3,7 +3,7 @@ package vswitch
 import (
 	"net"
 
-	"github.com/fullof-work/sandbox-vswitch/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
 )
 
 // Interface is the interface for operating on an opened virtual switch.

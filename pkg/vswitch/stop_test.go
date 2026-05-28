@@ -6,9 +6,9 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/fullof-work/sandbox-vswitch/pkg/internal/bpf"
-	"github.com/fullof-work/sandbox-vswitch/pkg/netlink"
-	"github.com/fullof-work/sandbox-vswitch/pkg/netns"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netlink"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netns"
 )
 
 // mockStopSwitch sets up common mocks for stop tests with configurable slot state.

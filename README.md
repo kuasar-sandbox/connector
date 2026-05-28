@@ -4,6 +4,11 @@
 
 > An eBPF/TC-based high-performance virtual switch that gives ~4K sandboxes (microVMs) on a single host isolated network access. The CLI is `vswitch-ctl`.
 
+本仓是 [kuasar-sandbox](https://github.com/kuasar-sandbox/kuasar-sandbox) 平台的网络组件，独立演进。
+对外导出 `pkg/tapfd`（tap-fd 交接规约 §5 的 SDK，被 `sandbox-runtime` 直接 import 作消费侧），
+并附带提供侧助手 `tapfd-get`（`cmd/tapfd-get`，通过 `TAPFD_SOCKET` 经 SCM_RIGHTS 交接 vnet_hdr 队列 fd）。
+协议见 `docs/tapfd.md`。
+
 ## 特性
 
 - **纯内核数据面** — 配置完成后进程退出，eBPF 程序持续运行，无用户态守护进程依赖

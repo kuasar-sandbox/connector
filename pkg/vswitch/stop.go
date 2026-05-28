@@ -7,9 +7,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fullof-work/sandbox-vswitch/pkg/internal/bpf"
-	"github.com/fullof-work/sandbox-vswitch/pkg/netlink"
-	"github.com/fullof-work/sandbox-vswitch/pkg/netns"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netlink"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netns"
 )
 
 func countAllocatedSlots(mmapSlots *MmappedSlots, nPorts uint32) uint32 {

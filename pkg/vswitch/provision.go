@@ -8,9 +8,9 @@ import (
 
 	"github.com/cilium/ebpf"
 
-	"github.com/fullof-work/sandbox-vswitch/pkg/internal/bpf"
-	"github.com/fullof-work/sandbox-vswitch/pkg/netlink"
-	"github.com/fullof-work/sandbox-vswitch/pkg/netns"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netlink"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netns"
 )
 
 // mgmtInfo holds per-mgmt-extract device info for slot writes.

@@ -7,7 +7,7 @@ import (
 
 	"github.com/cilium/ebpf"
 
-	"github.com/fullof-work/sandbox-vswitch/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
 )
 
 // SwitchMetadata is the JSON metadata stored in the BPF metadata map.

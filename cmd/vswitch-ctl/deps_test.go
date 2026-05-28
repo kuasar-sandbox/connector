@@ -5,8 +5,8 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/fullof-work/sandbox-vswitch/pkg/dhcp"
-	"github.com/fullof-work/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/dhcp"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
 )
 
 func resetDeps() {

@@ -10,10 +10,10 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/sys/unix"
 
-	nllink "github.com/fullof-work/sandbox-vswitch/pkg/netlink"
-	"github.com/fullof-work/sandbox-vswitch/pkg/netns"
-	"github.com/fullof-work/sandbox-vswitch/pkg/tapfd"
-	"github.com/fullof-work/sandbox-vswitch/pkg/vswitch"
+	nllink "github.com/kuasar-sandbox/sandbox-vswitch/pkg/netlink"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netns"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/tapfd"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
 )
 
 // netlinkGetMTU is the GetMTU function we call from inside switch-netns;
