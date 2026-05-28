@@ -6,9 +6,9 @@ import (
 	"net"
 	"strings"
 
-	"github.com/fullof-work/sandbox-vswitch/pkg/internal/bpf"
-	"github.com/fullof-work/sandbox-vswitch/pkg/netlink"
-	"github.com/fullof-work/sandbox-vswitch/pkg/netns"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netlink"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netns"
 )
 
 // Status returns the status of a virtual switch.

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/fullof-work/sandbox-vswitch/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
 )
 
 // createPinDir creates the pin directory for a switch (required before PinMaps).

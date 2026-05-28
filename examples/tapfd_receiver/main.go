@@ -15,7 +15,7 @@ import (
 	"net"
 	"os"
 
-	"github.com/fullof-work/sandbox-vswitch/pkg/tapfd"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/tapfd"
 )
 
 func main() {

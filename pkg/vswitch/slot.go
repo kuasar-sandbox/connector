@@ -5,8 +5,8 @@ import (
 
 	"github.com/cilium/ebpf"
 
-	"github.com/fullof-work/sandbox-vswitch/pkg/internal/bpf"
-	"github.com/fullof-work/sandbox-vswitch/pkg/internal/bpfmap"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpfmap"
 )
 
 // Type aliases re-exporting the BPF and bpfmap types so vswitch callers

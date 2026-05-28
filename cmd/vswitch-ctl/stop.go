@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fullof-work/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
 )
 
 var stopCmd = &cobra.Command{

@@ -5,7 +5,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/fullof-work/sandbox-vswitch/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
 )
 
 // stubMmapAttachTest builds a MmappedSlots backed by ordinary memory with the

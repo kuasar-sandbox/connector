@@ -1,6 +1,6 @@
 package vswitch
 
-import "github.com/fullof-work/sandbox-vswitch/pkg/internal/bpf"
+import "github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
 
 // Re-exports of low-level BPF helpers that the CLI legitimately needs but
 // must not import directly (pkg/internal/* is off-limits to cmd/ by the Go
