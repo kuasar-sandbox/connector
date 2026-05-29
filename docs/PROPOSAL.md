@@ -2,15 +2,14 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | Draft — v1, first OSS release in preparation (no SemVer tag yet) |
+| **Status** | Draft — v1 (no SemVer tag yet) |
 | **Last updated** | 2026-05-14 |
-| **Go module** | `github.com/fullof-work/sandbox-vswitch` |
+| **Go module** | `github.com/kuasar-sandbox/sandbox-vswitch` |
 | **CLI binary** | `vswitch-ctl` |
-| **License** | Apache-2.0 (Go / userspace); GPL-2.0 (`bpf/` kernel programs) |
 | **Kernel floor** | Linux 5.10+ (BTF + TC BPF) |
 | **Architectures** | linux/amd64, linux/arm64 |
 
-> 本提案是 `sandbox-vswitch` 在首次开源发布前的总设计文档，将动机、架构、API、可靠性、性能、运维、测试整合为单一权威来源。
+> 本提案是 `sandbox-vswitch` 的总设计文档，将动机、架构、API、可靠性、性能、运维、测试整合为单一权威来源。
 
 ---
 
@@ -43,7 +42,7 @@
 - **外部网络**。通过 GENEVE 隧道接入外部网络，支持 IP-over-GENEVE (默认) 和 Ether-over-GENEVE 两种封装模式；GENEVE 内层同时识别 IPv4 与 IPv6 报文 (管理平面与 `slot.inner_ip` 当前为 IPv4)。
 - **并发安全**。端口槽位通过 `BPF_F_MMAPABLE` map + 用户态原子 CAS 分配，无须用户态锁；控制操作 (Start/Stop/Provision) 通过 `flock` 串行化。
 - **两阶段启动**。`StartReserved` (~100 ms) 完成核心初始化并通知 systemd 就绪，`ProvisionPorts` 在后台异步创建所有端口设备。
-- **veth 与 tap 双模式**。默认 veth 模式将端口设备移入沙箱 netns；tap 模式通过 `SCM_RIGHTS` 把 tap fd 直接递交给 VMM (Firecracker / Cloud Hypervisor 等)。
+- **veth 与 tap 双模式**。veth 模式将端口设备移入沙箱 netns；tap 模式（CLI 默认）通过 `SCM_RIGHTS` 把 tap fd 直接递交给 VMM (Firecracker / Cloud Hypervisor 等)。
 
 **适用场景：** 单宿主机高密度 microVM 平台 (典型为 Firecracker、Cloud Hypervisor、QEMU/KVM)，每个 VM 需要受控的网络出口，且整体规模不超过 4 K 个并发实例。
 
@@ -512,7 +511,7 @@ port=1 mac=02:00:00:00:80:01 mtu=1500 ip=169.254.1.1 fd=1\0
 
 **失败处理**：交换机未运行 → 退出码 `3`；`attach --open-port` 的 `SCM_RIGHTS` 失败时**回滚 CAS 分配**，不留半 attached slot。
 
-**接收方**：第三方只需实现 tapfd.md §4；本仓库提供 Go 参考库 `github.com/fullof-work/sandbox-vswitch/pkg/tapfd`（`RecvFd(*net.UnixConn) (*os.File, *PortMetadata, error)`）与可运行示例 `examples/tapfd_receiver/`。多队列、扩展字段等前向兼容规则见 tapfd.md §4.3 / §8。
+**接收方**：第三方只需实现 tapfd.md §4；本仓库提供 Go 参考库 `github.com/kuasar-sandbox/sandbox-vswitch/pkg/tapfd`（`RecvFd(*net.UnixConn) (*os.File, *PortMetadata, error)`）与可运行示例 `examples/tapfd_receiver/`。多队列、扩展字段等前向兼容规则见 tapfd.md §4.3 / §8。
 
 ### 4.8 MTU 校验
 
@@ -581,7 +580,7 @@ import (
     "net"
     "os"
 
-    "github.com/fullof-work/sandbox-vswitch/pkg/tapfd"
+    "github.com/kuasar-sandbox/sandbox-vswitch/pkg/tapfd"
 )
 
 func main() {
@@ -915,7 +914,7 @@ ExecStart=/usr/sbin/vswitch-ctl serve ${SWITCH_NAME} ...
 | `--geneve-encap-eth` | – | 启用 Ether-over-GENEVE (默认 IP-over-GENEVE) |
 | `--mtu` | – | 设置所有 port / mgmt veth MTU |
 | `--port-mac-addr` | – | `fixed` (默认) / `per-port` / `aa:bb:cc:dd:ee:ff` |
-| `--mode` | – | `veth` (默认) 或 `tap`：(a) 非 `--reserved` 时控制一次性 reserve + provision-all 的 mode；(b) 配合 `--reserved` 时仅作为验证提示 (例如 `--mode=tap` 让 `--port-netns` 真正可省)，不持久化 |
+| `--mode` | – | `tap` (默认) 或 `veth`：(a) 非 `--reserved` 时控制一次性 reserve + provision-all 的 mode；(b) 配合 `--reserved` 时仅作为验证提示 (例如 `--mode=tap` 让 `--port-netns` 真正可省)，不持久化 |
 | `--reserved` | – | 仅做 `StartReserved`，不自动 ProvisionPorts；`--port-netns` 变为可选。**注意**：当前 port-netns 由 `start` 写入交换机配置，`provision` 无独立 flag 覆盖 — 若 start 时省了 port-netns，后续只能 `provision --mode=tap`；想做 veth 端口请在 start 时仍配上 `--port-netns`。 |
 | `--config` | – | 从文件读取参数 (允许 `start [switch_name]` 省略 positional) |
 
@@ -954,7 +953,7 @@ ExecStart=/usr/sbin/vswitch-ctl serve ${SWITCH_NAME} ...
 | --- | --- |
 | `--port=N` | 仅修复指定槽位 (单点修复)；与 `--count` 互斥 |
 | `--count=N` | 限制本次创建的设备数 (0 = 全部)；与 `--port` 互斥 |
-| `--mode=veth\|tap` | 模式 (默认 `veth`)；mode switch 时 slot 须为 Reserved |
+| `--mode=veth\|tap` | 模式 (默认 `tap`)；mode switch 时 slot 须为 Reserved |
 
 #### `stop <switch_name>`
 

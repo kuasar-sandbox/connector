@@ -30,7 +30,7 @@ make release                    # 打包: build/dist/sandbox-vswitch-<ver>-linux
 make generate
 
 # 创建交换机
-vswitch-ctl start sw1 --netns=sw_ns --port-netns=port_ns --ports=2048 \
+vswitch-ctl start sw1 --mode=veth --netns=sw_ns --port-netns=port_ns --ports=2048 \
     --mac-addr=02:00:00:00:00:01 --floating-ip-base=100.100.96.0 \
     --mgmt-extract=mgmt_ns:eth0:169.254.169.254 \
     --transit-dev=eth1 --transit-dev-addr=10.0.0.1/24:10.0.0.2 \
@@ -66,7 +66,7 @@ sudo bash examples/mgmt_isolation_test.sh all    # 管理平面 + 隔离
 
 ## 作为 Go 库使用 (Importing as a library)
 
-CLI 之外，仓库以 `github.com/fullof-work/sandbox-vswitch/pkg/...` 暴露公开 API：
+CLI 之外，仓库以 `github.com/kuasar-sandbox/sandbox-vswitch/pkg/...` 暴露公开 API：
 
 | 包 | 用途 |
 |----|------|
@@ -86,7 +86,7 @@ import (
     "net"
     "os"
 
-    "github.com/fullof-work/sandbox-vswitch/pkg/tapfd"
+    "github.com/kuasar-sandbox/sandbox-vswitch/pkg/tapfd"
 )
 
 func main() {
@@ -114,8 +114,8 @@ func main() {
 配套发送端：`TAPFD_SOCKET=/tmp/recv.sock vswitch-ctl open-port <sw> --port=N` (或 `attach … --open-port` 合并 attach+发送两步)。协议规格见 [`docs/tapfd.md`](docs/tapfd.md)；完整可运行示例见 [`examples/tapfd_receiver/`](examples/tapfd_receiver/main.go)。
 
 ```bash
-go doc github.com/fullof-work/sandbox-vswitch/pkg/tapfd
-go doc github.com/fullof-work/sandbox-vswitch/pkg/vswitch
+go doc github.com/kuasar-sandbox/sandbox-vswitch/pkg/tapfd
+go doc github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch
 ```
 
 ## 文档
