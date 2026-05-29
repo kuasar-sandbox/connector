@@ -41,7 +41,7 @@ var (
 func init() {
 	provisionCmd.Flags().IntVar(&provisionCount, "count", 0, "Maximum number of ports to provision (0 = all)")
 	provisionCmd.Flags().IntVar(&provisionPort, "port", 0, "Specific port number to provision")
-	provisionCmd.Flags().StringVar(&provisionMode, "mode", "veth", `Port kind: "veth" (default) or "tap". For tap, the device stays in switch-netns and a fd is later transferred via 'open-port'.`)
+	provisionCmd.Flags().StringVar(&provisionMode, "mode", "tap", `Port kind: "tap" (default) or "veth". For tap, the device stays in switch-netns and a fd is later transferred via 'open-port'.`)
 }
 
 func runProvision(cmd *cobra.Command, args []string) error {
