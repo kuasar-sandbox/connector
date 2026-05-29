@@ -56,6 +56,7 @@ setup() {
 
     echo "==> Starting vswitch-ctl..."
     ${SWITCH_BIN} start ${SW_NAME} \
+        --mode=veth \
         --netns=sw_ns \
         --port-netns=port_ns \
         --ports=2 \

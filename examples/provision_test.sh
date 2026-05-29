@@ -75,6 +75,7 @@ print(data['${field}'])
 start_switch() {
     local num_ports="${1:-4}"
     ${SWITCH_BIN} start ${SW_NAME} \
+        --mode=veth \
         --netns=sw_ns \
         --port-netns=port_ns \
         --ports=${num_ports} \
@@ -85,6 +86,7 @@ start_switch() {
 start_switch_reserved() {
     local num_ports="${1:-16}"
     ${SWITCH_BIN} start ${SW_NAME} \
+        --mode=veth \
         --netns=sw_ns \
         --port-netns=port_ns \
         --ports=${num_ports} \
@@ -234,7 +236,7 @@ test_b2_provision_count() {
     start_switch_reserved 16
 
     local prov_out
-    prov_out=$(${SWITCH_BIN} provision ${SW_NAME} --count=4)
+    prov_out=$(${SWITCH_BIN} provision ${SW_NAME} --count=4 --mode=veth)
     local provisioned
     provisioned=$(json_field "$prov_out" "provisioned")
     if [ "$provisioned" -eq 4 ]; then
@@ -267,7 +269,7 @@ test_b3_provision_all() {
     start_switch_reserved 16
 
     local prov_out
-    prov_out=$(${SWITCH_BIN} provision ${SW_NAME})
+    prov_out=$(${SWITCH_BIN} provision ${SW_NAME} --mode=veth)
     local provisioned
     provisioned=$(json_field "$prov_out" "provisioned")
     if [ "$provisioned" -eq 16 ]; then
@@ -292,7 +294,7 @@ test_b4_provision_port() {
     start_switch_reserved 16
 
     local prov_out
-    prov_out=$(${SWITCH_BIN} provision ${SW_NAME} --port=10)
+    prov_out=$(${SWITCH_BIN} provision ${SW_NAME} --port=10 --mode=veth)
     local provisioned
     provisioned=$(json_field "$prov_out" "provisioned")
     if [ "$provisioned" -eq 1 ]; then
@@ -401,7 +403,7 @@ test_c3_force_reserve_repair() {
     fi
 
     # 3. Provision port 2 — detects veth exists, validates ifindex/TC, skips creation
-    if ${SWITCH_BIN} provision ${SW_NAME} --port=2 &>/dev/null; then
+    if ${SWITCH_BIN} provision ${SW_NAME} --port=2 --mode=veth &>/dev/null; then
         pass "C3: provision port 2 succeeded (idempotent)"
     else
         fail "C3: provision port 2 failed"
@@ -586,6 +588,7 @@ s.close()
 
     # Start serve in background
     NOTIFY_SOCKET="${notify_sock}" ${SWITCH_BIN} serve ${SW_NAME} \
+        --mode=veth \
         --netns=sw_ns \
         --port-netns=port_ns \
         --ports=4 \
@@ -668,6 +671,7 @@ test_a2_serve_start_equivalence() {
 
     # Round 2: serve
     ${SWITCH_BIN} serve ${SW_NAME} \
+        --mode=veth \
         --netns=sw_ns \
         --port-netns=port_ns \
         --ports=4 \

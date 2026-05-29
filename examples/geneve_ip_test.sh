@@ -75,6 +75,7 @@ setup() {
 
     echo "==> Starting switch sw-a..."
     ${SWITCH_BIN} start sw-a \
+        --mode=veth \
         --netns=sw_ns_a \
         --port-netns=port_ns_a \
         --ports=1 \
@@ -86,6 +87,7 @@ setup() {
 
     echo "==> Starting switch sw-b..."
     ${SWITCH_BIN} start sw-b \
+        --mode=veth \
         --netns=sw_ns_b \
         --port-netns=port_ns_b \
         --ports=1 \

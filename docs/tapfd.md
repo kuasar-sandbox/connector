@@ -6,8 +6,7 @@
 | **状态** | 稳定 |
 | **受众** | 实现本协议的 **provider**（tap 提供方，如交换机 / 网络后端）与 **consumer**（消费方，如 VMM / 编排器：cloud-hypervisor、Firecracker、QEMU 等） |
 | **规范性** | §4（wire 协议）、§5（动态获取契约）均为 **normative**。consumer 如何在自身配置中建模网络不属于本协议（见 §1）。 |
-| **参考实现** | sandbox-vswitch（`vswitch-ctl`）实现本协议；Go 参考库 `github.com/fullof-work/sandbox-vswitch/pkg/tapfd`，可运行示例 `examples/tapfd_receiver/` |
-| **License** | Apache-2.0 |
+| **参考实现** | sandbox-vswitch（`vswitch-ctl`）实现本协议；Go 参考库 `github.com/kuasar-sandbox/sandbox-vswitch/pkg/tapfd`，可运行示例 `examples/tapfd_receiver/` |
 
 本文档自洽：provider 与 consumer 双方据此对接，无需了解任何具体实现的内部逻辑。具体实现（如 sandbox-vswitch）是本规格的一个实现，而非本规格的依据。
 

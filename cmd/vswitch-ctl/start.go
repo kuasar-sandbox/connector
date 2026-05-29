@@ -66,7 +66,7 @@ var (
 func init() {
 	startCmd.Flags().StringVar(&startConfigFile, "config", "", "JSON config file (alternative to CLI flags)")
 	startCmd.Flags().StringVar(&startNetNS, "netns", "", "Switch network namespace (required)")
-	startCmd.Flags().StringVar(&startPortNetNS, "port-netns", "", "Ports network namespace (required)")
+	startCmd.Flags().StringVar(&startPortNetNS, "port-netns", "", "Ports network namespace (required for veth mode; optional for tap)")
 	startCmd.Flags().Uint32Var(&startPorts, "ports", 0, "Number of ports (1-4096, required)")
 	startCmd.Flags().StringVar(&startMACAddr, "mac-addr", "", "Virtual MAC address (required)")
 	startCmd.Flags().StringVar(&startFloatingIPBase, "floating-ip-base", "", "Floating IP base address (required)")
@@ -79,7 +79,7 @@ func init() {
 	startCmd.Flags().IntVar(&startMTU, "mtu", 0, "MTU for switch ports (default: OS default)")
 	startCmd.Flags().StringVar(&startPortMACAddr, "port-mac-addr", "fixed", "Port MAC address mode: 'fixed' (default), 'per-port', or specific MAC address")
 	startCmd.Flags().BoolVar(&startReserved, "reserved", false, "Only initialize switch (slots in Reserved state, no veth creation); --port-netns becomes optional since no provisioning runs here — provide it later via the switch config when running `provision --mode=veth`")
-	startCmd.Flags().StringVar(&startMode, "mode", "veth", `Port kind for the auto-provision step: "veth" (default) or "tap". With tap, ports stay in switch-netns and the sandbox receives a fd via 'open-port'; --port-netns becomes optional.`)
+	startCmd.Flags().StringVar(&startMode, "mode", "tap", `Port kind for the auto-provision step: "tap" (default) or "veth". With tap (default), ports stay in switch-netns and the sandbox receives a fd via 'open-port' (--port-netns optional); veth moves a peer into the sandbox netns and requires --port-netns.`)
 }
 
 // buildConfig builds a vswitch.Config from CLI flags or config file.

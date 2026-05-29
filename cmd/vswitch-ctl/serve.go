@@ -52,7 +52,7 @@ func init() {
 	// Reuse the same flags as start
 	serveCmd.Flags().StringVar(&startConfigFile, "config", "", "JSON config file (alternative to CLI flags)")
 	serveCmd.Flags().StringVar(&startNetNS, "netns", "", "Switch network namespace (required)")
-	serveCmd.Flags().StringVar(&startPortNetNS, "port-netns", "", "Ports network namespace (required)")
+	serveCmd.Flags().StringVar(&startPortNetNS, "port-netns", "", "Ports network namespace (required for veth mode; optional for tap)")
 	serveCmd.Flags().Uint32Var(&startPorts, "ports", 0, "Number of ports (1-4096, required)")
 	serveCmd.Flags().StringVar(&startMACAddr, "mac-addr", "", "Virtual MAC address (required)")
 	serveCmd.Flags().StringVar(&startFloatingIPBase, "floating-ip-base", "", "Floating IP base address (required)")
@@ -64,7 +64,7 @@ func init() {
 	serveCmd.Flags().BoolVar(&startGeneveEncapEth, "geneve-encap-eth", false, "Use Ether-over-GENEVE (default: IP-over-GENEVE)")
 	serveCmd.Flags().IntVar(&startMTU, "mtu", 0, "MTU for switch ports (default: OS default)")
 	serveCmd.Flags().StringVar(&startPortMACAddr, "port-mac-addr", "fixed", "Port MAC address mode: 'fixed' (default), 'per-port', or specific MAC address")
-	serveCmd.Flags().StringVar(&startMode, "mode", "veth", `Port kind for auto-provision: "veth" (default) or "tap". With tap, --port-netns is optional.`)
+	serveCmd.Flags().StringVar(&startMode, "mode", "tap", `Port kind for auto-provision: "tap" (default) or "veth". With veth, --port-netns is required.`)
 	serveCmd.Flags().DurationVar(&serveWatchInterval, "watch-interval", 30*time.Second, "Health check interval")
 }
 
