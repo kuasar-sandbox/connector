@@ -67,7 +67,7 @@ func queueFlags(t *testing.T, f *os.File) uint16 {
 
 // TestOpenTapVnetHdrIT verifies that the queue fd OpenTap hands off carries the
 // virtio-net header flag iff IFF_VNET_HDR was requested. cloud-hypervisor and
-// the other virtio VMMs expect a vnet_hdr-framed tap fd (docs/tapfd.md §4.5);
+// the other virtio VMMs expect a vnet_hdr-framed tap fd;
 // without the flag the framing is mismatched and the link silently breaks. The
 // flag must take effect on this attaching open regardless of the persistent
 // device's creation flags (kernel-verified: vnet_hdr follows the open).

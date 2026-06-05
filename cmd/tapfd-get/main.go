@@ -1,5 +1,5 @@
 // tapfd-get opens a tap device and hands its queue fd to a consumer over
-// TAPFD_SOCKET via SCM_RIGHTS — the tapfd handoff protocol (docs/tapfd.md §5).
+// TAPFD_SOCKET via SCM_RIGHTS — the tapfd handoff protocol.
 // It is a complete, standalone provider helper: a VMM orchestrator (or a test)
 // sets TAPFD_SOCKET and execs it to obtain a virtio-net-framed tap fd.
 //
@@ -47,7 +47,7 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: tapfd-get [flags] [<tap>]\n\n"+
 			"Opens <tap> and hands its IFF_VNET_HDR queue fd to TAPFD_SOCKET via\n"+
-			"SCM_RIGHTS (tapfd handoff protocol, docs/tapfd.md §5). <tap> must already\n"+
+			"SCM_RIGHTS (tapfd handoff protocol). <tap> must already\n"+
 			"exist unless --new; with --new and no name, a tap is auto-allocated.\n\nflags:\n")
 		flag.PrintDefaults()
 	}
@@ -107,12 +107,12 @@ func run(tap string, create bool, hostCIDR, mac, ip string, mtu int) error {
 
 // prepareTap makes the tap serviceable before handoff, via raw netlink (no
 // external `ip`): it ALWAYS brings the device up — a handed-off tap that is
-// administratively down is a silent dead link (docs/tapfd.md §5.4) — and
+// administratively down is a silent dead link — and
 // additionally assigns a host-side IP when hostCIDR is given (so the host
 // kernel can act as a point-to-point peer for connectivity tests). The device
 // must already exist (openTap created/attached it). Called before the
 // SCM_RIGHTS send, so a failure here aborts with a non-zero exit and no fd is
-// handed off (§5.4).
+// handed off.
 func prepareTap(tap, hostCIDR string) error {
 	ifindex, err := ifindexOf(tap)
 	if err != nil {
@@ -274,7 +274,7 @@ func buildPayload(mac, ip string, mtu int) []byte {
 	return []byte(b.String())
 }
 
-// dial resolves TAPFD_SOCKET (docs/tapfd.md §5.3): "fd=N" (inherited socket) or
+// dial resolves TAPFD_SOCKET: "fd=N" (inherited socket) or
 // a filesystem path to connect.
 func dial(spec string) (*net.UnixConn, error) {
 	if n, ok := strings.CutPrefix(spec, "fd="); ok {

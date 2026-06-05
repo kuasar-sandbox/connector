@@ -25,7 +25,7 @@ var openPortCmd = &cobra.Command{
 	Short: "Open a tap port's fd and transfer it via SCM_RIGHTS",
 	Long: `Open the persistent tap device backing a tap-mode port slot and send
 the file descriptor to a VMM (or other userspace process) over a unix socket
-using SCM_RIGHTS. This implements the tapfd handoff protocol (docs/tapfd.md).
+using SCM_RIGHTS. This implements the tapfd handoff protocol.
 
 The port must already be provisioned in tap mode and attached
 ('vswitch-ctl provision --mode=tap' then 'vswitch-ctl attach').
@@ -42,7 +42,7 @@ other end to this helper via fd inheritance.
 Set TAPFD_WANT_NETNS=1 to also deliver the tap's network namespace fd as a
 trailing SCM_RIGHTS fd (advertised via netns_fd=1 in the payload), letting the
 receiver enter the tap's netns with setns(2) — useful when the receiver needs
-to inspect the device in its namespace (docs/tapfd.md §4.6).
+to inspect the device in its namespace.
 
 Example (path):
   # VMM-side: socat UNIX-LISTEN:/run/vm1.sock,fork ...
@@ -55,13 +55,13 @@ Example (inherited fd):
 }
 
 // tapSocketEnv is the environment variable carrying the destination socket for
-// the tapfd handoff (docs/tapfd.md §5.3): "fd=N" (inherited unix socket fd) or
+// the tapfd handoff: "fd=N" (inherited unix socket fd) or
 // a filesystem path the helper dials.
 const tapSocketEnv = "TAPFD_SOCKET"
 
 // tapNetnsEnv, when set to a truthy value, asks the helper to also deliver the
 // tap's network namespace fd as a trailing SCM_RIGHTS fd and advertise it via
-// the netns_fd payload key (docs/tapfd.md §4.3, §4.6). A consumer requests it
+// the netns_fd payload key. A consumer requests it
 // when it needs to enter the tap's netns (e.g. to read device metadata); a
 // consumer that doesn't request it just gets the tap fd.
 const tapNetnsEnv = "TAPFD_WANT_NETNS"
@@ -165,7 +165,7 @@ type OpenPortResult struct {
 //
 // When withNetnsFD is set, the switch netns fd is appended as the LAST
 // SCM_RIGHTS fd and advertised via netns_fd=1, letting the receiver enter the
-// tap's namespace with setns(2) (docs/tapfd.md §4.3).
+// tap's namespace with setns(2).
 func openPortAndSend(sw vswitch.Interface, switchName string, slotID uint32, socketSpec string, withNetnsFD bool) (*OpenPortResult, error) {
 	tapName := fmt.Sprintf("%s-t%d", switchName, slotID+1)
 	cfg := sw.Config()
@@ -198,7 +198,7 @@ func openPortAndSend(sw vswitch.Interface, switchName string, slotID uint32, soc
 		// property of this attaching TUNSETIFF, not of the persistent device
 		// created by provision (verified: the queue's vnet_hdr state follows
 		// the open, not the create). Offload features (TSO/GSO/csum) are left
-		// to the consuming VMM to negotiate with its guest; see docs/tapfd.md §4.5.
+		// to the consuming VMM to negotiate with its guest.
 		f, err := tapfd.OpenTap(tapName, unix.IFF_NO_PI|unix.IFF_VNET_HDR)
 		if err != nil {
 			return err

@@ -21,7 +21,7 @@ a specific port (useful for port repair after veth device loss).
 
 Port repair workflow:
   # Port 42's veth was deleted abnormally
-  vswitch-ctl attach sw0 --force-reserve --port=42  # Isolate port
+  vswitch-ctl reserve sw0 --port=42 --force         # Isolate port (force-reserve)
   vswitch-ctl provision sw0 --port=42               # Rebuild veth + TC
 
 Example:
