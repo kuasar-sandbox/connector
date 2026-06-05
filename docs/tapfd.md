@@ -62,7 +62,7 @@ Layer 1  句柄交接 wire 协议（normative，§4）
 - provider **必须**通过 `SCM_RIGHTS` 携带 **至少 1 个** tap 队列 fd，并在 payload 的 `fd=` 中声明个数。一次交付多个 tap fd 即多队列：consumer 收取全部 N 个。
 - 被传递的 tap fd **必须**是对 `/dev/net/tun` 执行 `TUNSETIFF(IFF_TAP | IFF_NO_PI | IFF_VNET_HDR)` 绑定到目标 tap 设备得到的队列 fd。
 - provider **应当**以非阻塞模式（`O_NONBLOCK`）交付该 fd：tap 队列只有在 `TUNSETIFF` 之后才被内核登记进 poll，使用带运行时轮询的语言（如 Go）的 consumer 依赖此点。
-- **可选的 netns fd**：provider **可**在全部 tap fd **之后**再追加 netns fd（个数由 payload 的 `netns_fd=` 声明，0 或 1），交给需要进入 tap 所在 network namespace 的 consumer（见 §4.3、§4.6）。netns fd 永远排在 ancillary 的**末尾**，故 ancillary 内 fd 总数 = `fd` + `netns_fd`。
+- **可选的 netns fd**：provider **可**在全部 tap fd **之后**再追加 netns fd（个数由 payload 的 `netns_fd=` 声明，0 或 1），交给需要进入 tap 所在 network namespace 的 consumer（见 §4.3、§4.5）。netns fd 永远排在 ancillary 的**末尾**，故 ancillary 内 fd 总数 = `fd` + `netns_fd`。
 - 交接成功后，provider **应当**关闭其本地 fd；consumer 此时持有这些引用（生命周期见 §6）。
 
 ### 4.3 元数据 payload
@@ -70,7 +70,7 @@ Layer 1  句柄交接 wire 协议（normative，§4）
 payload 为单行 ASCII 文本，由空格分隔的 `key=value` 组成，**必须**以单个 `NUL`（`0x00`）结尾：
 
 ```
-mac=02:00:00:00:80:01 mtu=1500 ip=169.254.1.1 fd=1\0
+port=1 mac=02:00:00:00:80:01 mtu=1500 ip=169.254.1.1 fd=1\0
 ```
 
 **帧规则**：
@@ -90,9 +90,10 @@ mac=02:00:00:00:80:01 mtu=1500 ip=169.254.1.1 fd=1\0
   | `mac` | `xx:xx:xx:xx:xx:xx` | provider 为该接口分配的 MAC。provider 可能据此识别该接口的流量，consumer 与之不一致可能导致丢包。 |
   | `mtu` | 十进制整数 | 接口 MTU。 |
   | `ip`  | IPv4 点分四段 | 接口的 L3 地址。 |
-  | `netns_fd` | 十进制整数（0 或 1） | 紧跟在 tap fd **之后**追加的 netns fd 个数；缺省 / `0` 表示未附带。非 0 时，ancillary 的**最后** `netns_fd` 个 fd 为 tap 设备所在 netns 的引用（见 §4.6）。consumer 据此把 ancillary 切分为前 `fd` 个 tap fd 与后 `netns_fd` 个 netns fd。 |
+  | `port` | 十进制整数 | provider 侧端口 / 槽位标识，仅供诊断 / 回查（扩展字段，consumer 可忽略）。参考实现（`pkg/tapfd`）总是把它作为元数据行的**首个** token 发出。 |
+  | `netns_fd` | 十进制整数（0 或 1） | 紧跟在 tap fd **之后**追加的 netns fd 个数；缺省 / `0` 表示未附带。非 0 时，ancillary 的**最后** `netns_fd` 个 fd 为 tap 设备所在 netns 的引用（见 §4.5）。consumer 据此把 ancillary 切分为前 `fd` 个 tap fd 与后 `netns_fd` 个 netns fd。 |
 
-- **扩展** —— provider **可**加入任何其他 key（如端口 / 诊断标识等）；consumer **必须**忽略其无法识别的 key。`netns_fd` 是一个可选特性：consumer 在需要跨 netns 操作（如读取 tap 元数据）时请求它，provider 按自身实现决定是否提供（见 §4.6）。
+- **扩展** —— provider **可**加入任何其他 key（如端口 / 诊断标识等）；consumer **必须**忽略其无法识别的 key。`netns_fd` 是一个可选特性：consumer 在需要跨 netns 操作（如读取 tap 元数据）时请求它，provider 按自身实现决定是否提供（见 §4.5）。
 
 ### 4.4 接收方算法（参考）
 
@@ -105,7 +106,7 @@ mac=02:00:00:00:80:01 mtu=1500 ip=169.254.1.1 fd=1\0
 
 tap fd 是对 tun 队列的内核引用，跨 network namespace 有效；consumer **无需**与 tap 设备处于同一 netns（见 §6）。
 
-### 4.6 netns fd（可选）
+### 4.5 netns fd（可选）
 
 `netns_fd` 是一个**可选支持**的特性。当 payload 含 `netns_fd=K`（K≥1，目前上限 1）时，ancillary 末尾的 K 个 fd 是 tap 设备所在 network namespace 的打开引用（provider 侧通常来自 `/proc/<pid>/ns/net` 或 `/run/netns/<name>`）。
 
@@ -115,7 +116,7 @@ tap fd 是对 tun 队列的内核引用，跨 network namespace 有效；consume
 - netns fd 同样是一种能力（capability，见 §7）：持有它即可进入该网络命名空间，provider 与 consumer 都应按此对待其传递与持有。
 - consumer 不需要 netns fd 时**应当**关闭它以免泄漏。
 
-### 4.5 fd 的 TUN flags
+### 4.6 fd 的 TUN flags
 
 交付的 fd 设置 `IFF_TAP | IFF_NO_PI | IFF_VNET_HDR`：fd 带 virtio-net header——这是 cloud-hypervisor、Firecracker、QEMU 等主流 virtio VMM 对 tap fd 的预期帧格式，免去 consumer 自行改装后端。consumer **应当**按其 virtio-net 版本设置 vnet_hdr 长度（`TUNSETVNETHDRSZ`，通常为 12 = `virtio_net_hdr_v1`）。
 
@@ -152,7 +153,7 @@ TAPFD_SOCKET=<path>     # R2：helper 拨号连接的文件系统路径
 
 #### 5.3.1 请求 netns fd：`TAPFD_WANT_NETNS`
 
-需要 tap 所在 netns fd（§4.6）的 runtime **可**在 helper 环境中设置 `TAPFD_WANT_NETNS` 为真值（`1` / `true` / `yes` / `on`，大小写不敏感）；helper 识别后，若其实现的 tap 处于独立 netns，则**应当**在 tap fd 之后追加该 netns fd 并置 `netns_fd=1`。该变量缺省 / 为空 / 为假值时，helper **禁止**追加 netns fd。runtime 设置它即表示自己会按 §4.4 正确切分末尾的 netns fd。
+需要 tap 所在 netns fd（§4.5）的 runtime **可**在 helper 环境中设置 `TAPFD_WANT_NETNS` 为真值（`1` / `true` / `yes` / `on`，大小写不敏感）；helper 识别后，若其实现的 tap 处于独立 netns，则**应当**在 tap fd 之后追加该 netns fd 并置 `netns_fd=1`。该变量缺省 / 为空 / 为假值时，helper **禁止**追加 netns fd。runtime 设置它即表示自己会按 §4.4 正确切分末尾的 netns fd。
 
 ### 5.4 helper（provider 侧）职责
 
@@ -188,7 +189,7 @@ TAPFD_SOCKET=<path>     # R2：helper 拨号连接的文件系统路径
 本协议无显式版本字段，靠“固定帧 + 扩展 key”演进。帧结构（`SOCK_STREAM` + 单条 `recvmsg` + `SCM_RIGHTS` + NUL 结尾文本）本身不变，扩展分两类：
 
 - **纯文本 key**：provider 增加新的 `key=value`；consumer **必须**忽略其无法识别的 key（**禁止**因此失败）。无需协商即可加入。
-- **会改变 fd 计数的 key**（如 `netns_fd`，§4.6）：因为会改变 ancillary 中的 fd 数，provider **仅在 consumer 请求时**才发送（参考实现用 §5.3.1 的 `TAPFD_WANT_NETNS`）。consumer 既然请求，就应按 §4.4 的 `fd + netns_fd` 切分；未请求的 consumer 不会收到额外 fd。此类 key 缺省值**必须**为“不追加 fd”（如 `netns_fd` 缺省为 0）。
+- **会改变 fd 计数的 key**（如 `netns_fd`，§4.5）：因为会改变 ancillary 中的 fd 数，provider **仅在 consumer 请求时**才发送（参考实现用 §5.3.1 的 `TAPFD_WANT_NETNS`）。consumer 既然请求，就应按 §4.4 的 `fd + netns_fd` 切分；未请求的 consumer 不会收到额外 fd。此类 key 缺省值**必须**为“不追加 fd”（如 `netns_fd` 缺省为 0）。
 
 ---
 
@@ -201,7 +202,7 @@ consumer (runtime)                          provider helper（被 exec，环境 
  │ listen(AF_UNIX, /run/vm5.sock)
  │ exec helper（注入 TAPFD_SOCKET）────────▶ │ 读 TAPFD_SOCKET；（应当）校验接口可服务
  │                                           │ open(/dev/net/tun)+TUNSETIFF(IFF_TAP|IFF_NO_PI|IFF_VNET_HDR)
- │                                           │ payload: mac=.. mtu=1500 ip=169.254.1.5 fd=1\0
+ │                                           │ payload: port=5 mac=.. mtu=1500 ip=169.254.1.5 fd=1\0
  │ recvmsg() ◀──────────────────────────────  │ sendmsg(payload, SCM_RIGHTS[tapfd]); close(fd); exit 0
  │ 解析 payload；取 fd；以 mac=.. 配置 virtio-net；把 fd 交给 VMM 后端（如 CH --net fd=、Firecracker tap-fd）
 ```
@@ -217,7 +218,7 @@ if err != nil { log.Fatal(err) }
 fmt.Printf("mac=%s mtu=%d ip=%s\n", meta.MAC, meta.MTU, meta.InnerIP)
 ```
 
-若 provider 还会附带 netns fd（§4.6），改用 `RecvFdsWithNetns` 把它取出（`RecvFd` / `RecvFds` 会丢弃并关闭 netns fd）：
+若 provider 还会附带 netns fd（§4.5），改用 `RecvFdsWithNetns` 把它取出（`RecvFd` / `RecvFds` 会丢弃并关闭 netns fd）：
 
 ```go
 tapFiles, netnsFile, meta, err := tapfd.RecvFdsWithNetns(c.(*net.UnixConn))

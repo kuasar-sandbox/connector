@@ -22,7 +22,8 @@
 
 ```bash
 # 构建（仓库已包含预生成的 eBPF 目标文件，普通构建无需 clang）
-make build                      # 产物: bin/<arch>/vswitch-ctl（并在 bin/vswitch-ctl 建软链）
+make build                      # 产物: bin/<arch>/{vswitch-ctl,tapfd-get}（并在 bin/ 建同名软链）
+                                # tapfd-get 是 tapfd §5 的独立 provider helper（cmd/tapfd-get）
 make build TARGET_ARCH=aarch64  # 交叉编译（纯 Go，无需交叉工具链）；别名 amd64 / arm64
 make release                    # 打包: build/dist/sandbox-vswitch-<ver>-linux-<arch>.tar.gz
 
@@ -70,7 +71,7 @@ CLI 之外，仓库以 `github.com/kuasar-sandbox/sandbox-vswitch/pkg/...` 暴�
 
 | 包 | 用途 |
 |----|------|
-| `pkg/tapfd` | tap fd 端到端递交：wire 协议 + `OpenTap` + `SendFd` + `RecvFd` |
+| `pkg/tapfd` | tap fd 端到端递交：wire 协议 + `OpenTap` + `SendFd` + `RecvFd` / `RecvFds` / `RecvFdsWithNetns`（带 netns fd 变体）+ `ConnectUnix` / `UnixConnFromFd`（建连） |
 | `pkg/vswitch` | 交换机生命周期编排：`Open`, `Start`, `Stop`, `Attach`, `Detach`, `ProvisionPorts` |
 | `pkg/netlink`, `pkg/netns`, `pkg/dhcp`, `pkg/daemon` | 底层网络工具 (veth/tap, netns enter/exec, DHCP, sd_notify) |
 

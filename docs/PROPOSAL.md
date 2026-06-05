@@ -5,7 +5,7 @@
 | **Status** | Draft — v1 (no SemVer tag yet) |
 | **Last updated** | 2026-05-14 |
 | **Go module** | `github.com/kuasar-sandbox/sandbox-vswitch` |
-| **CLI binary** | `vswitch-ctl` |
+| **CLI binary** | `vswitch-ctl`（数据面 CLI）；`tapfd-get`（独立 tapfd §5 provider helper） |
 | **Kernel floor** | Linux 5.10+ (BTF + TC BPF) |
 | **Architectures** | linux/amd64, linux/arm64 |
 
@@ -267,6 +267,7 @@ flowchart TB
 
 ```
 cmd/vswitch-ctl/        CLI (Cobra). printJSON 与依赖注入函数变量留在此处。
+cmd/tapfd-get/          独立的 tapfd §5 provider helper (开 tap → 经 TAPFD_SOCKET 递交 fd)。
 pkg/tapfd/      (公开)     tap fd 端到端递交: PortMetadata / OpenTap / SendFd / RecvFd
 pkg/vswitch/    (公开)     交换机生命周期编排 (主 Go API):
                              context.go     Interface, Open
@@ -502,10 +503,16 @@ sandbox-vswitch 的 tap fd 交接遵循 **[`docs/tapfd.md`](tapfd.md)** 定义�
 port=1 mac=02:00:00:00:80:01 mtu=1500 ip=169.254.1.1 fd=1\0
 ```
 
+当 consumer 经 `TAPFD_WANT_NETNS` 请求时（见下），sandbox-vswitch 还会在 tap fd **之后**追加 switch netns 的 fd，并在元数据行加 `netns_fd=1`，供 consumer `setns(2)` 进入该 netns 操作设备本体（tapfd.md §4.5）：
+
+```
+port=1 mac=02:00:00:00:80:01 mtu=1500 ip=169.254.1.1 fd=1 netns_fd=1\0
+```
+
 **fd 获取（provider helper 行为）**：
 
-- `open-port <sw> --port=N` 即 tapfd.md §5 的 helper：读环境变量 `TAPFD_SOCKET`（`fd=N` 或路径），进入 switch netns、`open(/dev/net/tun)` + `TUNSETIFF(IFF_TAP|IFF_NO_PI|IFF_VNET_HDR)`（fd 带 virtio-net header，主流 virtio VMM 的预期帧格式；vnet_hdr 是该 attach 的属性，与持久设备的创建标志无关），经该套接字发送 fd + 元数据，成功后退出码 `0`。
-- `attach <sw> ... --open-port` 把 CAS 分配与 fd 交接合并为一步（同样读 `TAPFD_SOCKET`），省一次 fork/exec。
+- `open-port <sw> --port=N` 即 tapfd.md §5 的 helper：读环境变量 `TAPFD_SOCKET`（`fd=N` 或路径），进入 switch netns、`open(/dev/net/tun)` + `TUNSETIFF(IFF_TAP|IFF_NO_PI|IFF_VNET_HDR)`（fd 带 virtio-net header，主流 virtio VMM 的预期帧格式；vnet_hdr 是该 attach 的属性，与持久设备的创建标志无关），经该套接字发送 fd + 元数据，成功后退出码 `0`。consumer 另设 `TAPFD_WANT_NETNS`（真值 `1`/`true`/`yes`/`on`）则在 tap fd 后追加 switch netns fd 并置 `netns_fd=1`（tapfd.md §5.3.1）。
+- `attach <sw> ... --open-port` 把 CAS 分配与 fd 交接合并为一步（同样读 `TAPFD_SOCKET`、`TAPFD_WANT_NETNS`），省一次 fork/exec。
 
 **前置校验**（在触碰 socket / tap 之前即拒绝）：slot mode 必须是 tap；slot 必须已 provisioned（`slot.ifindex != 0`）且已 attached（`innerIP != Free && != Reserved`，故 `ip` 字段总是真实 IP）。
 
@@ -620,7 +627,7 @@ func main() {
 | `vswitch-ctl dhcp request <iface>` | 在指定设备上跑一次 DHCP (调试用)。 |
 | `vswitch-ctl dhcp serve <flags>` | 内嵌 DHCP 服务器 (供 mgmt 平面或测试场景)。 |
 
-完整参数清单见 [附录 A](#附录-a完整-cli-参数)。所有命令默认输出 JSON。
+除上表的 `vswitch-ctl` 子命令外，仓库还构建一个与交换机无关的独立 tapfd §5 provider helper `tapfd-get`（`cmd/tapfd-get`：开 tap → 经 `TAPFD_SOCKET` 递交 fd）。完整参数清单（含 `tapfd-get`）见 [附录 A](#附录-a完整-cli-参数)。所有命令默认输出 JSON。
 
 ---
 
@@ -778,7 +785,7 @@ make vmlinux                # 重新生成 bpf/vmlinux.h (需 bpftool)
 | --- | --- | --- |
 | `dist/sandbox-vswitch.service` | `/etc/systemd/system/` | `Type=notify` 单元 |
 | `dist/sandbox-vswitch.conf` | `/etc/sandbox-vswitch/switch.conf` | EnvironmentFile (shell 变量格式) |
-| `dist/NetworkManager-sandbox.conf` | `/usr/lib/systemd/system/NetworkManager.service.d/sandbox-vswitch.conf` | 可选：让 NetworkManager 在 vswitch-ctl 之后启动 |
+| `dist/NetworkManager-sandbox-vswitch.conf` | `/usr/lib/systemd/system/NetworkManager.service.d/sandbox-vswitch.conf` | 可选：让 NetworkManager 在 vswitch-ctl 之后启动 |
 
 service unit 关键字段 (摘自 `dist/sandbox-vswitch.service`)：
 
@@ -980,7 +987,21 @@ ExecStart=/usr/sbin/vswitch-ctl serve ${SWITCH_NAME} ...
 | --- | --- |
 | `--port=N` | 槽位编号 |
 
-目标套接字经环境变量 `TAPFD_SOCKET`（`fd=N` 或路径）指定，协议见 [tapfd.md](tapfd.md) §5.3。
+目标套接字经环境变量 `TAPFD_SOCKET`（`fd=N` 或路径）指定，协议见 [tapfd.md](tapfd.md) §5.3。另设环境变量 `TAPFD_WANT_NETNS`（真值 `1`/`true`/`yes`/`on`）令 open-port 在 tap fd 之后追加 switch netns fd 并置 `netns_fd=1`（[tapfd.md](tapfd.md) §5.3.1）。
+
+#### `tapfd-get [<tap>]`
+
+独立的 tapfd §5 provider helper（`cmd/tapfd-get`，由 `make build` / `make tapfd-get` 构建），与交换机无关：开一个 tap 设备、把其 `IFF_VNET_HDR` 队列 fd 经 `TAPFD_SOCKET` 以 SCM_RIGHTS 递交给 consumer。`<tap>` 须已存在，除非加 `--new`（缺省名时内核自动分配）。
+
+| 参数 | 说明 |
+| --- | --- |
+| `--new` | 不存在则创建 `<tap>`（缺省要求 tap 已存在）；`--new` 且省略名时自动分配 |
+| `--host-cidr=IP/N` | 给 `<tap>` 分配宿主侧 IP/CIDR 并拉起（点对点对端，便于连通性测试） |
+| `--mac=...` | 写入交接元数据的 guest MAC |
+| `--ip=...` | 写入元数据的 guest inner IP（裸地址或 CIDR） |
+| `--mtu=N` | 写入元数据的 guest MTU（`0` = 省略） |
+
+目标套接字同样经 `TAPFD_SOCKET`（`fd=N` 或路径）指定，协议见 [tapfd.md](tapfd.md) §5.3。
 
 ### 附录 B：BPF struct 概要
 
