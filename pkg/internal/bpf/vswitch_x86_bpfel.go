@@ -63,6 +63,21 @@ type vswitchSlotStats struct {
 	TransitTxBytes   uint64
 }
 
+type vswitchSvcKey struct {
+	_     structs.HostLayout
+	Ip    uint32
+	Port  uint16
+	Proto uint8
+	Pad   uint8
+}
+
+type vswitchSvcVal struct {
+	_    structs.HostLayout
+	Ip   uint32
+	Port uint16
+	Pad  uint16
+}
+
 type vswitchSwitchConfig struct {
 	_              structs.HostLayout
 	SwitchMac      [6]uint8
@@ -132,6 +147,8 @@ type vswitchMapSpecs struct {
 	Config        *ebpf.MapSpec `ebpf:"config"`
 	IfindexToSlot *ebpf.MapSpec `ebpf:"ifindex_to_slot"`
 	Metadata      *ebpf.MapSpec `ebpf:"metadata"`
+	MgmtSvcFwd    *ebpf.MapSpec `ebpf:"mgmt_svc_fwd"`
+	MgmtSvcRev    *ebpf.MapSpec `ebpf:"mgmt_svc_rev"`
 	Slots         *ebpf.MapSpec `ebpf:"slots"`
 	Stats         *ebpf.MapSpec `ebpf:"stats"`
 }
@@ -165,6 +182,8 @@ type vswitchMaps struct {
 	Config        *ebpf.Map `ebpf:"config"`
 	IfindexToSlot *ebpf.Map `ebpf:"ifindex_to_slot"`
 	Metadata      *ebpf.Map `ebpf:"metadata"`
+	MgmtSvcFwd    *ebpf.Map `ebpf:"mgmt_svc_fwd"`
+	MgmtSvcRev    *ebpf.Map `ebpf:"mgmt_svc_rev"`
 	Slots         *ebpf.Map `ebpf:"slots"`
 	Stats         *ebpf.Map `ebpf:"stats"`
 }
@@ -174,6 +193,8 @@ func (m *vswitchMaps) Close() error {
 		m.Config,
 		m.IfindexToSlot,
 		m.Metadata,
+		m.MgmtSvcFwd,
+		m.MgmtSvcRev,
 		m.Slots,
 		m.Stats,
 	)

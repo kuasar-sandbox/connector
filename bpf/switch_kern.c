@@ -51,6 +51,23 @@ struct {
     __type(value, __u32);
 } ifindex_to_slot SEC(".maps");
 
+// Management service NAT (switch-global, see struct svc_key/svc_val in common.h).
+// fwd: egress {VIP,vport,proto} -> {target_ip,target_port} (tc_ingress_nx)
+// rev: ingress {target_ip,tport,proto} -> {VIP,vport}      (tc_ingress_mx)
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_MGMT_SVC);
+    __type(key, struct svc_key);
+    __type(value, struct svc_val);
+} mgmt_svc_fwd SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_MGMT_SVC);
+    __type(key, struct svc_key);
+    __type(value, struct svc_val);
+} mgmt_svc_rev SEC(".maps");
+
 // Helper: check if MAC is all zeros
 static __always_inline int is_zero_mac(const __u8 *mac) {
     return (mac[0] | mac[1] | mac[2] | mac[3] | mac[4] | mac[5]) == 0;
@@ -319,6 +336,32 @@ int tc_ingress_nx(struct __sk_buff *skb)
             __u8 protocol = ip->protocol;
             __u8 ihl = ip->ihl;
 
+            // Service NAT lookup (egress): VIP:vport -> target_ip:target_port.
+            // Read the L4 dest port and resolve the target BEFORE any
+            // skb_store_bytes (which can invalidate data pointers); all rewrites
+            // below use fixed offsets so they stay valid afterwards.
+            int    svc_hit = 0;
+            __be32 svc_new_dip = 0;
+            __be16 svc_old_dport = 0, svc_new_dport = 0;
+            if (protocol == IPPROTO_TCP || protocol == IPPROTO_UDP) {
+                __be16 *l4 = (void *)((char *)ip + (ihl * 4));
+                if ((void *)(l4 + 2) <= data_end) {
+                    // Map keys/values are host byte order (same convention as
+                    // mgmt_cidr); convert at the packet boundary.
+                    struct svc_key k = {};
+                    k.ip = bpf_ntohl(dst_ip);   // original VIP (host order)
+                    k.port = bpf_ntohs(l4[1]);  // dest port (host order)
+                    k.proto = protocol;
+                    struct svc_val *v = bpf_map_lookup_elem(&mgmt_svc_fwd, &k);
+                    if (v) {
+                        svc_hit = 1;
+                        svc_old_dport = l4[1];           // network order (for csum/store)
+                        svc_new_dip = bpf_htonl(v->ip);  // back to network order
+                        svc_new_dport = bpf_htons(v->port);
+                    }
+                }
+            }
+
             // Update source IP using skb_store_bytes
             bpf_skb_store_bytes(skb, sizeof(struct ethhdr) + offsetof(struct iphdr, saddr),
                                 &floating_ip, sizeof(floating_ip), 0);
@@ -342,6 +385,42 @@ int tc_ingress_nx(struct __sk_buff *skb)
                 bpf_l4_csum_replace(skb,
                     sizeof(struct ethhdr) + (ihl * 4) + 16,
                     old_sip, floating_ip, BPF_F_PSEUDO_HDR | sizeof(__be32));
+            }
+
+            // Apply service DNAT: dst IP (+ dst port) -> target. The pseudo-header
+            // L4 checksum covers the dst-IP change; the port delta is folded in
+            // separately. Port write is unconditional on the checksum (UDP may
+            // carry check==0 = no checksum).
+            if (svc_hit) {
+                __be32 old_dip = dst_ip;
+                int port_changed = (svc_new_dport != svc_old_dport);
+
+                bpf_skb_store_bytes(skb, sizeof(struct ethhdr) + offsetof(struct iphdr, daddr),
+                                    &svc_new_dip, sizeof(svc_new_dip), 0);
+                bpf_l3_csum_replace(skb,
+                    sizeof(struct ethhdr) + offsetof(struct iphdr, check),
+                    old_dip, svc_new_dip, sizeof(__be32));
+
+                if (protocol == IPPROTO_UDP) {
+                    data = (void *)(long)skb->data;
+                    data_end = (void *)(long)skb->data_end;
+                    struct udphdr *udp = data + sizeof(struct ethhdr) + (ihl * 4);
+                    if ((void *)(udp + 1) <= data_end && udp->check != 0) {
+                        __u32 coff = sizeof(struct ethhdr) + (ihl * 4) + offsetof(struct udphdr, check);
+                        bpf_l4_csum_replace(skb, coff, old_dip, svc_new_dip, BPF_F_PSEUDO_HDR | sizeof(__be32));
+                        if (port_changed)
+                            bpf_l4_csum_replace(skb, coff, svc_old_dport, svc_new_dport, sizeof(__be16));
+                    }
+                } else { // TCP
+                    __u32 coff = sizeof(struct ethhdr) + (ihl * 4) + 16;
+                    bpf_l4_csum_replace(skb, coff, old_dip, svc_new_dip, BPF_F_PSEUDO_HDR | sizeof(__be32));
+                    if (port_changed)
+                        bpf_l4_csum_replace(skb, coff, svc_old_dport, svc_new_dport, sizeof(__be16));
+                }
+
+                if (port_changed)
+                    bpf_skb_store_bytes(skb, sizeof(struct ethhdr) + (ihl * 4) + 2,
+                                        &svc_new_dport, sizeof(svc_new_dport), 0);
             }
 
             // Re-fetch data pointers and update MAC addresses
@@ -596,6 +675,30 @@ int tc_ingress_mx(struct __sk_buff *skb)
     __u8 protocol = ip->protocol;
     __u8 ihl = ip->ihl;
 
+    // Service NAT reverse lookup (ingress): target_ip:tport -> VIP:vport.
+    // Resolve BEFORE any skb_store_bytes; rewrites below use fixed offsets.
+    int    svc_hit = 0;
+    __be32 svc_old_sip = 0, svc_new_sip = 0;
+    __be16 svc_old_sport = 0, svc_new_sport = 0;
+    if (protocol == IPPROTO_TCP || protocol == IPPROTO_UDP) {
+        __be16 *l4 = (void *)((char *)ip + (ihl * 4));
+        if ((void *)(l4 + 2) <= data_end) {
+            // Map keys/values are host byte order; convert at the packet boundary.
+            struct svc_key k = {};
+            k.ip = bpf_ntohl(ip->saddr);  // reply source = target_ip (host order)
+            k.port = bpf_ntohs(l4[0]);    // source port (host order)
+            k.proto = protocol;
+            struct svc_val *v = bpf_map_lookup_elem(&mgmt_svc_rev, &k);
+            if (v) {
+                svc_hit = 1;
+                svc_old_sip = ip->saddr;          // network order (for csum)
+                svc_old_sport = l4[0];            // network order (for csum/store)
+                svc_new_sip = bpf_htonl(v->ip);   // back to network order
+                svc_new_sport = bpf_htons(v->port);
+            }
+        }
+    }
+
     bpf_skb_store_bytes(skb, sizeof(struct ethhdr) + offsetof(struct iphdr, daddr),
                         &new_dip, sizeof(new_dip), 0);
 
@@ -617,6 +720,39 @@ int tc_ingress_mx(struct __sk_buff *skb)
         bpf_l4_csum_replace(skb,
             sizeof(struct ethhdr) + (ihl * 4) + 16,
             old_dip, new_dip, BPF_F_PSEUDO_HDR | sizeof(__be32));
+    }
+
+    // Apply service reverse SNAT: src IP (+ src port) target -> VIP, so the
+    // sandbox sees the reply coming from the VIP it addressed.
+    if (svc_hit) {
+        int port_changed = (svc_new_sport != svc_old_sport);
+
+        bpf_skb_store_bytes(skb, sizeof(struct ethhdr) + offsetof(struct iphdr, saddr),
+                            &svc_new_sip, sizeof(svc_new_sip), 0);
+        bpf_l3_csum_replace(skb,
+            sizeof(struct ethhdr) + offsetof(struct iphdr, check),
+            svc_old_sip, svc_new_sip, sizeof(__be32));
+
+        if (protocol == IPPROTO_UDP) {
+            data = (void *)(long)skb->data;
+            data_end = (void *)(long)skb->data_end;
+            struct udphdr *udp = data + sizeof(struct ethhdr) + (ihl * 4);
+            if ((void *)(udp + 1) <= data_end && udp->check != 0) {
+                __u32 coff = sizeof(struct ethhdr) + (ihl * 4) + offsetof(struct udphdr, check);
+                bpf_l4_csum_replace(skb, coff, svc_old_sip, svc_new_sip, BPF_F_PSEUDO_HDR | sizeof(__be32));
+                if (port_changed)
+                    bpf_l4_csum_replace(skb, coff, svc_old_sport, svc_new_sport, sizeof(__be16));
+            }
+        } else { // TCP
+            __u32 coff = sizeof(struct ethhdr) + (ihl * 4) + 16;
+            bpf_l4_csum_replace(skb, coff, svc_old_sip, svc_new_sip, BPF_F_PSEUDO_HDR | sizeof(__be32));
+            if (port_changed)
+                bpf_l4_csum_replace(skb, coff, svc_old_sport, svc_new_sport, sizeof(__be16));
+        }
+
+        if (port_changed)
+            bpf_skb_store_bytes(skb, sizeof(struct ethhdr) + (ihl * 4) + 0,
+                                &svc_new_sport, sizeof(svc_new_sport), 0);
     }
 
     // Update MAC addresses: dst = port MAC (fixed or per-slot derived), src = switch_mac

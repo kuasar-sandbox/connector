@@ -110,6 +110,80 @@ func ParseMgmtExtract(s string) (*MgmtExtract, error) {
 	return me, nil
 }
 
+// MgmtService is a stateless, port-aware VIP<->target translation layered on
+// top of an existing --mgmt-extract management plane.
+//
+// Format: <VIP>:<vport>:<targetIP>:<targetPort>
+//
+// Sandbox traffic to VIP:vport is rewritten to targetIP:targetPort on egress
+// (in addition to the inner_ip->floating_ip SNAT), and replies from
+// targetIP:targetPort are rewritten back so the sandbox sees the VIP. The
+// translation matches BOTH TCP and UDP. The VIP MUST fall within one of the
+// --mgmt-extract service routes (so the mgmt CIDR match selects the right mgmt
+// device), and each (targetIP, targetPort) must be unique across all services
+// (the reverse map keys on it). IPv4 only, consistent with the mgmt plane.
+//
+// The target's reachability inside the mgmt netns is the operator's
+// responsibility. In particular a loopback target (e.g. 127.0.0.1:19254)
+// requires `sysctl net.ipv4.conf.<mgmt-dev>.route_localnet=1` so the kernel
+// accepts the redirected packet and lets the reply leave the device.
+type MgmtService struct {
+	VIP        net.IP
+	VPort      uint16
+	TargetIP   net.IP
+	TargetPort uint16
+}
+
+// String renders the service in its canonical CLI form.
+func (s *MgmtService) String() string {
+	return fmt.Sprintf("%s:%d:%s:%d", s.VIP, s.VPort, s.TargetIP, s.TargetPort)
+}
+
+// ParseMgmtService parses a management service translation string.
+// Format: <VIP>:<vport>:<targetIP>:<targetPort>
+func ParseMgmtService(s string) (*MgmtService, error) {
+	parts := strings.Split(s, ":")
+	if len(parts) != 4 {
+		return nil, fmt.Errorf("invalid mgmt-service format: %q\nexpected <VIP>:<vport>:<targetIP>:<targetPort>", s)
+	}
+
+	vip := net.ParseIP(parts[0])
+	if vip == nil || vip.To4() == nil {
+		return nil, fmt.Errorf("invalid mgmt-service VIP %q: must be an IPv4 address", parts[0])
+	}
+	vport, err := parsePort(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("invalid mgmt-service vport %q: %w", parts[1], err)
+	}
+	targetIP := net.ParseIP(parts[2])
+	if targetIP == nil || targetIP.To4() == nil {
+		return nil, fmt.Errorf("invalid mgmt-service targetIP %q: must be an IPv4 address", parts[2])
+	}
+	targetPort, err := parsePort(parts[3])
+	if err != nil {
+		return nil, fmt.Errorf("invalid mgmt-service targetPort %q: %w", parts[3], err)
+	}
+
+	return &MgmtService{
+		VIP:        vip.To4(),
+		VPort:      vport,
+		TargetIP:   targetIP.To4(),
+		TargetPort: targetPort,
+	}, nil
+}
+
+// parsePort parses a TCP/UDP port in the range 1..65535.
+func parsePort(s string) (uint16, error) {
+	p, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("not a number")
+	}
+	if p < 1 || p > 65535 {
+		return 0, fmt.Errorf("must be between 1 and 65535")
+	}
+	return uint16(p), nil
+}
+
 // ParseTransitDevAddr parses transit device address configuration.
 // Format: <ip>/<prefix>:<nexthop>
 func ParseTransitDevAddr(s string) (*net.IPNet, net.IP, error) {
@@ -141,6 +215,7 @@ type Config struct {
 	MACAddr           net.HardwareAddr // Virtual MAC address
 	FloatingIPBase    net.IP           // Floating IP base address
 	MgmtExtracts      []*MgmtExtract   // Management plane extractions
+	MgmtServices      []*MgmtService   // Management service VIP<->target translations (require MgmtExtracts)
 	TransitDev        string           // Transit device name
 	TransitAddr       *net.IPNet       // Transit device address (nil if auto)
 	TransitNexthop    net.IP           // Transit nexthop (nil if auto)
@@ -206,8 +281,57 @@ func (c *Config) validateBase() error {
 	if len(c.MgmtExtracts) > int(MaxMgmtCIDRPerSlot) {
 		return fmt.Errorf("too many mgmt-extract entries (max %d)", MaxMgmtCIDRPerSlot)
 	}
+	if err := c.validateMgmtServices(); err != nil {
+		return err
+	}
 	if c.MTU < 0 || c.MTU > 65535 {
 		return fmt.Errorf("MTU must be between 0 and 65535")
+	}
+	return nil
+}
+
+// validateMgmtServices checks that every service VIP falls inside a configured
+// mgmt-extract route, and that each (targetIP, targetPort) is unique so the
+// ingress reverse map can resolve a single VIP.
+func (c *Config) validateMgmtServices() error {
+	if len(c.MgmtServices) == 0 {
+		return nil
+	}
+	if len(c.MgmtExtracts) == 0 {
+		return fmt.Errorf("--mgmt-service requires at least one --mgmt-extract")
+	}
+
+	type targetKey struct {
+		ip   string
+		port uint16
+	}
+	seen := make(map[targetKey]string)
+
+	for _, svc := range c.MgmtServices {
+		// VIP must fall within some mgmt-extract service route.
+		inRange := false
+		for _, me := range c.MgmtExtracts {
+			for _, sr := range me.ServiceRoutes {
+				if sr.Contains(svc.VIP) {
+					inRange = true
+					break
+				}
+			}
+			if inRange {
+				break
+			}
+		}
+		if !inRange {
+			return fmt.Errorf("mgmt-service VIP %s is not within any --mgmt-extract route", svc.VIP)
+		}
+
+		// (targetIP, targetPort) must be unique across services.
+		k := targetKey{ip: svc.TargetIP.String(), port: svc.TargetPort}
+		if prev, ok := seen[k]; ok {
+			return fmt.Errorf("mgmt-service target %s:%d is used by both %q and %q (must be unique)",
+				svc.TargetIP, svc.TargetPort, prev, svc.String())
+		}
+		seen[k] = svc.String()
 	}
 	return nil
 }
@@ -247,6 +371,7 @@ type FileConfig struct {
 	MACAddr        string   `json:"mac_addr"`
 	FloatingIPBase string   `json:"floating_ip_base"`
 	MgmtExtracts   []string `json:"mgmt_extracts,omitempty"`
+	MgmtServices   []string `json:"mgmt_services,omitempty"`
 	TransitDev     string   `json:"transit_dev,omitempty"`
 	TransitDevAddr string   `json:"transit_dev_addr,omitempty"`
 	TransitDevMTU  string   `json:"transit_dev_mtu,omitempty"`
@@ -300,6 +425,14 @@ func (fc *FileConfig) ToConfig() (*Config, error) {
 			return nil, fmt.Errorf("invalid mgmt_extract %q: %w", s, err)
 		}
 		cfg.MgmtExtracts = append(cfg.MgmtExtracts, me)
+	}
+
+	for _, s := range fc.MgmtServices {
+		svc, err := ParseMgmtService(s)
+		if err != nil {
+			return nil, fmt.Errorf("invalid mgmt_service %q: %w", s, err)
+		}
+		cfg.MgmtServices = append(cfg.MgmtServices, svc)
 	}
 
 	if fc.TransitDevAddr != "" {

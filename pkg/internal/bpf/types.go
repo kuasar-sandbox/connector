@@ -12,6 +12,8 @@ type MgmtCIDR = vswitchMgmtCidr
 type SlotItem = vswitchSlotItem
 type SwitchConfig = vswitchSwitchConfig
 type SlotStats = vswitchSlotStats
+type SvcKey = vswitchSvcKey
+type SvcVal = vswitchSvcVal
 
 // MetadataMaxSize is the maximum size of the JSON metadata stored in the BPF map.
 const MetadataMaxSize = 4096
@@ -22,6 +24,8 @@ var (
 	_ [40]byte  = [unsafe.Sizeof(SwitchConfig{})]byte{}
 	_ [64]byte  = [unsafe.Sizeof(SlotStats{})]byte{}
 	_ [20]byte  = [unsafe.Sizeof(MgmtCIDR{})]byte{}
+	_ [8]byte   = [unsafe.Sizeof(SvcKey{})]byte{}
+	_ [8]byte   = [unsafe.Sizeof(SvcVal{})]byte{}
 )
 
 // Re-exported constants from bpf2go generated enum values

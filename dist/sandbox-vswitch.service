@@ -21,6 +21,7 @@ ExecStart=/usr/sbin/vswitch-ctl serve ${SWITCH_NAME} \
     --transit-dev-addr=${TRANSIT_DEV_ADDR} \
     --transit-dev-mtu=${TRANSIT_DEV_MTU} \
     --mgmt-extract=${MGMT_NETNS}:${SWITCH_NAME}_m0:${MGMT_SERVICE_ROUTES}
+ExecStartPost=/bin/bash -c 'if [ -z "${MGMT_NETNS}" ]; then sysctl "net.ipv4.conf.${SWITCH_NAME}_m0.route_localnet=1"; else  ip netns exec ${MGMT_NETNS} sysctl "net.ipv4.conf.${SWITCH_NAME}_m0.route_localnet=1"; fi'
 TimeoutStartSec=60
 TimeoutStopSec=30
 LimitMEMLOCK=infinity

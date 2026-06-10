@@ -650,6 +650,12 @@ func StartReserved(cfg *Config) (*StartOutput, error) {
 		return nil, err
 	}
 
+	// 10a. Populate management service NAT maps (VIP<->target translation).
+	if err := writeMgmtServicesFn(objects.Maps.MgmtSvcFwd, objects.Maps.MgmtSvcRev, cfg.MgmtServices); err != nil {
+		cs.cleanup(cfg, switchNs, objects)
+		return nil, err
+	}
+
 	// 10b. Slow-path MTU validation (when --mtu not specified, reads veth MTU)
 	if err := validateMTUSlowPath(cfg, switchNs); err != nil {
 		cs.cleanup(cfg, switchNs, objects)

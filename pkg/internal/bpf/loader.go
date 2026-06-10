@@ -31,6 +31,8 @@ type Maps struct {
 	Stats         *ebpf.Map
 	IfindexToSlot *ebpf.Map
 	Metadata      *ebpf.Map // Userspace-only metadata (new)
+	MgmtSvcFwd    *ebpf.Map // mgmt service NAT, egress: {VIP,vport,proto}->{target_ip,target_port}
+	MgmtSvcRev    *ebpf.Map // mgmt service NAT, ingress: {target_ip,tport,proto}->{VIP,vport}
 }
 
 // Objects holds all loaded eBPF objects.
@@ -90,6 +92,8 @@ func LoadObjects() (*Objects, error) {
 			Stats:         objs.Stats,
 			IfindexToSlot: objs.IfindexToSlot,
 			Metadata:      objs.Metadata,
+			MgmtSvcFwd:    objs.MgmtSvcFwd,
+			MgmtSvcRev:    objs.MgmtSvcRev,
 		},
 	}, nil
 }
@@ -138,6 +142,12 @@ func (o *Objects) PinMaps(switchName string) error {
 	}
 	if err := o.Maps.Metadata.Pin(filepath.Join(pinPath, "metadata")); err != nil {
 		return fmt.Errorf("failed to pin metadata map: %w", err)
+	}
+	if err := o.Maps.MgmtSvcFwd.Pin(filepath.Join(pinPath, "mgmt_svc_fwd")); err != nil {
+		return fmt.Errorf("failed to pin mgmt_svc_fwd map: %w", err)
+	}
+	if err := o.Maps.MgmtSvcRev.Pin(filepath.Join(pinPath, "mgmt_svc_rev")); err != nil {
+		return fmt.Errorf("failed to pin mgmt_svc_rev map: %w", err)
 	}
 
 	return nil
@@ -208,12 +218,35 @@ func LoadPinnedMaps(switchName string) (*Maps, error) {
 		return nil, fmt.Errorf("failed to load metadata map: %w", err)
 	}
 
+	mgmtSvcFwd, err := ebpf.LoadPinnedMap(filepath.Join(pinPath, "mgmt_svc_fwd"), nil)
+	if err != nil {
+		slots.Close()
+		config.Close()
+		stats.Close()
+		ifindexToSlot.Close()
+		metadata.Close()
+		return nil, fmt.Errorf("failed to load mgmt_svc_fwd map: %w", err)
+	}
+
+	mgmtSvcRev, err := ebpf.LoadPinnedMap(filepath.Join(pinPath, "mgmt_svc_rev"), nil)
+	if err != nil {
+		slots.Close()
+		config.Close()
+		stats.Close()
+		ifindexToSlot.Close()
+		metadata.Close()
+		mgmtSvcFwd.Close()
+		return nil, fmt.Errorf("failed to load mgmt_svc_rev map: %w", err)
+	}
+
 	return &Maps{
 		Slots:         slots,
 		Config:        config,
 		Stats:         stats,
 		IfindexToSlot: ifindexToSlot,
 		Metadata:      metadata,
+		MgmtSvcFwd:    mgmtSvcFwd,
+		MgmtSvcRev:    mgmtSvcRev,
 	}, nil
 }
 
@@ -234,6 +267,12 @@ func (m *Maps) Close() error {
 	}
 	if m.Metadata != nil {
 		errs = append(errs, m.Metadata.Close())
+	}
+	if m.MgmtSvcFwd != nil {
+		errs = append(errs, m.MgmtSvcFwd.Close())
+	}
+	if m.MgmtSvcRev != nil {
+		errs = append(errs, m.MgmtSvcRev.Close())
 	}
 	return errors.Join(errs...)
 }

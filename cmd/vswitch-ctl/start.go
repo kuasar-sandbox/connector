@@ -52,6 +52,7 @@ var (
 	startMACAddr        string
 	startFloatingIPBase string
 	startMgmtExtracts   []string
+	startMgmtServices   []string
 	startTransitDev     string
 	startTransitDevAddr string
 	startTransitDevMTU  string
@@ -71,6 +72,7 @@ func init() {
 	startCmd.Flags().StringVar(&startMACAddr, "mac-addr", "", "Virtual MAC address (required)")
 	startCmd.Flags().StringVar(&startFloatingIPBase, "floating-ip-base", "", "Floating IP base address (required)")
 	startCmd.Flags().StringArrayVar(&startMgmtExtracts, "mgmt-extract", nil, "Management plane extraction (format: <netns>:<dev>:<route1>,<route2>,...; leave <netns> empty, e.g. ':mgmt0:1.2.3.4', to keep the peer in the caller/host netns)")
+	startCmd.Flags().StringArrayVar(&startMgmtServices, "mgmt-service", nil, "Management service VIP<->target translation (format: <VIP>:<vport>:<targetIP>:<targetPort>; repeatable). VIP must fall within a --mgmt-extract route. Translates both TCP and UDP. Each (targetIP,targetPort) must be unique. Loopback targets require route_localnet=1 on the mgmt dev.")
 	startCmd.Flags().StringVar(&startTransitDev, "transit-dev", "", "Transit device name")
 	startCmd.Flags().StringVar(&startTransitDevAddr, "transit-dev-addr", "", "Transit device address (format: <ip>/<prefix>:<nexthop> or 'auto' for DHCP)")
 	startCmd.Flags().StringVar(&startTransitDevMTU, "transit-dev-mtu", "", "Transit device MTU ('auto' or specific value, default: no change)")
@@ -134,6 +136,15 @@ func buildConfig(args []string) (*vswitch.Config, error) {
 				return nil, fmt.Errorf("invalid mgmt-extract: %w", err)
 			}
 			cfg.MgmtExtracts = append(cfg.MgmtExtracts, extract)
+		}
+
+		// Parse management service translations
+		for _, ms := range startMgmtServices {
+			svc, err := vswitch.ParseMgmtService(ms)
+			if err != nil {
+				return nil, fmt.Errorf("invalid mgmt-service: %w", err)
+			}
+			cfg.MgmtServices = append(cfg.MgmtServices, svc)
 		}
 
 		// Parse transit device config

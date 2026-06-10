@@ -85,7 +85,7 @@
 
 - **多 transit 设备 / 多上行**。单出口设备，外部 ECMP/绑定由上游网络处理。
 - **数据面限速 / QoS**。委托给 VMM、TC qdisc 或 cgroup BPF。
-- **管理平面热更新**。`--mgmt-extract` 在 `start` 时固化，变更需重建交换机。
+- **管理平面热更新**。`--mgmt-extract` 与 `--mgmt-service` 在 `start` 时固化，变更需重建交换机（service 已存于独立 `mgmt_svc_*` map，后续可低成本支持热更）。
 - **>4096 端口**。`MAX_PORTS = 4096` 在 BPF C 中硬编码；提升需重新编译 + 调整切片对齐。
 - **连接跟踪 / NAT 状态表 / L7 过滤**。本项目只做无状态二层/三层封装与代答。
 - **跨宿主机控制面同步**。每台宿主一个独立 `vswitch-ctl` 实例。
@@ -196,6 +196,28 @@ Mgmt(src=169.254.169.254, dst=floating_ip)
 >
 > 这样不会劫持 mgmt netns 的默认出向流量（尤其 `<netns>` 留空＝host/调用方 netns 时不污染主机默认路由）。`floating_ip_base` **不要求 /20 对齐**：不对齐时该段跨两个相邻 /20，两条都装（简化处理）；代价是相邻 /20 中未被 floating 使用的地址也会被引向 mgmt-dev（这些目的 TC 不匹配 floating 段会丢弃，属可接受副作用）。
 
+#### 管理服务地址转换 (`--mgmt-service`，可选)
+
+`--mgmt-extract` 只做 inner_ip↔floating_ip 的源/目的地址改写，**目的 IP/端口保持不变**——管理服务必须真的监听在 VIP 上。`--mgmt-service=<VIP>:<vport>:<targetIP>:<targetPort>` 在此之上**叠加一层带端口的、确定性的、无状态 NAT**，让后端监听在 `targetIP:targetPort` 即可，沙箱仍按 VIP 访问。两个方向对称改写，且只对 TCP/UDP 生效（其它协议落回原 mgmt 路径）：
+
+```
+出向  Sandbox(src=inner, dst=VIP:vport)
+  → sw-nX → [TC: match mgmt_cidrs[]; SNAT src→floating_ip;
+                 mgmt_svc_fwd 命中 → DNAT dst:vport→targetIP:targetPort]
+  → sw-mX → 后端监听 targetIP:targetPort (sees src=floating_ip)
+
+入向  Backend(src=targetIP:targetPort, dst=floating_ip:sport)
+  → sw-mX → [TC: slot_id = dst − floating_ip_base; DNAT dst→inner_ip;
+                 mgmt_svc_rev 命中 → SNAT src:targetPort→VIP:vport]
+  → sw-nX → Sandbox (sees src=VIP:vport)
+```
+
+映射来自 `start` 时固化的静态配置，故 TC 侧**无连接跟踪**：出向查 `mgmt_svc_fwd`（`{VIP,vport,proto}→{targetIP,targetPort}`），入向查 `mgmt_svc_rev`（`{targetIP,targetPort,proto}→{VIP,vport}`），各 O(1)。映射与现有 inner↔floating NAT 正交叠加，未命中任何 service 的 VIP 流量保持原行为（向后兼容）。
+
+约束：① 每个 VIP 必须落在某条 `--mgmt-extract` 路由内（否则 mgmt_cidr 不命中，无从选出 mgmt 设备）；② 每个 `(targetIP,targetPort)` 必须全局唯一（入向反查的 key）；③ 仅 IPv4，与管理平面一致；④ 与 `--mgmt-extract` 一样在 `start` 固化，变更需重建交换机（service 存于独立 map，未来可支持热更）。
+
+> **target 可达性（运维负责）**：改写后的目的（如 `127.0.0.1:19254`）在 mgmt netns 内的可达性由部署侧保证。loopback target 需在 mgmt 设备上开启 `sysctl net.ipv4.conf.<mgmt-dev>.route_localnet=1`，否则内核会把送往 / 来自 127.0.0.0/8 的包按 martian 丢弃。`vswitch-ctl` 不自动修改该 sysctl。
+
 #### 沙箱 → 外部网络 (GENEVE 封装)
 
 ```
@@ -228,8 +250,8 @@ Gateway → GENEVE packet (UDP dst = geneve_port_base + slot_id)
 
 | 设备 | 挂载点 | 程序 | 功能 |
 | --- | --- | --- | --- |
-| `<sw>-nX` | TC ingress (shared block 100) | `tc_ingress_nx` | ARP 代答；管理流量提取 + SNAT；GENEVE 封装；统计 mgmt_tx / transit_tx。 |
-| `<sw>-mX` | TC ingress | `tc_ingress_mx` | ARP 代答；地址转换 (`floating_ip` → `inner_ip`)；流量投递；统计 mgmt_rx。 |
+| `<sw>-nX` | TC ingress (shared block 100) | `tc_ingress_nx` | ARP 代答；管理流量提取 + SNAT（含可选 service DNAT `VIP:vport→target:tport`）；GENEVE 封装；统计 mgmt_tx / transit_tx。 |
+| `<sw>-mX` | TC ingress | `tc_ingress_mx` | ARP 代答；地址转换 (`floating_ip` → `inner_ip`，含可选 service 反向 SNAT `target:tport→VIP:vport`)；流量投递；统计 mgmt_rx。 |
 | `transit_dev` | TC ingress | `tc_ingress_transit` | GENEVE 解封装；外层源 IP 与 VNI 校验；流量投递；统计 transit_rx。 |
 
 #### Pinned maps (`/sys/fs/bpf/<sw>/`)
@@ -242,13 +264,17 @@ flowchart TB
         metadata["metadata<br>(ARRAY, 1×4096B JSON)"]
         stats["stats<br>(PERCPU_ARRAY, 4096)"]
         ifindex["ifindex_to_slot<br>(HASH)"]
+        svcfwd["mgmt_svc_fwd<br>(HASH, optional)"]
+        svcrev["mgmt_svc_rev<br>(HASH, optional)"]
     end
     TC_NX["tc_ingress_nx"] -->|R| slots
     TC_NX -->|R| config
     TC_NX -->|R| ifindex
+    TC_NX -->|R| svcfwd
     TC_NX -->|W| stats
     TC_MX["tc_ingress_mx"] -->|R| slots
     TC_MX -->|R| config
+    TC_MX -->|R| svcrev
     TC_MX -->|W| stats
     TC_TR["tc_ingress_transit"] -->|R| slots
     TC_TR -->|R| config
@@ -260,6 +286,7 @@ flowchart TB
 - **metadata** — 1×4096 字节缓冲，存 **JSON 编码** 的 `SwitchMetadata` (用户态用，eBPF 程序不读)。新增字段无需重编译 BPF。
 - **stats** — `BPF_MAP_TYPE_PERCPU_ARRAY`，每槽位 `slot_stats` 包含 `mgmt_{rx,tx}_{packets,bytes}` + `transit_{rx,tx}_{packets,bytes}`，从沙箱视角计数。**Attach 时清零，Detach 时保留**。
 - **ifindex_to_slot** — HASH，仅 `tc_ingress_nx` 使用，把入口 ifindex 反查到 slot_id。
+- **mgmt_svc_fwd / mgmt_svc_rev** — HASH（仅在配置 `--mgmt-service` 时有条目），交换机级全局表，key/value 均 `struct svc_key`/`svc_val`（8 字节，主机字节序，与 `mgmt_cidr` 同约定）。`tc_ingress_nx` 出向查 `fwd`（`{VIP,vport,proto}→{targetIP,targetPort}`）做目的地址+端口改写；`tc_ingress_mx` 入向查 `rev`（`{targetIP,targetPort,proto}→{VIP,vport}`）做反向源改写。每条 service 按 TCP/UDP 各插一条。
 
 > **索引计算原则**：`slot_id` 由算术得到 (`dst_ip − floating_ip_base` 或 `udp_dst − geneve_port_base`)，避免 hash map 查找。`ifindex_to_slot` 仅在出方向无法用 IP/UDP 推导时使用。
 
@@ -424,6 +451,7 @@ CAS 只能保证单 slot 原子；多 slot / 多资源的复合控制操作 (Sta
 6. 对所有 slot 执行 `CAS(0 → 0xFFFFFFFF)` 标记为 Reserved。
 7. 在 switch netns 内创建 `<sw>-dummy` 设备，持有 shared block 100 的 BPF filter 引用 (block anchor — 让 filter 在所有 port veth 都未挂载时仍存活)。
 8. 创建所有管理平面 (veth + TC + mgmt netns 配置)。
+8a. 若配置了 `--mgmt-service`，写入 `mgmt_svc_fwd` / `mgmt_svc_rev`（每条 service × TCP/UDP）。
 9. 配置 transit 设备 (移入 switch netns、设置 MTU、IP 配置、up)。
 
 完成后交换机已经可响应 `status`，但任何 Attach 都会失败 (CAS Free→IP 在 Reserved 状态下不匹配)。
@@ -702,6 +730,7 @@ Linux 5.8+ 上 `CAP_BPF` 可替代部分 `CAP_SYS_ADMIN`；TC 与 netns 操作�
 | R6 | `__u64` 统计计数器理论溢出 | 在 100 Gbps + 64B 持续打流下需要约 93 年。 |
 | R7 | mgmt CIDR 配置错误 (掩码过宽) | 建议每路由 /32；每 slot 最多 3 条 (`MAX_MGMT_CIDR_PER_SLOT = 3`)。 |
 | R8 | 单一安全边界假设错误 | sandbox-vswitch **不是** 唯一边界 — microVM 隔离仍为首层。 |
+| R9 | `--mgmt-service` target 不可达 (尤其 loopback) | `start` 时校验 VIP∈mgmt-extract 路由、target 唯一；loopback target 需 mgmt 设备 `route_localnet=1`（运维负责，工具不自动改 sysctl）。 |
 
 ---
 
@@ -914,6 +943,7 @@ ExecStart=/usr/sbin/vswitch-ctl serve ${SWITCH_NAME} ...
 | `--ports` | ✓ | 端口数 (1–4096) |
 | `--floating-ip-base` | ✓ | floating IP 基地址 (slot_id=0 起递增) |
 | `--mgmt-extract` | – | mgmt 平面定义 `<netns>:<dev>:<route1>,<route2>,...`；可重复 (最多 3，见 `MAX_MGMT_CIDR_PER_SLOT`)。`<netns>` 可留空 (`:<dev>:<routes>`) 让 mgmt veth peer 留在调用方 / 主机 netns。 |
+| `--mgmt-service` | – | mgmt 服务地址转换 `<VIP>:<vport>:<targetIP>:<targetPort>`；可重复。VIP 须落在某条 `--mgmt-extract` 路由内；`(targetIP,targetPort)` 须全局唯一；TCP/UDP 均转换。loopback target 需 mgmt 设备 `route_localnet=1`。 |
 | `--transit-dev` | – | 外部上行设备 (start 时从调用 netns 移入 switch netns)；必须 **DOWN** |
 | `--transit-dev-addr` | – | `<ip>/<prefix>:<nexthop>` 或 `auto` (DHCP) |
 | `--transit-dev-mtu` | – | `auto` 或具体数值；默认不修改 |

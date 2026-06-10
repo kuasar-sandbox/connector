@@ -47,6 +47,7 @@ var (
 	newStatsManagerFn            = NewStatsManager
 	updateSwitchConfigFn         = UpdateSwitchConfig
 	updateSwitchMetadataFn       = UpdateSwitchMetadata
+	writeMgmtServicesFn          = WriteMgmtServices
 	updateSwitchConfigFieldsFn   = updateSwitchConfigFields
 	updateSwitchMetadataFieldsFn = updateSwitchMetadataFields
 	openSwitchFn                 = openSwitch

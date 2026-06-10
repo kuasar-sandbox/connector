@@ -13,7 +13,7 @@
 
 - **纯内核数据面** — 配置完成后进程退出，eBPF 程序持续运行，无用户态守护进程依赖
 - **沙箱隔离** — 各端口间无转发路径，ARP 全代答，MAC 强制重写
-- **管理平面** — 沙箱通过 SNAT/DNAT 访问管理服务（如 metadata service）
+- **管理平面** — 沙箱通过 SNAT/DNAT 访问管理服务（如 metadata service）；可选 `--mgmt-service` 叠加带端口的 VIP↔target 无状态转换，后端无需监听 VIP
 - **GENEVE 隧道** — 支持 IP-over-GENEVE / Ether-over-GENEVE，IPv4 + IPv6
 - **并发安全** — BPF map mmap + atomic CAS，无锁端口分配
 - **最多 4096 端口**，per-CPU 流量统计
@@ -34,8 +34,11 @@ make generate
 vswitch-ctl start sw1 --mode=veth --netns=sw_ns --port-netns=port_ns --ports=2048 \
     --mac-addr=02:00:00:00:00:01 --floating-ip-base=100.100.96.0 \
     --mgmt-extract=mgmt_ns:eth0:169.254.169.254 \
+    --mgmt-service=169.254.169.254:80:127.0.0.1:19254 \
     --transit-dev=eth1 --transit-dev-addr=10.0.0.1/24:10.0.0.2 \
     --geneve-port-base=50000 --geneve-encap-eth
+# --mgmt-service（可选，可重复）：把沙箱访问 VIP:vport 的流量转换到 targetIP:targetPort，
+# 后端无需监听 VIP。VIP 须落在某条 --mgmt-extract 路由内；TCP/UDP 均转换。
 
 # 分配端口
 vswitch-ctl attach sw1 --to-netns=sandbox1 --inner-ip=169.254.1.1 \

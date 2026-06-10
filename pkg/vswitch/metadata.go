@@ -20,6 +20,7 @@ type SwitchMetadata struct {
 	TransitDevAddr    string            `json:"transit_dev_addr,omitempty"`
 	TransitDevNexthop string            `json:"transit_dev_nexthop,omitempty"`
 	MgmtExtracts      []MgmtExtractMeta `json:"mgmt_extracts,omitempty"`
+	MgmtServices      []string          `json:"mgmt_services,omitempty"`
 }
 
 // MgmtExtractMeta holds metadata about a management extraction.
@@ -112,6 +113,9 @@ func UpdateSwitchMetadata(metadataMap BPFMap, cfg *Config) error {
 			Dev:           me.Dev,
 			ServiceRoutes: routes,
 		})
+	}
+	for _, svc := range cfg.MgmtServices {
+		meta.MgmtServices = append(meta.MgmtServices, svc.String())
 	}
 	return SaveMetadata(metadataMap, meta)
 }

@@ -1296,3 +1296,238 @@ func TestIngressTransitDecapSlot1(t *testing.T) {
 		t.Errorf("inner dst IP: got %v, want %v", ipHdr.DstIP, sandboxIP)
 	}
 }
+
+// setupMgmtService installs one VIP:vport <-> target:tport translation into the
+// fwd and rev maps for both TCP and UDP. Keys/values are host byte order.
+func setupMgmtService(t *testing.T, objs *bpf.Objects, vip net.IP, vport uint16, target net.IP, tport uint16) {
+	t.Helper()
+	vipU := bpf.IPToUint32(vip)
+	targetU := bpf.IPToUint32(target)
+	for _, proto := range []uint8{IPProtoTCP, IPProtoUDP} {
+		fk := bpf.SvcKey{Ip: vipU, Port: vport, Proto: proto}
+		fv := bpf.SvcVal{Ip: targetU, Port: tport}
+		if err := objs.Maps.MgmtSvcFwd.Update(&fk, &fv, ebpf.UpdateAny); err != nil {
+			t.Fatalf("setup mgmt_svc_fwd (proto=%d): %v", proto, err)
+		}
+		rk := bpf.SvcKey{Ip: targetU, Port: tport, Proto: proto}
+		rv := bpf.SvcVal{Ip: vipU, Port: vport}
+		if err := objs.Maps.MgmtSvcRev.Update(&rk, &rv, ebpf.UpdateAny); err != nil {
+			t.Fatalf("setup mgmt_svc_rev (proto=%d): %v", proto, err)
+		}
+	}
+}
+
+// TestIngressNxMgmtServiceDNAT_UDP verifies egress service translation: a
+// sandbox packet to VIP:vport is rewritten to target:tport (in addition to the
+// inner_ip -> floating_ip SNAT).
+func TestIngressNxMgmtServiceDNAT_UDP(t *testing.T) {
+	ensureBPFEnv(t)
+
+	objs, err := bpf.LoadObjects()
+	if err != nil {
+		t.Fatalf("LoadObjects: %v", err)
+	}
+	defer objs.Close()
+
+	testSetupMaps(t, objs)
+
+	vip := net.ParseIP("169.254.169.254")
+	target := net.ParseIP("127.0.0.1")
+	setupMgmtService(t, objs, vip, 80, target, 19254)
+
+	sandboxMAC := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
+	sandboxIP := net.ParseIP("169.254.1.1")
+	pkt := buildIPv4UDPPacket(sandboxMAC, testSwitchMAC, sandboxIP, vip, 12345, 80, []byte("GET /latest"))
+
+	ret, out, err := objs.Programs.IngressNX.Test(pkt)
+	if err != nil {
+		t.Fatalf("Program.Test failed: %v", err)
+	}
+	if ret != TCActRedirect {
+		t.Fatalf("return action: got %d, want %d (TC_ACT_REDIRECT)", ret, TCActRedirect)
+	}
+
+	ipHdr, err := parseIPHeader(out)
+	if err != nil {
+		t.Fatalf("parseIPHeader: %v", err)
+	}
+	if !ipHdr.SrcIP.Equal(net.ParseIP("100.100.0.0")) { // SNAT to floating slot 0
+		t.Errorf("src IP: got %v, want 100.100.0.0", ipHdr.SrcIP)
+	}
+	if !ipHdr.DstIP.Equal(target) { // DNAT VIP -> target
+		t.Errorf("dst IP: got %v, want %v", ipHdr.DstIP, target)
+	}
+	if c := ipChecksum(out[EthHdrLen : EthHdrLen+IPHdrLen]); c != 0 {
+		t.Errorf("IP checksum invalid after rewrite: residual %#x", c)
+	}
+
+	udp, err := parseUDPHeader(out)
+	if err != nil {
+		t.Fatalf("parseUDPHeader: %v", err)
+	}
+	if udp.SrcPort != 12345 {
+		t.Errorf("src port: got %d, want 12345 (unchanged)", udp.SrcPort)
+	}
+	if udp.DstPort != 19254 { // port DNAT
+		t.Errorf("dst port: got %d, want 19254", udp.DstPort)
+	}
+}
+
+// TestIngressNxMgmtServiceDNAT_TCP is the TCP variant; it also validates the
+// L4 checksum is correct after the IP+port rewrite.
+func TestIngressNxMgmtServiceDNAT_TCP(t *testing.T) {
+	ensureBPFEnv(t)
+
+	objs, err := bpf.LoadObjects()
+	if err != nil {
+		t.Fatalf("LoadObjects: %v", err)
+	}
+	defer objs.Close()
+
+	testSetupMaps(t, objs)
+
+	vip := net.ParseIP("169.254.169.254")
+	target := net.ParseIP("127.0.0.1")
+	setupMgmtService(t, objs, vip, 80, target, 19254)
+
+	sandboxMAC := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
+	sandboxIP := net.ParseIP("169.254.1.1")
+	pkt := buildIPv4TCPPacket(sandboxMAC, testSwitchMAC, sandboxIP, vip, 12345, 80, TCPFlagSYN, nil)
+
+	ret, out, err := objs.Programs.IngressNX.Test(pkt)
+	if err != nil {
+		t.Fatalf("Program.Test failed: %v", err)
+	}
+	if ret != TCActRedirect {
+		t.Fatalf("return action: got %d, want %d", ret, TCActRedirect)
+	}
+
+	ipHdr, _ := parseIPHeader(out)
+	if !ipHdr.SrcIP.Equal(net.ParseIP("100.100.0.0")) {
+		t.Errorf("src IP: got %v, want 100.100.0.0", ipHdr.SrcIP)
+	}
+	if !ipHdr.DstIP.Equal(target) {
+		t.Errorf("dst IP: got %v, want %v", ipHdr.DstIP, target)
+	}
+
+	tcp, err := parseTCPHeader(out)
+	if err != nil {
+		t.Fatalf("parseTCPHeader: %v", err)
+	}
+	if tcp.SrcPort != 12345 {
+		t.Errorf("src port: got %d, want 12345", tcp.SrcPort)
+	}
+	if tcp.DstPort != 19254 {
+		t.Errorf("dst port: got %d, want 19254", tcp.DstPort)
+	}
+	// Validate TCP checksum: summing pseudo-header + segment (incl. checksum
+	// field) must fold to zero when the checksum is correct.
+	tcpSeg := out[EthHdrLen+IPHdrLen:]
+	if c := tcpChecksum(ipHdr.SrcIP, ipHdr.DstIP, tcpSeg); c != 0 {
+		t.Errorf("TCP checksum invalid after rewrite: residual %#x", c)
+	}
+}
+
+// TestIngressMxMgmtServiceSNAT verifies ingress reverse translation: a reply
+// from target:tport to a floating IP is rewritten so the sandbox sees the
+// source as VIP:vport (in addition to the floating_ip -> inner_ip DNAT).
+func TestIngressMxMgmtServiceSNAT(t *testing.T) {
+	ensureBPFEnv(t)
+
+	objs, err := bpf.LoadObjects()
+	if err != nil {
+		t.Fatalf("LoadObjects: %v", err)
+	}
+	defer objs.Close()
+
+	testSetupMaps(t, objs)
+
+	vip := net.ParseIP("169.254.169.254")
+	target := net.ParseIP("127.0.0.1")
+	setupMgmtService(t, objs, vip, 80, target, 19254)
+
+	mgmtMAC := [6]byte{0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xee}
+	floatingIP := net.ParseIP("100.100.0.0") // slot 0
+	// Reply: src=target:19254, dst=floating:12345
+	pkt := buildIPv4UDPPacket(mgmtMAC, testSwitchMAC, target, floatingIP, 19254, 12345, []byte("HTTP/1.1 200 OK"))
+
+	ret, out, err := objs.Programs.IngressMX.Test(pkt)
+	if err != nil {
+		t.Fatalf("Program.Test failed: %v", err)
+	}
+	if ret != TCActRedirect {
+		t.Fatalf("return action: got %d, want %d", ret, TCActRedirect)
+	}
+
+	ipHdr, err := parseIPHeader(out)
+	if err != nil {
+		t.Fatalf("parseIPHeader: %v", err)
+	}
+	if !ipHdr.SrcIP.Equal(vip) { // reverse SNAT target -> VIP
+		t.Errorf("src IP: got %v, want %v", ipHdr.SrcIP, vip)
+	}
+	if !ipHdr.DstIP.Equal(net.ParseIP("169.254.1.1")) { // DNAT floating -> inner
+		t.Errorf("dst IP: got %v, want 169.254.1.1", ipHdr.DstIP)
+	}
+	if c := ipChecksum(out[EthHdrLen : EthHdrLen+IPHdrLen]); c != 0 {
+		t.Errorf("IP checksum invalid after rewrite: residual %#x", c)
+	}
+
+	udp, err := parseUDPHeader(out)
+	if err != nil {
+		t.Fatalf("parseUDPHeader: %v", err)
+	}
+	if udp.SrcPort != 80 { // reverse port SNAT tport -> vport
+		t.Errorf("src port: got %d, want 80", udp.SrcPort)
+	}
+	if udp.DstPort != 12345 {
+		t.Errorf("dst port: got %d, want 12345 (unchanged)", udp.DstPort)
+	}
+
+	// Sandbox-facing dst MAC must be the per-slot port MAC.
+	ethHdr, _ := parseEthernetHeader(out)
+	if want := portMAC(testSwitchMAC, testSlotID); ethHdr.DstMAC != want {
+		t.Errorf("dst MAC: got %v, want %v (port MAC)", ethHdr.DstMAC, want)
+	}
+}
+
+// TestIngressNxMgmtServiceMiss verifies that mgmt traffic to a VIP port with no
+// service entry falls through to the plain SNAT path (dst unchanged), preserving
+// backward compatibility.
+func TestIngressNxMgmtServiceMiss(t *testing.T) {
+	ensureBPFEnv(t)
+
+	objs, err := bpf.LoadObjects()
+	if err != nil {
+		t.Fatalf("LoadObjects: %v", err)
+	}
+	defer objs.Close()
+
+	testSetupMaps(t, objs)
+
+	vip := net.ParseIP("169.254.169.254")
+	target := net.ParseIP("127.0.0.1")
+	setupMgmtService(t, objs, vip, 80, target, 19254) // only port 80 mapped
+
+	sandboxMAC := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
+	sandboxIP := net.ParseIP("169.254.1.1")
+	// Port 53 is NOT mapped -> should behave like the legacy mgmt SNAT path.
+	pkt := buildIPv4UDPPacket(sandboxMAC, testSwitchMAC, sandboxIP, vip, 12345, 53, []byte("dns"))
+
+	ret, out, err := objs.Programs.IngressNX.Test(pkt)
+	if err != nil {
+		t.Fatalf("Program.Test failed: %v", err)
+	}
+	if ret != TCActRedirect {
+		t.Fatalf("return action: got %d, want %d", ret, TCActRedirect)
+	}
+
+	ipHdr, _ := parseIPHeader(out)
+	if !ipHdr.DstIP.Equal(vip) { // unchanged (no service match)
+		t.Errorf("dst IP: got %v, want %v (unchanged)", ipHdr.DstIP, vip)
+	}
+	udp, _ := parseUDPHeader(out)
+	if udp.DstPort != 53 {
+		t.Errorf("dst port: got %d, want 53 (unchanged)", udp.DstPort)
+	}
+}

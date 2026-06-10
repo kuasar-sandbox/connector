@@ -7,6 +7,7 @@
 #endif
 
 #define MAX_PORTS 4096
+#define MAX_MGMT_SVC 1024  // Max mgmt service NAT entries (per direction, per proto)
 #define MAX_MGMT_CIDR_PER_SLOT 3
 #define MAX_MGMT_CIDR_EXT      (MAX_MGMT_CIDR_PER_SLOT - 1)  // Extended array size (cold path)
 
@@ -58,6 +59,30 @@ struct bpf_redir_neigh {
         __u32  ipv6_nh[4];
     };
 };
+
+// Management service NAT entry (key/value for the global svc maps).
+//
+// Layers a stateless, port-aware VIP<->target translation on top of the
+// inner_ip<->floating_ip mgmt NAT. The maps are switch-global (identical for
+// every slot), so they live outside the per-slot slot_item:
+//   mgmt_svc_fwd: {VIP, vport, proto}    -> {target_ip, target_port}  (egress nx)
+//   mgmt_svc_rev: {target_ip, tport, proto} -> {VIP, vport}           (ingress mx)
+//
+// All addresses/ports are stored in NETWORK byte order so the datapath can
+// compare/write them directly against the packet without byte swaps. Userspace
+// must zero _pad — it is part of the hash key.
+struct svc_key {
+    __u32 ip;     // network byte order (matches iphdr.daddr / iphdr.saddr)
+    __u16 port;   // network byte order (matches L4 dest/source port)
+    __u8  proto;  // IPPROTO_TCP or IPPROTO_UDP
+    __u8  _pad;   // must be zero (part of the hash key)
+};  // Total: 8 bytes
+
+struct svc_val {
+    __u32 ip;     // network byte order
+    __u16 port;   // network byte order
+    __u16 _pad;   // reserved
+};  // Total: 8 bytes
 
 // Management CIDR entry
 struct mgmt_cidr {
