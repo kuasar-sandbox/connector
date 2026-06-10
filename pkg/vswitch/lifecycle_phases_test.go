@@ -516,18 +516,16 @@ func TestBuildStartOutputSwitchMaps(t *testing.T) {
 
 	output := buildStartOutput(cfg, []MgmtPlaneInfo{}, "", false)
 
-	expectedSlots := "/sys/fs/bpf/sw0/slots"
-	expectedConfig := "/sys/fs/bpf/sw0/config"
-	expectedStats := "/sys/fs/bpf/sw0/stats"
-
-	if output.SwitchMaps["slots"] != expectedSlots {
-		t.Errorf("expected slots=%s, got %s", expectedSlots, output.SwitchMaps["slots"])
+	// Every pinned map must be reported, so callers can locate all of them.
+	wantMaps := []string{"slots", "config", "stats", "ifindex_to_slot", "metadata", "mgmt_svc_fwd", "mgmt_svc_rev"}
+	if len(output.SwitchMaps) != len(wantMaps) {
+		t.Errorf("switch_maps count: got %d, want %d (%v)", len(output.SwitchMaps), len(wantMaps), output.SwitchMaps)
 	}
-	if output.SwitchMaps["config"] != expectedConfig {
-		t.Errorf("expected config=%s, got %s", expectedConfig, output.SwitchMaps["config"])
-	}
-	if output.SwitchMaps["stats"] != expectedStats {
-		t.Errorf("expected stats=%s, got %s", expectedStats, output.SwitchMaps["stats"])
+	for _, m := range wantMaps {
+		want := "/sys/fs/bpf/sw0/" + m
+		if output.SwitchMaps[m] != want {
+			t.Errorf("switch_maps[%s]: got %q, want %q", m, output.SwitchMaps[m], want)
+		}
 	}
 }
 

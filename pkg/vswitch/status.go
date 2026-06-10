@@ -39,7 +39,10 @@ func (s *switchContext) Status() (*StatusOutput, error) {
 		PortsUsed:      used,
 		PortsAvailable: free,
 		PortsReserved:  reserved,
+		MgmtPlanes:     meta.MgmtPlaneInfos(),
+		MgmtServices:   meta.MgmtServiceInfos(),
 		TransitDev:     meta.TransitDevName(),
+		TransitDevIP:   meta.TransitDevAddrStr(),
 	}
 
 	// Check conditions in switch namespace

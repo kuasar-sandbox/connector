@@ -469,6 +469,18 @@ func configureTransitDevice(cfg *Config, switchNs *netns.NetNS, objects *bpf.Obj
 	return transitDevIP, nil
 }
 
+// switchMapPaths returns the bpffs pin path of every map a switch pins, keyed
+// by map name. Kept in one place so command output stays in sync with
+// Objects.PinMaps / LoadPinnedMaps.
+func switchMapPaths(name string) map[string]string {
+	maps := []string{"slots", "config", "stats", "ifindex_to_slot", "metadata", "mgmt_svc_fwd", "mgmt_svc_rev"}
+	out := make(map[string]string, len(maps))
+	for _, m := range maps {
+		out[m] = fmt.Sprintf("%s/%s/%s", bpf.BPFPath, name, m)
+	}
+	return out
+}
+
 // buildStartOutput builds the StartOutput from configuration and created resources.
 func buildStartOutput(cfg *Config, mgmtPlanes []MgmtPlaneInfo, transitDevIP string, reserved bool) *StartOutput {
 	var portsAvailable, portsReserved uint32
@@ -478,13 +490,9 @@ func buildStartOutput(cfg *Config, mgmtPlanes []MgmtPlaneInfo, transitDevIP stri
 		portsAvailable = cfg.NumPorts
 	}
 	output := &StartOutput{
-		Switch:      cfg.Name,
-		SwitchNetNS: cfg.SwitchNetNS,
-		SwitchMaps: map[string]string{
-			"slots":  fmt.Sprintf("/sys/fs/bpf/%s/slots", cfg.Name),
-			"config": fmt.Sprintf("/sys/fs/bpf/%s/config", cfg.Name),
-			"stats":  fmt.Sprintf("/sys/fs/bpf/%s/stats", cfg.Name),
-		},
+		Switch:         cfg.Name,
+		SwitchNetNS:    cfg.SwitchNetNS,
+		SwitchMaps:     switchMapPaths(cfg.Name),
 		PortNetNS:      cfg.PortNetNS,
 		Ports:          cfg.NumPorts,
 		PortsUsed:      0,
@@ -492,6 +500,7 @@ func buildStartOutput(cfg *Config, mgmtPlanes []MgmtPlaneInfo, transitDevIP stri
 		PortsReserved:  portsReserved,
 		FloatingIPBase: cfg.FloatingIPBase.String(),
 		MgmtPlanes:     mgmtPlanes,
+		MgmtServices:   MgmtServiceInfos(cfg.MgmtServices),
 	}
 
 	if cfg.TransitDev != "" {
@@ -693,22 +702,28 @@ func getExistingSwitch(switchName string, requestedCfg *Config) (*StartOutput, e
 	reserved := sw.MmapSlots().CountReservedSlots()
 	free := sw.MmapSlots().CountFreeSlots()
 
-	return &StartOutput{
-		Switch:      switchName,
-		SwitchNetNS: meta.SwitchNetnsName(),
-		SwitchMaps: map[string]string{
-			"slots":  fmt.Sprintf("/sys/fs/bpf/%s/slots", switchName),
-			"config": fmt.Sprintf("/sys/fs/bpf/%s/config", switchName),
-			"stats":  fmt.Sprintf("/sys/fs/bpf/%s/stats", switchName),
-		},
+	out := &StartOutput{
+		Switch:         switchName,
+		SwitchNetNS:    meta.SwitchNetnsName(),
+		SwitchMaps:     switchMapPaths(switchName),
 		PortNetNS:      meta.PortNetnsName(),
 		Ports:          cfg.N_ports,
 		PortsUsed:      used,
 		PortsAvailable: free,
 		PortsReserved:  reserved,
 		FloatingIPBase: bpf.Uint32ToIP(cfg.FloatingIpBase).String(),
+		MgmtPlanes:     meta.MgmtPlaneInfos(),
+		MgmtServices:   meta.MgmtServiceInfos(),
 		TransitDev:     meta.TransitDevName(),
-	}, nil
+		TransitDevIP:   meta.TransitDevAddrStr(),
+	}
+	if meta.TransitDevName() != "" {
+		out.TransitType = "overlay-geneve"
+		out.GenevePortBase = uint16(cfg.GenevePortBase)
+	} else {
+		out.TransitType = "none"
+	}
+	return out, nil
 }
 
 // validateConfigMatch checks that critical config fields match between requested and existing.
@@ -867,6 +882,7 @@ type StartOutput struct {
 	PortsReserved  uint32            `json:"ports_reserved"`
 	FloatingIPBase string            `json:"floating_ip_base"`
 	MgmtPlanes     []MgmtPlaneInfo   `json:"mgmt_planes,omitempty"`
+	MgmtServices   []MgmtServiceInfo `json:"mgmt_services,omitempty"`
 	TransitType    string            `json:"transit_type"`
 	TransitDev     string            `json:"transit_dev,omitempty"`
 	TransitDevIP   string            `json:"transit_dev_ip,omitempty"`

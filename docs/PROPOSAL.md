@@ -651,7 +651,7 @@ func main() {
 | `vswitch-ctl status <name>` | 输出交换机 JSON 状态；`--ready` 退出码 0=Ready / 3=NotExist / 4=NotReady (Conditions: Ready, PortDevicesReady, MgmtDevicesReady, TransitDeviceReady；`start --reserved` 后 / ProvisionPorts 未完成时还会出现 `PortReserved`)。 |
 | `vswitch-ctl stats <name> [--port=X...]` | per-port 流量计数 (mgmt/transit × rx/tx × packets/bytes)。 |
 | `vswitch-ctl show slots <name> [slot_id]` | dump slot 表为 JSON。 |
-| `vswitch-ctl show config <name>` | dump in-kernel `switch_config` 为 JSON。 |
+| `vswitch-ctl show config <name>` | dump in-kernel `switch_config` 为 JSON，并附 metadata 中的 `transit_dev` / `mgmt_planes` / `mgmt_services`。 |
 | `vswitch-ctl dhcp request <iface>` | 在指定设备上跑一次 DHCP (调试用)。 |
 | `vswitch-ctl dhcp serve <flags>` | 内嵌 DHCP 服务器 (供 mgmt 平面或测试场景)。 |
 
@@ -1086,10 +1086,13 @@ struct slot_stats {                      // per-CPU
   "switch": "sw1",
   "switch_netns": "netns_switch",
   "switch_maps": {
-    "slots":    "/sys/fs/bpf/sw1/slots",
-    "config":   "/sys/fs/bpf/sw1/config",
-    "stats":    "/sys/fs/bpf/sw1/stats",
-    "metadata": "/sys/fs/bpf/sw1/metadata"
+    "slots":           "/sys/fs/bpf/sw1/slots",
+    "config":          "/sys/fs/bpf/sw1/config",
+    "stats":           "/sys/fs/bpf/sw1/stats",
+    "ifindex_to_slot": "/sys/fs/bpf/sw1/ifindex_to_slot",
+    "metadata":        "/sys/fs/bpf/sw1/metadata",
+    "mgmt_svc_fwd":    "/sys/fs/bpf/sw1/mgmt_svc_fwd",
+    "mgmt_svc_rev":    "/sys/fs/bpf/sw1/mgmt_svc_rev"
   },
   "port_netns": "netns_ports",
   "ports": 4096, "ports_used": 0, "ports_available": 4096,
@@ -1098,12 +1101,18 @@ struct slot_stats {                      // per-CPU
     { "index": 0, "mgmt_netns": "netns_mgmt", "mgmt_dev": "eth0",
       "service_routes": ["169.254.169.254/32"], "return_route_metric": 100 }
   ],
+  "mgmt_services": [
+    { "vip": "169.254.169.254", "vport": 80,
+      "target_ip": "127.0.0.1", "target_port": 19254, "protocols": "tcp,udp" }
+  ],
   "transit_type": "overlay-geneve",
   "transit_dev": "eth1",
   "transit_dev_ip": "10.200.12.3",
   "geneve_port_base": 50000
 }
 ```
+
+> `switch_maps` 列出全部固化 map 的 bpffs 路径；`mgmt_services` 仅在配置了 `--mgmt-service` 时出现。`status` 与 `show config` 也回显 `mgmt_planes` / `mgmt_services`（取自 metadata）。
 
 `attach` 输出：
 
@@ -1145,7 +1154,9 @@ struct slot_stats {                      // per-CPU
   ],
   "ports": 4096, "ports_used": 128, "ports_available": 3968,
   "mgmt_planes": [{ "index": 0, "mgmt_netns": "netns_mgmt", "mgmt_dev": "eth0",
-                    "service_routes": ["169.254.169.254/32"] }],
+                    "service_routes": ["169.254.169.254/32"], "return_route_metric": 100 }],
+  "mgmt_services": [{ "vip": "169.254.169.254", "vport": 80,
+                      "target_ip": "127.0.0.1", "target_port": 19254, "protocols": "tcp,udp" }],
   "transit_dev": "eth1", "transit_dev_ip": "10.200.12.3"
 }
 ```

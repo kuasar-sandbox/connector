@@ -50,6 +50,34 @@ func (m *SwitchMetadata) TransitDevNexthopStr() string { return m.TransitDevNext
 // MgmtCount returns the number of management extractions.
 func (m *SwitchMetadata) MgmtCount() int { return len(m.MgmtExtracts) }
 
+// MgmtPlaneInfos reconstructs the management plane list for output from the
+// stored metadata. The return-route metric is derived the same way it is
+// installed at start time (100 + index).
+func (m *SwitchMetadata) MgmtPlaneInfos() []MgmtPlaneInfo {
+	if m == nil || len(m.MgmtExtracts) == 0 {
+		return nil
+	}
+	out := make([]MgmtPlaneInfo, 0, len(m.MgmtExtracts))
+	for i, me := range m.MgmtExtracts {
+		out = append(out, MgmtPlaneInfo{
+			Index:             i,
+			MgmtNetNS:         me.NetNS,
+			MgmtDev:           me.Dev,
+			ServiceRoutes:     me.ServiceRoutes,
+			ReturnRouteMetric: 100 + i,
+		})
+	}
+	return out
+}
+
+// MgmtServiceInfos returns the management service translations for output.
+func (m *SwitchMetadata) MgmtServiceInfos() []MgmtServiceInfo {
+	if m == nil {
+		return nil
+	}
+	return MgmtServiceInfosFromStrings(m.MgmtServices)
+}
+
 // SaveMetadata serializes metadata as JSON and writes it to the BPF metadata map.
 func SaveMetadata(metadataMap BPFMap, meta *SwitchMetadata) error {
 	data, err := json.Marshal(meta)

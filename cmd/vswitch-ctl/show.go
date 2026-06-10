@@ -65,13 +65,17 @@ type SlotJSON struct {
 
 // ConfigJSON is the JSON-friendly view of the in-kernel SwitchConfig.
 type ConfigJSON struct {
-	SwitchMAC      string `json:"switch_mac"`
-	PortMAC        string `json:"port_mac"`
-	NPorts         uint32 `json:"n_ports"`
-	FloatingIPBase string `json:"floating_ip_base"`
-	GenevePortBase uint32 `json:"geneve_port_base"`
-	GeneveEncapEth bool   `json:"geneve_encap_eth"`
-	TransitNexthop string `json:"transit_nexthop,omitempty"`
+	SwitchMAC      string                    `json:"switch_mac"`
+	PortMAC        string                    `json:"port_mac"`
+	NPorts         uint32                    `json:"n_ports"`
+	FloatingIPBase string                    `json:"floating_ip_base"`
+	GenevePortBase uint32                    `json:"geneve_port_base"`
+	GeneveEncapEth bool                      `json:"geneve_encap_eth"`
+	TransitNexthop string                    `json:"transit_nexthop,omitempty"`
+	TransitDev     string                    `json:"transit_dev,omitempty"`
+	TransitDevAddr string                    `json:"transit_dev_addr,omitempty"`
+	MgmtPlanes     []vswitch.MgmtPlaneInfo   `json:"mgmt_planes,omitempty"`
+	MgmtServices   []vswitch.MgmtServiceInfo `json:"mgmt_services,omitempty"`
 }
 
 func runShowSlots(cmd *cobra.Command, args []string) error {
@@ -173,6 +177,7 @@ func runShowConfig(cmd *cobra.Command, args []string) error {
 	defer sw.Close()
 
 	cfg := sw.Config()
+	meta := sw.Metadata()
 	switchMAC := net.HardwareAddr(cfg.SwitchMac[:]).String()
 	portMAC := net.HardwareAddr(cfg.PortMac[:]).String()
 
@@ -183,6 +188,10 @@ func runShowConfig(cmd *cobra.Command, args []string) error {
 		FloatingIPBase: vswitch.Uint32ToIP(cfg.FloatingIpBase).String(),
 		GenevePortBase: cfg.GenevePortBase,
 		GeneveEncapEth: cfg.GeneveEncapEth != 0,
+		TransitDev:     meta.TransitDevName(),
+		TransitDevAddr: meta.TransitDevAddrStr(),
+		MgmtPlanes:     meta.MgmtPlaneInfos(),
+		MgmtServices:   meta.MgmtServiceInfos(),
 	}
 	if cfg.TransitNexthop != 0 {
 		out.TransitNexthop = vswitch.Uint32ToIP(cfg.TransitNexthop).String()

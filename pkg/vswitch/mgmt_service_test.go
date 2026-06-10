@@ -161,3 +161,65 @@ func TestWriteMgmtServices(t *testing.T) {
 		t.Errorf("rev val: got ip=%#x port=%d", rv.Ip, rv.Port)
 	}
 }
+
+func TestMgmtServiceInfos(t *testing.T) {
+	svc, _ := ParseMgmtService("169.254.169.254:80:127.0.0.1:19254")
+	infos := MgmtServiceInfos([]*MgmtService{svc})
+	if len(infos) != 1 {
+		t.Fatalf("len: got %d, want 1", len(infos))
+	}
+	got := infos[0]
+	want := MgmtServiceInfo{VIP: "169.254.169.254", VPort: 80, TargetIP: "127.0.0.1", TargetPort: 19254, Protocols: "tcp,udp"}
+	if got != want {
+		t.Errorf("info: got %+v, want %+v", got, want)
+	}
+	if MgmtServiceInfos(nil) != nil {
+		t.Errorf("MgmtServiceInfos(nil) should be nil")
+	}
+}
+
+func TestMgmtServiceInfosFromStrings(t *testing.T) {
+	// One valid, one malformed (skipped).
+	infos := MgmtServiceInfosFromStrings([]string{
+		"169.254.169.254:80:127.0.0.1:19254",
+		"garbage",
+	})
+	if len(infos) != 1 {
+		t.Fatalf("len: got %d, want 1 (malformed skipped)", len(infos))
+	}
+	if infos[0].TargetPort != 19254 {
+		t.Errorf("target_port: got %d, want 19254", infos[0].TargetPort)
+	}
+}
+
+func TestMetadataMgmtInfos(t *testing.T) {
+	meta := &SwitchMetadata{
+		MgmtExtracts: []MgmtExtractMeta{
+			{NetNS: "mgmt_ns", Dev: "eth0", ServiceRoutes: []string{"169.254.169.254/32"}},
+			{NetNS: "", Dev: "mgmt1", ServiceRoutes: []string{"169.254.170.0/24"}},
+		},
+		MgmtServices: []string{"169.254.169.254:80:127.0.0.1:19254"},
+	}
+
+	planes := meta.MgmtPlaneInfos()
+	if len(planes) != 2 {
+		t.Fatalf("planes: got %d, want 2", len(planes))
+	}
+	if planes[0].ReturnRouteMetric != 100 || planes[1].ReturnRouteMetric != 101 {
+		t.Errorf("metrics: got %d,%d want 100,101", planes[0].ReturnRouteMetric, planes[1].ReturnRouteMetric)
+	}
+	if planes[1].Index != 1 || planes[1].MgmtDev != "mgmt1" {
+		t.Errorf("plane[1]: got %+v", planes[1])
+	}
+
+	svcs := meta.MgmtServiceInfos()
+	if len(svcs) != 1 || svcs[0].VIP != "169.254.169.254" {
+		t.Errorf("services: got %+v", svcs)
+	}
+
+	// Empty metadata yields nil slices (omitempty).
+	empty := &SwitchMetadata{}
+	if empty.MgmtPlaneInfos() != nil || empty.MgmtServiceInfos() != nil {
+		t.Errorf("empty metadata should yield nil mgmt info")
+	}
+}

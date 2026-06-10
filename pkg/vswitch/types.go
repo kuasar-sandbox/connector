@@ -86,18 +86,19 @@ type AttachOutput struct {
 
 // StatusOutput represents the JSON output of the status command.
 type StatusOutput struct {
-	Switch         string          `json:"switch"`
-	State          string          `json:"state"`
-	SwitchNetNS    string          `json:"switch_netns"`
-	PortNetNS      string          `json:"port_netns"`
-	Ports          uint32          `json:"ports"`
-	PortsUsed      uint32          `json:"ports_used"`
-	PortsAvailable uint32          `json:"ports_available"`
-	PortsReserved  uint32          `json:"ports_reserved"`
-	MgmtPlanes     []MgmtPlaneInfo `json:"mgmt_planes,omitempty"`
-	TransitDev     string          `json:"transit_dev,omitempty"`
-	TransitDevIP   string          `json:"transit_dev_ip,omitempty"`
-	Conditions     []Condition     `json:"conditions,omitempty"`
+	Switch         string            `json:"switch"`
+	State          string            `json:"state"`
+	SwitchNetNS    string            `json:"switch_netns"`
+	PortNetNS      string            `json:"port_netns"`
+	Ports          uint32            `json:"ports"`
+	PortsUsed      uint32            `json:"ports_used"`
+	PortsAvailable uint32            `json:"ports_available"`
+	PortsReserved  uint32            `json:"ports_reserved"`
+	MgmtPlanes     []MgmtPlaneInfo   `json:"mgmt_planes,omitempty"`
+	MgmtServices   []MgmtServiceInfo `json:"mgmt_services,omitempty"`
+	TransitDev     string            `json:"transit_dev,omitempty"`
+	TransitDevIP   string            `json:"transit_dev_ip,omitempty"`
+	Conditions     []Condition       `json:"conditions,omitempty"`
 }
 
 // Condition represents a health check condition (Kubernetes-style).
@@ -205,4 +206,14 @@ type MgmtPlaneInfo struct {
 	MgmtDev           string   `json:"mgmt_dev"`
 	ServiceRoutes     []string `json:"service_routes"`
 	ReturnRouteMetric int      `json:"return_route_metric"`
+}
+
+// MgmtServiceInfo is the output view of a --mgmt-service VIP<->target
+// translation. Protocols is always "tcp,udp" (services translate both).
+type MgmtServiceInfo struct {
+	VIP        string `json:"vip"`
+	VPort      uint16 `json:"vport"`
+	TargetIP   string `json:"target_ip"`
+	TargetPort uint16 `json:"target_port"`
+	Protocols  string `json:"protocols"`
 }
