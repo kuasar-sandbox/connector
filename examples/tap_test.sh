@@ -506,7 +506,7 @@ test_t10_open_port_gating() {
     fi
     # The gate must short-circuit BEFORE socket dial. If we leaked through to
     # the dial step, we'd see a "connect: no such file or directory" error.
-    if [[ "$err" == *"connect"* || "$err" == *"no such file"* ]]; then
+    if [[ "$err" == *"connect:"* || "$err" == *"dial "* || "$err" == *"no such file or directory"* ]]; then
         fail "T10: open-port leaked past gate to socket dial (got: $err)"
     else
         pass "T10: open-port short-circuited before socket/tap operations"
