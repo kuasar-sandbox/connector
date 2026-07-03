@@ -1,10 +1,10 @@
-// tapfd-get opens a tap device and hands its queue fd to a consumer over
+// connector-ctl tapfd get opens a tap device and hands its queue fd to a consumer over
 // TAPFD_SOCKET via SCM_RIGHTS — the tapfd handoff protocol.
 // It is a complete, standalone provider helper: a VMM orchestrator (or a test)
 // sets TAPFD_SOCKET and execs it to obtain a virtio-net-framed tap fd.
 //
-//	tapfd-get <tap>          open an existing tap and hand off its queue fd
-//	tapfd-get --new [<tap>]  create a tap (auto-named when <tap> is omitted)
+//	connector-ctl tapfd get <tap>          open an existing tap and hand off its queue fd
+//	connector-ctl tapfd get --new [<tap>]  create a tap (auto-named when <tap> is omitted)
 //
 // The delivered fd carries IFF_TAP|IFF_NO_PI|IFF_VNET_HDR (the framing
 // cloud-hypervisor / Firecracker / QEMU expect on a tap fd). Optional
@@ -26,10 +26,9 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/spf13/cobra"
 	"golang.org/x/sys/unix"
 )
-
-const tapSocketEnv = "TAPFD_SOCKET"
 
 // ifReq mirrors struct ifreq (name + flags, padded to the ABI size).
 type ifReq struct {
@@ -38,34 +37,49 @@ type ifReq struct {
 	_     [22]byte
 }
 
-func main() {
-	newTap := flag.Bool("new", false, "create <tap> if it does not exist (default: require an existing tap)")
-	hostCIDR := flag.String("host-cidr", "", "assign this host-side IP/CIDR and bring <tap> up (point-to-point peer for tests)")
-	mac := flag.String("mac", "", "guest MAC to advertise in the handoff metadata")
-	ip := flag.String("ip", "", "guest inner IP in the metadata (bare or CIDR)")
-	mtu := flag.Int("mtu", 0, "guest MTU in the metadata (0 = omit)")
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: tapfd-get [flags] [<tap>]\n\n"+
-			"Opens <tap> and hands its IFF_VNET_HDR queue fd to TAPFD_SOCKET via\n"+
-			"SCM_RIGHTS (tapfd handoff protocol). <tap> must already\n"+
-			"exist unless --new; with --new and no name, a tap is auto-allocated.\n\nflags:\n")
-		flag.PrintDefaults()
-	}
-	flag.Parse()
+var tapfdGetCmd = &cobra.Command{
+	Use:                "get [tap]",
+	Short:              "Open a tap and hand its queue fd to TAPFD_SOCKET",
+	DisableFlagParsing: true,
+	Long: `Open an existing tap device, or create one with --new, and hand its
+IFF_VNET_HDR queue fd to TAPFD_SOCKET via SCM_RIGHTS.
 
-	tap := flag.Arg(0)
-	if tap == "" && !*newTap {
-		fmt.Fprintln(os.Stderr, "tapfd-get: <tap> is required (or use --new to auto-create one)")
-		flag.Usage()
-		os.Exit(2)
-	}
-	if err := run(tap, *newTap, *hostCIDR, *mac, *ip, *mtu); err != nil {
-		fmt.Fprintf(os.Stderr, "tapfd-get: %v\n", err)
-		os.Exit(1)
-	}
+The optional metadata flags populate the tapfd handoff line consumed by the
+VMM side.`,
+	RunE: runTapfdGetCmd,
 }
 
-func run(tap string, create bool, hostCIDR, mac, ip string, mtu int) error {
+func runTapfdGetCmd(cmd *cobra.Command, args []string) error {
+	fs := flag.NewFlagSet("tapfd get", flag.ContinueOnError)
+	fs.SetOutput(cmd.ErrOrStderr())
+	newTap := fs.Bool("new", false, "create <tap> if it does not exist (default: require an existing tap)")
+	hostCIDR := fs.String("host-cidr", "", "assign this host-side IP/CIDR and bring <tap> up (point-to-point peer for tests)")
+	mac := fs.String("mac", "", "guest MAC to advertise in the handoff metadata")
+	ip := fs.String("ip", "", "guest inner IP in the metadata (bare or CIDR)")
+	mtu := fs.Int("mtu", 0, "guest MTU in the metadata (0 = omit)")
+	fs.Usage = func() {
+		fmt.Fprintf(cmd.ErrOrStderr(), "usage: connector-ctl tapfd get [flags] [<tap>]\n\n"+
+			"Opens <tap> and hands its IFF_VNET_HDR queue fd to TAPFD_SOCKET via\n"+
+			"SCM_RIGHTS (tapfd handoff protocol). <tap> must already exist unless\n"+
+			"--new; with --new and no name, a tap is auto-allocated.\n\nflags:\n")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 1 {
+		fs.Usage()
+		return fmt.Errorf("tapfd get: accepts at most one tap argument")
+	}
+	tap := fs.Arg(0)
+	if tap == "" && !*newTap {
+		fs.Usage()
+		return fmt.Errorf("tapfd get: <tap> is required (or use --new to auto-create one)")
+	}
+	return runTapfdGet(tap, *newTap, *hostCIDR, *mac, *ip, *mtu)
+}
+
+func runTapfdGet(tap string, create bool, hostCIDR, mac, ip string, mtu int) error {
 	sockSpec := os.Getenv(tapSocketEnv)
 	if sockSpec == "" {
 		return fmt.Errorf("%s not set (run me as a tapfd helper)", tapSocketEnv)
@@ -92,7 +106,7 @@ func run(tap string, create bool, hostCIDR, mac, ip string, mtu int) error {
 		return err
 	}
 	defer unix.Close(queue)
-	fmt.Fprintf(os.Stderr, "tapfd-get: handing off tap %s\n", name)
+	fmt.Fprintf(os.Stderr, "connector-ctl tapfd get: handing off tap %s\n", name)
 
 	if err := prepareTap(name, hostCIDR); err != nil {
 		return err

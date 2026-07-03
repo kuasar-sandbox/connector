@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
 
 var startCmd = &cobra.Command{
@@ -28,7 +28,7 @@ Use --reserved to only initialize the switch with Reserved slots (no veth creati
 Ports can then be provisioned later with the 'provision' command.
 
 Example (CLI flags):
-  vswitch-ctl start sw0 \
+  connector-ctl vswitch start sw0 \
     --netns=sandbox_switch \
     --port-netns=sandbox_ports \
     --ports=4096 \
@@ -39,7 +39,7 @@ Example (CLI flags):
     --mgmt-extract=sandbox_mgmt:mgmt0:169.254.169.254/32
 
 Example (config file):
-  vswitch-ctl start --config /etc/sandbox-vswitch/switch.json`,
+  connector-ctl vswitch start --config /etc/connector/switch.json`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runStart,
 }

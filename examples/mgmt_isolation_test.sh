@@ -33,10 +33,10 @@ set -euo pipefail
 
 if [ -n "${SWITCH_BIN:-}" ]; then
     : # Use environment variable
-elif [ -x "bin/vswitch-ctl" ]; then
-    SWITCH_BIN="bin/vswitch-ctl"
+elif [ -x "bin/connector-ctl" ]; then
+    SWITCH_BIN="bin/connector-ctl vswitch"
 else
-    SWITCH_BIN="/usr/sbin/vswitch-ctl"
+    SWITCH_BIN="/usr/sbin/connector-ctl vswitch"
 fi
 
 PASS=0
@@ -74,7 +74,7 @@ setup() {
         ip netns add "$ns" 2>/dev/null || true
     done
 
-    echo "==> Starting vswitch-ctl..."
+    echo "==> Starting connector-ctl vswitch..."
     ${SWITCH_BIN} start ${SW_NAME} \
         --mode=veth \
         --netns=sw_ns \
@@ -239,7 +239,7 @@ teardown() {
         rm -f "${SVC_PIDFILE}"
     fi
 
-    echo "==> Stopping vswitch-ctl..."
+    echo "==> Stopping connector-ctl vswitch..."
     ${SWITCH_BIN} stop ${SW_NAME} --force --force-clean || [ $? = 3 ]
 
     echo "==> Removing network namespaces..."

@@ -8,8 +8,8 @@ import (
 
 	"github.com/cilium/ebpf"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
 
 // NOTE: BPF_PROG_TEST_RUN Limitations for TC Programs

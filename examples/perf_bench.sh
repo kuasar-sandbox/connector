@@ -1,5 +1,5 @@
 #!/bin/bash
-# vswitch-ctl Performance Benchmark
+# connector-ctl vswitch Performance Benchmark
 #
 # Topology (same as geneve_eth_test.sh):
 #   sandbox1 (10.1.0.1) ──veth──> sw_ns (eBPF switch sw1)
@@ -28,10 +28,10 @@ set -euo pipefail
 # --- Binary resolution ---
 if [ -n "${SWITCH_BIN:-}" ]; then
     : # Use environment variable
-elif [ -x "bin/vswitch-ctl" ]; then
-    SWITCH_BIN="bin/vswitch-ctl"
+elif [ -x "bin/connector-ctl" ]; then
+    SWITCH_BIN="bin/connector-ctl vswitch"
 else
-    SWITCH_BIN="/usr/sbin/vswitch-ctl"
+    SWITCH_BIN="/usr/sbin/connector-ctl vswitch"
 fi
 
 # --- Defaults ---
@@ -149,7 +149,7 @@ setup() {
     ip link add sw-transit type veth peer name gw-transit
     ip link set gw-transit netns gw_ns
 
-    # Keep sw-transit DOWN - vswitch-ctl will bring it up after moving
+    # Keep sw-transit DOWN - connector-ctl vswitch will bring it up after moving
     ip link set sw-transit mtu 1600
 
     ip netns exec gw_ns ip link set gw-transit mtu 1600
@@ -173,7 +173,7 @@ setup() {
     ip netns exec gw_ns ip link set geneve1 master br-gw
     ip netns exec gw_ns ip link set geneve1 up
 
-    echo "==> Starting vswitch-ctl (${PORT_DENSITY} ports)..."
+    echo "==> Starting connector-ctl vswitch (${PORT_DENSITY} ports)..."
     ${SWITCH_BIN} start ${SW_NAME} \
         --netns=sw_ns \
         --port-netns=port_ns \
@@ -246,7 +246,7 @@ setup() {
 # --- Benchmark ---
 run_bench() {
     echo ""
-    echo "=== vswitch-ctl Performance Report ==="
+    echo "=== connector-ctl vswitch Performance Report ==="
     echo "Port density: ${PORT_DENSITY} allocated"
     echo "Encap mode: Ether-over-GENEVE"
     echo "Duration: ${BENCH_DURATION}s per test"

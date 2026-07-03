@@ -1,7 +1,7 @@
-# sandbox-vswitch Makefile
+# connector Makefile
 SHELL := /bin/bash
 
-.PHONY: all generate build build-switch build-tapfd-get tapfd-get clean test test-integration test-all test-e2e bench release release-clean deps fmt lint vet vmlinux help
+.PHONY: all generate build connector-ctl clean test test-integration test-all test-e2e bench release release-clean deps fmt lint vet vmlinux help
 
 # ---------------------------------------------------------------------------
 # Architecture selection
@@ -10,7 +10,7 @@ SHELL := /bin/bash
 # architecture. Supported values: x86_64, aarch64 (Go-style aliases amd64 /
 # arm64 are normalized below).
 #
-# vswitch-ctl is pure Go (no CGO), so cross-compiling is just GOARCH — no cross
+# connector-ctl is pure Go (no CGO), so cross-compiling is just GOARCH — no cross
 # toolchain is needed. The committed eBPF objects ship one variant per arch
 # (pkg/internal/bpf/vswitch_{x86,arm64}_bpfel.o, selected by Go build tags), so
 # the right object is embedded automatically for the chosen GOARCH.
@@ -43,7 +43,7 @@ endif
 # side-by-side. A native build also drops a bin/<name> symlink to the host-arch
 # binary so scripts and humans can use the short path. Coverage and release
 # artifacts are architecture-neutral and stay under build/.
-BINARY_NAME := vswitch-ctl
+BINARY_NAME := connector-ctl
 BINDIR      := bin/$(TARGET_ARCH)
 BINARY      := $(BINDIR)/$(BINARY_NAME)
 BUILD_DIR   := build
@@ -76,26 +76,15 @@ generate:
 	@echo "==> Generating eBPF bytecode..."
 	$(GO) generate ./...
 
-# Build every binary this repo ships for $(TARGET_ARCH): vswitch-ctl (the
-# dataplane CLI) and tapfd-get (the tapfd §5 provider helper).
-build: build-switch build-tapfd-get
+# Build the single connector control binary. vswitch and tapfd are subcommands.
+build: connector-ctl
 
-build-switch:
+connector-ctl:
 	@echo "==> Building $(BINARY_NAME) ($(TARGET_ARCH))..."
 	@mkdir -p $(BINDIR)
-	GOOS=linux GOARCH=$(GO_ARCH) CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BINARY) ./cmd/vswitch-ctl
+	GOOS=linux GOARCH=$(GO_ARCH) CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BINARY) ./cmd/connector-ctl
 	$(call link_bin,$(BINARY_NAME))
 	@echo "==> Built $(BINARY)"
-
-build-tapfd-get:
-	@echo "==> Building tapfd-get ($(TARGET_ARCH))..."
-	@mkdir -p $(BINDIR)
-	GOOS=linux GOARCH=$(GO_ARCH) CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BINDIR)/tapfd-get ./cmd/tapfd-get
-	$(call link_bin,tapfd-get)
-	@echo "==> Built $(BINDIR)/tapfd-get"
-
-# Short alias matching the umbrella's collected-binary name.
-tapfd-get: build-tapfd-get
 
 # go vet across the module — parallels the other repos' `vet` target so the
 # umbrella can drive every repo's checks through `$(MAKE) -C <repo> vet`.
@@ -106,7 +95,7 @@ vet:
 # (use `release-clean`) or any source; only files produced by `build`/`test`.
 clean:
 	@echo "==> Cleaning build artifacts..."
-	rm -f bin/$(BINARY_NAME) bin/*/$(BINARY_NAME) bin/tapfd-get bin/*/tapfd-get $(COVERAGE)
+	rm -f bin/$(BINARY_NAME) bin/*/$(BINARY_NAME) $(COVERAGE)
 	-@rmdir bin/* bin 2>/dev/null || true
 
 # Run unit tests with coverage profile (architecture-neutral output).
@@ -125,7 +114,7 @@ test-integration:
 test-all: test-integration
 
 # Run end-to-end shell tests (requires root + a BPF-capable kernel).
-test-e2e: build-switch
+test-e2e: connector-ctl
 	@echo "==> Running end-to-end tests..."
 	@for t in examples/*_test.sh; do \
 		echo ""; \
@@ -138,7 +127,7 @@ test-e2e: build-switch
 	@echo "==> All end-to-end tests passed."
 
 # Run the performance benchmark (requires root + iperf3).
-bench: build-switch
+bench: connector-ctl
 	@echo "==> Running performance benchmark..."
 	sudo bash examples/perf_bench.sh all
 
@@ -147,30 +136,30 @@ bench: build-switch
 # ---------------------------------------------------------------------------
 # `make release` builds for the current TARGET_ARCH and packs the binary plus
 # deployment configs, examples and docs into
-#   build/dist/sandbox-vswitch-$(VERSION)-linux-$(TARGET_ARCH).tar.gz
+#   build/dist/connector-$(VERSION)-linux-$(TARGET_ARCH).tar.gz
 # The arch is in the tarball name, so `make release TARGET_ARCH=x86_64` and
 # `... TARGET_ARCH=aarch64` produce two non-colliding tarballs.
 #
 # The binary is self-contained (eBPF objects are embedded), so the tarball
 # carries no bpf/ sources or shared libraries.
 release: build
-	@echo "==> Packaging sandbox-vswitch $(VERSION) ($(TARGET_ARCH))..."
-	@rm -rf $(RELEASE_DIR)/sandbox-vswitch-$(VERSION)
-	@mkdir -p $(RELEASE_DIR)/sandbox-vswitch-$(VERSION)/bin \
-	          $(RELEASE_DIR)/sandbox-vswitch-$(VERSION)/docs
-	cp $(BINARY) $(RELEASE_DIR)/sandbox-vswitch-$(VERSION)/bin/$(BINARY_NAME)
-	cp -r dist examples $(RELEASE_DIR)/sandbox-vswitch-$(VERSION)/
-	cp README.md $(RELEASE_DIR)/sandbox-vswitch-$(VERSION)/
-	cp docs/PROPOSAL.md $(RELEASE_DIR)/sandbox-vswitch-$(VERSION)/docs/
+	@echo "==> Packaging connector $(VERSION) ($(TARGET_ARCH))..."
+	@rm -rf $(RELEASE_DIR)/connector-$(VERSION)
+	@mkdir -p $(RELEASE_DIR)/connector-$(VERSION)/bin \
+	          $(RELEASE_DIR)/connector-$(VERSION)/docs
+	cp $(BINARY) $(RELEASE_DIR)/connector-$(VERSION)/bin/$(BINARY_NAME)
+	cp -r dist examples $(RELEASE_DIR)/connector-$(VERSION)/
+	cp README.md $(RELEASE_DIR)/connector-$(VERSION)/
+	cp docs/PROPOSAL.md $(RELEASE_DIR)/connector-$(VERSION)/docs/
 	@{ echo "version: $(VERSION)"; \
 	   echo "arch:    $(TARGET_ARCH)"; \
 	   echo "commit:  $$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"; \
 	   echo "built:   $$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
-	 } > $(RELEASE_DIR)/sandbox-vswitch-$(VERSION)/VERSION
+	 } > $(RELEASE_DIR)/connector-$(VERSION)/VERSION
 	tar -C $(RELEASE_DIR) -czf \
-	    $(RELEASE_DIR)/sandbox-vswitch-$(VERSION)-linux-$(TARGET_ARCH).tar.gz \
-	    sandbox-vswitch-$(VERSION)
-	@echo "==> Wrote $(RELEASE_DIR)/sandbox-vswitch-$(VERSION)-linux-$(TARGET_ARCH).tar.gz"
+	    $(RELEASE_DIR)/connector-$(VERSION)-linux-$(TARGET_ARCH).tar.gz \
+	    connector-$(VERSION)
+	@echo "==> Wrote $(RELEASE_DIR)/connector-$(VERSION)-linux-$(TARGET_ARCH).tar.gz"
 
 release-clean:
 	@echo "==> Removing release artifacts..."
@@ -203,7 +192,7 @@ vmlinux:
 	bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
 
 help:
-	@echo "sandbox-vswitch make targets:"
+	@echo "connector make targets:"
 	@echo "  all / build      - Build $(BINARY_NAME) for TARGET_ARCH (default; uses committed eBPF objects)"
 	@echo "  generate         - Regenerate eBPF bytecode + Go bindings (requires clang 12+)"
 	@echo "  clean            - Remove build-generated binaries + coverage (not release tarballs)"

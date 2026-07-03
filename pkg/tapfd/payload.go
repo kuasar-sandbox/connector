@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// PortMetadata is the per-port information vswitch-ctl sends alongside the
+// PortMetadata is the per-port information connector-ctl vswitch sends alongside the
 // tap fd via SCM_RIGHTS. The wire format is a single line of space-separated
 // key=value pairs terminated by a NUL byte:
 //

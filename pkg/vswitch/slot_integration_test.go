@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
 )
 
 func skipIfNotRoot(t *testing.T) {

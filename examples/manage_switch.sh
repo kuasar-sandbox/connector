@@ -13,10 +13,10 @@ set -euo pipefail
 
 if [ -n "${SWITCH_BIN:-}" ]; then
     : # Use environment variable
-elif [ -x "bin/vswitch-ctl" ]; then
-    SWITCH_BIN="bin/vswitch-ctl"
+elif [ -x "bin/connector-ctl" ]; then
+    SWITCH_BIN="bin/connector-ctl vswitch"
 else
-    SWITCH_BIN="/usr/sbin/vswitch-ctl"
+    SWITCH_BIN="/usr/sbin/connector-ctl vswitch"
 fi
 
 # ─── JSON helpers ───────────────────────────────────────────────────────────

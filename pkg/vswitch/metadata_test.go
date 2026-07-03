@@ -7,7 +7,7 @@ import (
 
 	"github.com/cilium/ebpf"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
 )
 
 // mockMetadataMap stores data written via Update and returns it on Lookup.

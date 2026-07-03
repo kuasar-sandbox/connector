@@ -3,7 +3,7 @@ package vswitch
 import (
 	"fmt"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
 )
 
 // Attach allocates a port to a sandbox.

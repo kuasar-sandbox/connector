@@ -8,9 +8,9 @@ import (
 
 	"github.com/cilium/ebpf"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netlink"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netns"
+	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/connector/pkg/netlink"
+	"github.com/kuasar-sandbox/connector/pkg/netns"
 )
 
 // mgmtInfo holds per-mgmt-extract device info for slot writes.
@@ -94,7 +94,7 @@ func provisionVethSlot(switchNs, portNs *netns.NetNS, switchName string, slotID 
 // provisionTapSlot creates (or reuses) a persistent tap device for a single
 // slot in the switch namespace and attaches the shared TC ingress block.
 // Returns the tap's ifindex. The tap is created persistent so that
-// vswitch-ctl owns its lifecycle (provision creates, stop deletes).
+// connector-ctl vswitch owns its lifecycle (provision creates, stop deletes).
 //
 // Idempotent: if the tap already exists with the expected name, the existing
 // ifindex is reused and clsact is ensured.

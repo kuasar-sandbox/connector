@@ -1,12 +1,12 @@
 package vswitch
 
-import "github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
+import "github.com/kuasar-sandbox/connector/pkg/internal/bpf"
 
 // Re-exports of low-level BPF helpers that the CLI legitimately needs but
 // must not import directly (pkg/internal/* is off-limits to cmd/ by the Go
 // internal-package rule once this package moves under pkg/).
 //
-// Anything cmd/vswitch-ctl references through bpf.* should be wired here.
+// Anything cmd/connector-ctl references through bpf.* should be wired here.
 
 // IP conversion utilities (used by show / open-port / status for JSON
 // rendering).

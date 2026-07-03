@@ -1,5 +1,5 @@
 // Package tapfd implements the end-to-end protocol for transferring tap-device
-// file descriptors between processes, as used by vswitch-ctl to hand a
+// file descriptors between processes, as used by connector-ctl vswitch to hand a
 // per-port tap fd to a VMM (or any userspace orchestrator).
 //
 // The package covers the full lifecycle:
@@ -7,7 +7,7 @@
 //   - Wire format: PortMetadata + Marshal/ParsePayload encode/decode the
 //     control-line payload that travels alongside each SCM_RIGHTS message.
 //   - Open: OpenTap binds a new fd to an already-existing persistent tap
-//     device via TUNSETIFF (vswitch-ctl's send side).
+//     device via TUNSETIFF (connector-ctl vswitch's send side).
 //   - Send: SendFd, ConnectUnix, UnixConnFromFd transmit the fd plus
 //     metadata over a connected unix socket via SCM_RIGHTS (send side).
 //   - Receive: RecvFd, RecvFds extract the fd and parse the metadata in
@@ -19,7 +19,7 @@
 //	port=1 mac=02:00:00:00:80:01 mtu=1500 ip=169.254.1.1 fd=1\0
 //
 // Unknown keys are tolerated so receivers built against this version remain
-// forward-compatible with future vswitch-ctl releases.
+// forward-compatible with future connector-ctl vswitch releases.
 //
 // # Example: minimal VMM orchestrator (receive side)
 //
@@ -49,8 +49,8 @@
 //
 // # Example: socketpair / inherited-fd handshake
 //
-// When the orchestrator and vswitch-ctl share a parent, the parent can
+// When the orchestrator and connector-ctl vswitch share a parent, the parent can
 // socketpair(2) and pass one end to each child via fd inheritance. The
 // orchestrator side then reads from the inherited socket exactly as above;
-// vswitch-ctl is invoked with TAPFD_SOCKET=fd=N in its environment.
+// connector-ctl vswitch is invoked with TAPFD_SOCKET=fd=N in its environment.
 package tapfd

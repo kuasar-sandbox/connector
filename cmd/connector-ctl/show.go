@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
 
 // showCmd groups read-only inspection subcommands.

@@ -9,9 +9,9 @@ import (
 	"github.com/cilium/ebpf"
 	vnetlink "github.com/vishvananda/netlink"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netlink"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netns"
+	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/connector/pkg/netlink"
+	"github.com/kuasar-sandbox/connector/pkg/netns"
 )
 
 // mockBPFMapWithError is a mock BPFMap that returns an error on Lookup

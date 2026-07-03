@@ -6,10 +6,10 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/dhcp"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netlink"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netns"
+	"github.com/kuasar-sandbox/connector/pkg/dhcp"
+	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/connector/pkg/netlink"
+	"github.com/kuasar-sandbox/connector/pkg/netns"
 )
 
 // resetDeps resets all function variables to their original implementations.

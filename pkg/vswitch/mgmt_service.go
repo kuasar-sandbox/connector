@@ -5,7 +5,7 @@ import (
 
 	"github.com/cilium/ebpf"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
 )
 
 // Type aliases for the management-service NAT map entries.

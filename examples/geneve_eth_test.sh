@@ -61,10 +61,10 @@ set -euo pipefail
 
 if [ -n "${SWITCH_BIN:-}" ]; then
     : # Use environment variable
-elif [ -x "bin/vswitch-ctl" ]; then
-    SWITCH_BIN="bin/vswitch-ctl"
+elif [ -x "bin/connector-ctl" ]; then
+    SWITCH_BIN="bin/connector-ctl vswitch"
 else
-    SWITCH_BIN="/usr/sbin/vswitch-ctl"
+    SWITCH_BIN="/usr/sbin/connector-ctl vswitch"
 fi
 
 PASS=0
@@ -101,9 +101,9 @@ setup() {
     ip link add sw-transit type veth peer name gw-transit
     ip link set gw-transit netns gw_ns
 
-    # Configure host side (will be moved into sw_ns by vswitch-ctl start)
+    # Configure host side (will be moved into sw_ns by connector-ctl vswitch start)
     # Set MTU to accommodate port MTU (1500) + Ether-over-GENEVE overhead (64)
-    # Keep the device DOWN - vswitch-ctl will bring it up after moving
+    # Keep the device DOWN - connector-ctl vswitch will bring it up after moving
     ip link set sw-transit mtu 1600
 
     # Configure gateway side
@@ -153,7 +153,7 @@ setup() {
         echo "  DHCP server started (PID: $DHCP_PID)"
     fi
 
-    echo "==> Starting vswitch-ctl..."
+    echo "==> Starting connector-ctl vswitch..."
     if [ "$TRANSIT_ADDR_MODE" == "auto" ]; then
         TRANSIT_ADDR_ARG="--transit-dev-addr=auto"
     else
@@ -339,7 +339,7 @@ s.close()
 }
 
 teardown() {
-    echo "==> Stopping vswitch-ctl..."
+    echo "==> Stopping connector-ctl vswitch..."
     ${SWITCH_BIN} stop ${SW_NAME} --force --force-clean || [ $? = 3 ]
 
     # Kill DHCP server if running

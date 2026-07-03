@@ -8,8 +8,8 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/dhcp"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/connector/pkg/dhcp"
+	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
 
 // Function variables for external dependencies.

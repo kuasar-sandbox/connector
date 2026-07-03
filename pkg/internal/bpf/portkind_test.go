@@ -27,12 +27,12 @@ func TestParsePortKind(t *testing.T) {
 		want    PortKind
 		wantErr bool
 	}{
-		{"", PortKindVeth, false},   // empty → veth (backward-compatible default)
+		{"", PortKindVeth, false}, // empty → veth (backward-compatible default)
 		{"veth", PortKindVeth, false},
 		{"tap", PortKindTap, false},
-		{"TAP", 0, true},     // case-sensitive
-		{"bridge", 0, true},  // unknown
-		{"tun", 0, true},     // not supported (tap-only for now)
+		{"TAP", 0, true},    // case-sensitive
+		{"bridge", 0, true}, // unknown
+		{"tun", 0, true},    // not supported (tap-only for now)
 	}
 	for _, c := range cases {
 		got, err := ParsePortKind(c.in)

@@ -3,7 +3,7 @@ package bpfmap
 import (
 	"github.com/cilium/ebpf"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
 )
 
 // Re-exports of BPF binding types and constants. Higher layers can type-alias

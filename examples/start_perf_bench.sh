@@ -1,7 +1,7 @@
 #!/bin/bash
 # Start() Performance Test
 #
-# Measures the time to start vswitch-ctl with various port counts.
+# Measures the time to start connector-ctl vswitch with various port counts.
 # Tests the batch netns optimization effectiveness.
 #
 # Usage:
@@ -15,10 +15,10 @@ set -euo pipefail
 # --- Binary resolution ---
 if [ -n "${SWITCH_BIN:-}" ]; then
     : # Use environment variable
-elif [ -x "bin/vswitch-ctl" ]; then
-    SWITCH_BIN="bin/vswitch-ctl"
+elif [ -x "bin/connector-ctl" ]; then
+    SWITCH_BIN="bin/connector-ctl vswitch"
 else
-    SWITCH_BIN="/usr/sbin/vswitch-ctl"
+    SWITCH_BIN="/usr/sbin/connector-ctl vswitch"
 fi
 
 # --- Defaults ---
@@ -98,7 +98,7 @@ run_start_test() {
 # --- Main ---
 trap cleanup EXIT
 
-echo "=== vswitch-ctl Start() Performance Test ==="
+echo "=== connector-ctl vswitch Start() Performance Test ==="
 echo "Binary: ${SWITCH_BIN}"
 echo ""
 

@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
 
 var provisionCmd = &cobra.Command{
@@ -21,13 +21,13 @@ a specific port (useful for port repair after veth device loss).
 
 Port repair workflow:
   # Port 42's veth was deleted abnormally
-  vswitch-ctl reserve sw0 --port=42 --force         # Isolate port (force-reserve)
-  vswitch-ctl provision sw0 --port=42               # Rebuild veth + TC
+  connector-ctl vswitch reserve sw0 --port=42 --force         # Isolate port (force-reserve)
+  connector-ctl vswitch provision sw0 --port=42               # Rebuild veth + TC
 
 Example:
-  vswitch-ctl provision sw0            # Provision all Reserved ports
-  vswitch-ctl provision sw0 --count=10 # Provision up to 10 ports
-  vswitch-ctl provision sw0 --port=42  # Provision specific port`,
+  connector-ctl vswitch provision sw0            # Provision all Reserved ports
+  connector-ctl vswitch provision sw0 --count=10 # Provision up to 10 ports
+  connector-ctl vswitch provision sw0 --port=42  # Provision specific port`,
 	Args: cobra.ExactArgs(1),
 	RunE: runProvision,
 }

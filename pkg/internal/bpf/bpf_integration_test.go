@@ -10,8 +10,8 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"golang.org/x/sys/unix"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
 
 // ensureBPFEnv checks that the BPF integration test environment is ready:

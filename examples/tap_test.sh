@@ -8,7 +8,7 @@
 #   No port-netns: tap devices never leave switch-netns. VMM (simulated by
 #   a Python script reading from the SCM_RIGHTS-received fd) is run from the
 #   host but writes/reads packets via the tap fd received from
-#   'vswitch-ctl open-port'.
+#   'connector-ctl vswitch open-port'.
 #
 # Tests:
 #   T1. start --mode=tap succeeds without --port-netns
@@ -30,10 +30,10 @@ set -euo pipefail
 
 if [ -n "${SWITCH_BIN:-}" ]; then
     :
-elif [ -x "bin/vswitch-ctl" ]; then
-    SWITCH_BIN="bin/vswitch-ctl"
+elif [ -x "bin/connector-ctl" ]; then
+    SWITCH_BIN="bin/connector-ctl vswitch"
 else
-    SWITCH_BIN="/usr/sbin/vswitch-ctl"
+    SWITCH_BIN="/usr/sbin/connector-ctl vswitch"
 fi
 
 PASS=0

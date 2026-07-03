@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/daemon"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/connector/pkg/daemon"
+	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
 
 const (
@@ -31,11 +31,11 @@ The serve command performs:
 3. ProvisionPorts: asynchronously create veth devices for all Reserved slots
 4. Health check loop: periodic status monitoring until SIGTERM/SIGINT
 
-This is the recommended way to run vswitch-ctl as a systemd service
+This is the recommended way to run connector-ctl vswitch as a systemd service
 (Type=notify) for fast startup with background port provisioning.
 
 Example:
-  vswitch-ctl serve sw0 \
+  connector-ctl vswitch serve sw0 \
     --netns=sandbox_switch \
     --port-netns=sandbox_ports \
     --ports=4096 \

@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
 
 var stopCmd = &cobra.Command{
@@ -31,9 +31,9 @@ with incompatible metadata format). Force-clean only unpins BPF maps/programs
 without attempting veth cleanup or transit device restoration.
 
 Example:
-  vswitch-ctl stop sw1
-  vswitch-ctl stop sw1 --force
-  vswitch-ctl stop sw1 --force-clean`,
+  connector-ctl vswitch stop sw1
+  connector-ctl vswitch stop sw1 --force
+  connector-ctl vswitch stop sw1 --force-clean`,
 	Args: cobra.ExactArgs(1),
 	RunE: runStop,
 }

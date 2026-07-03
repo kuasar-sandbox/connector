@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
 
 var attachCmd = &cobra.Command{
@@ -21,7 +21,7 @@ namespace to the target sandbox namespace. If omitted, the port device
 remains in the ports namespace.
 
 Example:
-  vswitch-ctl attach sw1 \
+  connector-ctl vswitch attach sw1 \
     --to-netns=sandbox1 \
     --inner-ip=169.254.1.1 \
     --transit-gateway-ip=10.0.0.1 \

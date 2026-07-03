@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netlink"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netns"
+	"github.com/kuasar-sandbox/connector/pkg/netlink"
+	"github.com/kuasar-sandbox/connector/pkg/netns"
 
 	vnl "github.com/vishvananda/netlink"
 )

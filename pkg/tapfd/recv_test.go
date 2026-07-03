@@ -10,7 +10,7 @@ import (
 
 // socketpairUnixConns returns a connected pair of *net.UnixConn backed by
 // socketpair(2). Both ends are stream-mode AF_UNIX sockets — exactly what
-// vswitch-ctl uses on the wire — so SCM_RIGHTS roundtrips behave
+// connector-ctl vswitch uses on the wire — so SCM_RIGHTS roundtrips behave
 // identically to the production path. No root required.
 func socketpairUnixConns(t *testing.T) (a, b *net.UnixConn) {
 	t.Helper()

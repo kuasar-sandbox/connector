@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
 
 var statsCmd = &cobra.Command{
@@ -18,8 +18,8 @@ Use --port to query specific ports (repeatable). If omitted, all allocated
 ports are shown.
 
 Example:
-  vswitch-ctl stats sw1
-  vswitch-ctl stats sw1 --port=1 --port=3`,
+  connector-ctl vswitch stats sw1
+  connector-ctl vswitch stats sw1 --port=1 --port=3`,
 	Args: cobra.ExactArgs(1),
 	RunE: runStats,
 }

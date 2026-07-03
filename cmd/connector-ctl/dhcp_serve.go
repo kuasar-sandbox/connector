@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/dhcp"
+	"github.com/kuasar-sandbox/connector/pkg/dhcp"
 )
 
 var dhcpServeCmd = &cobra.Command{
@@ -21,7 +21,7 @@ var dhcpServeCmd = &cobra.Command{
 	Long: `Start a simple DHCP server for testing purposes.
 
 Example:
-  vswitch-ctl dhcp serve \
+  connector-ctl vswitch dhcp serve \
       --dev=veth0 \
       --server-ip=10.0.0.1 \
       --pool=10.0.0.100-10.0.0.200 \

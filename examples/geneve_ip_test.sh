@@ -34,10 +34,10 @@ set -euo pipefail
 
 if [ -n "${SWITCH_BIN:-}" ]; then
     : # Use environment variable
-elif [ -x "bin/vswitch-ctl" ]; then
-    SWITCH_BIN="bin/vswitch-ctl"
+elif [ -x "bin/connector-ctl" ]; then
+    SWITCH_BIN="bin/connector-ctl vswitch"
 else
-    SWITCH_BIN="/usr/sbin/vswitch-ctl"
+    SWITCH_BIN="/usr/sbin/connector-ctl vswitch"
 fi
 
 PASS=0
@@ -69,7 +69,7 @@ setup() {
     ip link add sw-transit-a type veth peer name sw-transit-b
 
     # Set MTU to accommodate port MTU (1500) + IP-over-GENEVE overhead (50)
-    # Keep both devices DOWN - vswitch-ctl will bring them up after moving
+    # Keep both devices DOWN - connector-ctl vswitch will bring them up after moving
     ip link set sw-transit-a mtu 1600
     ip link set sw-transit-b mtu 1600
 

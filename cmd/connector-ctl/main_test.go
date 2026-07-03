@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/dhcp"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/connector/pkg/dhcp"
+	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
 
 // --- parsePoolRange ---
@@ -104,8 +104,8 @@ func TestRootCmdExists(t *testing.T) {
 	if rootCmd == nil {
 		t.Fatal("rootCmd should not be nil")
 	}
-	if rootCmd.Use != "vswitch-ctl" {
-		t.Errorf("rootCmd.Use = %q, want vswitch-ctl", rootCmd.Use)
+	if rootCmd.Use != "connector-ctl" {
+		t.Errorf("rootCmd.Use = %q, want connector-ctl", rootCmd.Use)
 	}
 }
 
@@ -116,7 +116,7 @@ func TestRootCmdHasSubcommands(t *testing.T) {
 	}
 
 	// Verify expected subcommands exist
-	expected := []string{"start", "stop", "attach", "reserve", "detach", "status", "stats", "dhcp"}
+	expected := []string{"vswitch", "tapfd"}
 	for _, name := range expected {
 		found := false
 		for _, cmd := range cmds {
@@ -127,6 +127,22 @@ func TestRootCmdHasSubcommands(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("expected subcommand %q not found", name)
+		}
+	}
+}
+
+func TestVswitchCmdHasSubcommands(t *testing.T) {
+	expected := []string{"start", "stop", "attach", "reserve", "detach", "status", "stats", "dhcp"}
+	for _, name := range expected {
+		found := false
+		for _, cmd := range vswitchCmd.Commands() {
+			if cmd.Name() == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected vswitch subcommand %q not found", name)
 		}
 	}
 }
@@ -1127,7 +1143,7 @@ type mockSwitch struct {
 func (m *mockSwitch) Name() string                                                  { return m.name }
 func (m *mockSwitch) Config() *vswitch.SwitchConfig                                 { return nil }
 func (m *mockSwitch) Metadata() *vswitch.SwitchMetadata                             { return nil }
-func (m *mockSwitch) Maps() *vswitch.Maps                                               { return nil }
+func (m *mockSwitch) Maps() *vswitch.Maps                                           { return nil }
 func (m *mockSwitch) MmapSlots() *vswitch.MmappedSlots                              { return nil }
 func (m *mockSwitch) Close() error                                                  { m.closed = true; return nil }
 func (m *mockSwitch) Attach(_ vswitch.AttachOptions) (*vswitch.AttachOutput, error) { return nil, nil }

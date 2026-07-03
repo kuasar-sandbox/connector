@@ -10,10 +10,10 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/sys/unix"
 
-	nllink "github.com/kuasar-sandbox/sandbox-vswitch/pkg/netlink"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/netns"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/tapfd"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
+	nllink "github.com/kuasar-sandbox/connector/pkg/netlink"
+	"github.com/kuasar-sandbox/connector/pkg/netns"
+	"github.com/kuasar-sandbox/connector/pkg/tapfd"
+	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
 
 // netlinkGetMTU is the GetMTU function we call from inside switch-netns;
@@ -28,7 +28,7 @@ the file descriptor to a VMM (or other userspace process) over a unix socket
 using SCM_RIGHTS. This implements the tapfd handoff protocol.
 
 The port must already be provisioned in tap mode and attached
-('vswitch-ctl provision --mode=tap' then 'vswitch-ctl attach').
+('connector-ctl vswitch provision --mode=tap' then 'connector-ctl vswitch attach').
 
 The destination socket is given by the TAPFD_SOCKET environment variable:
   TAPFD_SOCKET=/path/to/sock   dial this path and send the fd
@@ -46,10 +46,10 @@ to inspect the device in its namespace.
 
 Example (path):
   # VMM-side: socat UNIX-LISTEN:/run/vm1.sock,fork ...
-  TAPFD_SOCKET=/run/vm1.sock vswitch-ctl open-port sw0 --port=3
+  TAPFD_SOCKET=/run/vm1.sock connector-ctl vswitch open-port sw0 --port=3
 
 Example (inherited fd):
-  TAPFD_SOCKET=fd=3 vswitch-ctl open-port sw0 --port=3`,
+  TAPFD_SOCKET=fd=3 connector-ctl vswitch open-port sw0 --port=3`,
 	Args: cobra.ExactArgs(1),
 	RunE: runOpenPort,
 }

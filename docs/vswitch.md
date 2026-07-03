@@ -1,8 +1,7 @@
 # vswitch — eBPF 虚拟交换机
 
 基于 eBPF/TC 的高性能虚拟交换机,为单台宿主机上最多 4096 个沙箱(microVM)提供互相
-隔离、可独立访问管理平面与外部网络的通道。CLI 为 `vswitch-ctl`,另附独立的 tapfd
-provider helper `tapfd-get`。
+隔离、可独立访问管理平面与外部网络的通道。CLI 为 `connector-ctl vswitch`,并提供 `connector-ctl tapfd get` tapfd provider 子命令。
 
 数据面纯内核:配置完成后用户态进程即退出,所有转发由 TC ingress 上的 eBPF 程序承载,
 数据路径上没有任何用户态守护进程。转发判定自始至终基于 slot_id(从入口 ifindex、
@@ -63,7 +62,7 @@ vswitch 把全部转发判定集中在一份 ~1K 行的 eBPF C 程序里,控制�
                             └──────────┬──────────┘
                                        │
                           ┌────────────┴────────────┐
-                          │   sandbox-vswitch       │
+                          │   connector       │
                           │   ┌─────────────────┐   │
    microVM #1 ───── tap ──┤   │ eBPF on TC      │   │── transit dev ── GENEVE ──▶ gateway
    microVM #2 ──── veth ──┤   │ ingress (shared │   │
@@ -101,22 +100,22 @@ L4+ 策略的多租户控制面、需要连接跟踪/L7 过滤的安全网关。
 
 ```bash
 # 创建交换机
-vswitch-ctl start sw1 --netns=sw_ns --ports=128 \
+connector-ctl vswitch start sw1 --netns=sw_ns --ports=128 \
     --mac-addr=02:00:00:00:00:01 --floating-ip-base=100.100.96.0 \
     --mgmt-extract=mgmt_ns:eth0:169.254.169.254/32 \
     --transit-dev=eth1 --transit-dev-addr=10.0.0.1/24:10.0.0.2
 
 # 分配端口,把 tap fd 交给等在 /tmp/recv.sock 的 VMM
-vswitch-ctl attach sw1 --inner-ip=169.254.1.1 \
+connector-ctl vswitch attach sw1 --inner-ip=169.254.1.1 \
     --transit-gateway-ip=10.0.0.2 --transit-geneve-vni=100
-TAPFD_SOCKET=/tmp/recv.sock vswitch-ctl open-port sw1 --port=1
+TAPFD_SOCKET=/tmp/recv.sock connector-ctl vswitch open-port sw1 --port=1
 
 # 释放端口、停止交换机
-vswitch-ctl detach sw1 --port=1
-vswitch-ctl stop sw1
+connector-ctl vswitch detach sw1 --port=1
+connector-ctl vswitch stop sw1
 ```
 
-### 2.2 `vswitch-ctl start` / `serve`
+### 2.2 `connector-ctl vswitch start` / `serve`
 
 `start` 同步完成全部初始化后退出;`serve` 用于 systemd `Type=notify` 长驻(§6.5)。
 `switch_name` 可省略,从 `--config` 文件(§2.14)读取。
@@ -181,7 +180,7 @@ flag(service 经 `--config` 的 `mgmt_services` 字段仍可配置),另有
 `mgmt_services` 仅在配置了 `--mgmt-service` 时出现;`status` 与 `show config` 同样
 回显 `mgmt_planes`/`mgmt_services`(取自 metadata map)。
 
-### 2.3 `vswitch-ctl stop`
+### 2.3 `connector-ctl vswitch stop`
 
 卸载 eBPF 程序、删除 pinned maps、删除 veth/tap/dummy 设备、把 transit 设备还回原
 netns。内部分两步 `ReleasePorts` + `StopReleased`。
@@ -191,7 +190,7 @@ netns。内部分两步 `ReleasePorts` + `StopReleased`。
 | `--force` | 先释放所有 in-use 端口再 stop(两轮清理),用于强制关停 |
 | `--force-clean` | 损坏交换机救场:仅 unpin BPF 资源,跳过设备清理;可能留下需手工删除的孤儿 netdev |
 
-### 2.4 `vswitch-ctl attach`
+### 2.4 `connector-ctl vswitch attach`
 
 分配端口:CAS Free→IP;veth 模式可同时把端口设备移入沙箱 netns。端口未 provision 时
 返回 `port not provisioned`,调用方应重试(§6.5)。
@@ -233,7 +232,7 @@ netns。内部分两步 `ReleasePorts` + `StopReleased`。
 }
 ```
 
-### 2.5 `vswitch-ctl detach`
+### 2.5 `connector-ctl vswitch detach`
 
 释放端口:CAS IP→Free。tap slot 无设备操作;veth slot 给 `--from-netns` 则把设备移回
 port netns,省略则校验设备已在 port netns。
@@ -244,7 +243,7 @@ port netns,省略则校验设备已在 port netns。
 | `--from-netns=NS` | 端口设备当前所在的沙箱 netns(veth 模式) |
 | `--skip-device` | 跳过设备移动/校验(veth/tap 均可) |
 
-### 2.6 `vswitch-ctl reserve`
+### 2.6 `connector-ctl vswitch reserve`
 
 把端口标记为 Reserved,阻止后续 attach;用于升级/排空,或为 `provision --mode` 切换
 端口类型做准备(§6.6)。
@@ -254,7 +253,7 @@ port netns,省略则校验设备已在 port netns。
 | `--port=N` | ✓ | 槽位编号(1-based) |
 | `--force` | – | 允许覆盖 Allocated → Reserved(默认仅 Free → Reserved) |
 
-### 2.7 `vswitch-ctl provision`
+### 2.7 `connector-ctl vswitch provision`
 
 为 Reserved slot 创建端口设备并使其对 attach 可见。幂等:Free/Allocated slot 跳过,
 失败的 Reserved slot 保留状态,可单点修复。
@@ -265,7 +264,7 @@ port netns,省略则校验设备已在 port netns。
 | `--count=N` | 限制本次创建的设备数(0 = 全部);与 `--port` 互斥 |
 | `--mode=tap\|veth` | 端口类型(默认 `tap`);在 Reserved slot 上切换类型时先建新设备、commit 新 ifindex、再删旧设备 |
 
-### 2.8 `vswitch-ctl open-port`
+### 2.8 `connector-ctl vswitch open-port`
 
 [tapfd.md](tapfd.md) §3 动态获取契约的 provider helper:进入 switch netns,对持久 tap
 执行 `open(/dev/net/tun)` + `TUNSETIFF(IFF_TAP|IFF_NO_PI|IFF_VNET_HDR)`,把队列 fd 连同
@@ -282,8 +281,8 @@ port netns,省略则校验设备已在 port netns。
 
 ```bash
 # VMM 侧先监听: socat UNIX-LISTEN:/run/vm1.sock,fork ...
-TAPFD_SOCKET=/run/vm1.sock vswitch-ctl open-port sw0 --port=3
-TAPFD_SOCKET=fd=3 vswitch-ctl open-port sw0 --port=3      # 继承 fd 形式
+TAPFD_SOCKET=/run/vm1.sock connector-ctl vswitch open-port sw0 --port=3
+TAPFD_SOCKET=fd=3 connector-ctl vswitch open-port sw0 --port=3      # 继承 fd 形式
 ```
 
 输出:
@@ -296,7 +295,7 @@ TAPFD_SOCKET=fd=3 vswitch-ctl open-port sw0 --port=3      # 继承 fd 形式
 }
 ```
 
-### 2.9 `vswitch-ctl status`
+### 2.9 `connector-ctl vswitch status`
 
 输出交换机 JSON 状态,Conditions 风格:`Ready`、`PortDevicesReady`、
 `MgmtDevicesReady`、`TransitDeviceReady`;ProvisionPorts 未完成(或
@@ -333,7 +332,7 @@ ProvisionPorts 完成前的过渡形态:
 ]
 ```
 
-### 2.10 `vswitch-ctl stats`
+### 2.10 `connector-ctl vswitch stats`
 
 per-port 流量计数,从沙箱视角:mgmt/transit × rx/tx × packets/bytes。
 
@@ -354,13 +353,13 @@ per-port 流量计数,从沙箱视角:mgmt/transit × rx/tx × packets/bytes。
 }
 ```
 
-### 2.11 `vswitch-ctl show`
+### 2.11 `connector-ctl vswitch show`
 
 - `show slots <name> [slot_id]` — dump slot 表为 JSON(单槽或全部)。
 - `show config <name>` — dump in-kernel `switch_config`,并附 metadata 中的
   `transit_dev`/`mgmt_planes`/`mgmt_services`。
 
-### 2.12 `vswitch-ctl dhcp`
+### 2.12 `connector-ctl vswitch dhcp`
 
 内嵌 DHCP 客户端与服务器,服务于 transit `auto` 寻址的调试与 e2e 测试拓扑。
 
@@ -370,15 +369,15 @@ per-port 流量计数,从沙箱视角:mgmt/transit × rx/tx × packets/bytes。
   [--gateway=<ip>] [--dns=<ip,...>] [--lease-time=1h]` — 简易 DHCP 服务器,
   `--gateway` 默认取 `--server-ip`。
 
-### 2.13 `tapfd-get`
+### 2.13 `connector-ctl tapfd get`
 
-与交换机无关的独立 tapfd provider helper(单独二进制):打开一个 tap 设备,把其
+与交换机无关的tapfd provider 子命令(单独二进制):打开一个 tap 设备,把其
 `IFF_VNET_HDR` 队列 fd 经 `TAPFD_SOCKET` 以 `SCM_RIGHTS` 递交 consumer。用于不经
 vswitch 数据面、只需要"拿一个 tap fd"的场景(测试、简单拓扑)。
 
 ```
-tapfd-get <tap>            # 打开已存在的 tap 并交接其队列 fd
-tapfd-get --new [<tap>]    # 不存在则创建;省略名时内核自动分配
+connector-ctl tapfd get <tap>            # 打开已存在的 tap 并交接其队列 fd
+connector-ctl tapfd get --new [<tap>]    # 不存在则创建;省略名时内核自动分配
 ```
 
 | 参数 | 说明 |
@@ -438,9 +437,9 @@ tapfd-get --new [<tap>]    # 不存在则创建;省略名时内核自动分配
 ### 3.2 构建
 
 ```bash
-make build                      # 产物: bin/<arch>/{vswitch-ctl,tapfd-get}(并在 bin/ 建同名软链)
+make build                      # 产物: bin/<arch>/connector-ctl(并在 bin/ 建同名软链)
 make build TARGET_ARCH=aarch64  # 交叉编译(纯 Go,无需交叉工具链);别名 amd64 / arm64
-make release                    # 打包: build/dist/sandbox-vswitch-<ver>-linux-<arch>.tar.gz
+make release                    # 打包: build/dist/connector-<ver>-linux-<arch>.tar.gz
 make generate                   # 仅修改 bpf/*.c 时需要(clang 12+);仓库自带预生成 .o
 make test                       # 单元测试
 sudo make test-integration      # 集成测试(root + BPF 内核)
@@ -456,20 +455,20 @@ make vmlinux                    # 重新生成 bpf/vmlinux.h(需 bpftool)
 
 | 模板 | 安装位置 | 用途 |
 | --- | --- | --- |
-| `dist/sandbox-vswitch.service` | `/etc/systemd/system/` | `Type=notify` 单元 |
-| `dist/sandbox-vswitch.conf` | `/etc/sandbox-vswitch/switch.conf` | EnvironmentFile(shell 变量格式) |
-| `dist/NetworkManager-sandbox-vswitch.conf` | `/usr/lib/systemd/system/NetworkManager.service.d/` | 可选:让 NetworkManager 在交换机之后启动 |
+| `dist/connector-vswitch.service` | `/etc/systemd/system/` | `Type=notify` 单元 |
+| `dist/connector-switch.conf` | `/etc/connector/switch.conf` | EnvironmentFile(shell 变量格式) |
+| `dist/NetworkManager-connector.conf` | `/usr/lib/systemd/system/NetworkManager.service.d/` | 可选:让 NetworkManager 在交换机之后启动 |
 
-service unit 的关键结构(完整内容见 `dist/sandbox-vswitch.service`):
+service unit 的关键结构(完整内容见 `dist/connector-vswitch.service`):
 
 ```ini
 [Service]
 Type=notify
 WatchdogSec=60
-EnvironmentFile=/etc/sandbox-vswitch/switch.conf
+EnvironmentFile=/etc/connector/switch.conf
 ExecStartPre=...   # 1) 创建 SWITCH/PORT/MGMT netns(幂等,跳过空值)
 ExecStartPre=...   # 2) 交换机尚未存在时等待 ${TRANSIT_DEV} 出现(最多 120 s)
-ExecStart=/usr/sbin/vswitch-ctl serve ${SWITCH_NAME} --netns=... --mode=... ...
+ExecStart=/usr/sbin/connector-ctl vswitch serve ${SWITCH_NAME} --netns=... --mode=... ...
 ExecStartPost=...  # 对 ${SWITCH_NAME}_m0 开 route_localnet(容许 loopback 的 mgmt-service target)
 Restart=on-failure
 LimitMEMLOCK=infinity
@@ -485,14 +484,14 @@ LimitMEMLOCK=infinity
 
 ### 3.4 首次启动
 
-1. 识别 transit 网卡(`ip -br link`),编辑 `/etc/sandbox-vswitch/switch.conf`
+1. 识别 transit 网卡(`ip -br link`),编辑 `/etc/connector/switch.conf`
    (`TRANSIT_DEV`/`TRANSIT_DEV_ADDR` 等)。
 2. 确保 transit 处于 DOWN:`ip link set "$TRANSIT_DEV" down`(service 会把它移入
    switch netns)。
-3. `sudo systemctl start sandbox-vswitch`。
-4. 验证:`systemctl status sandbox-vswitch` 为 active;
-   `vswitch-ctl status sw0 --ready` 退出 0;`ip netns list` 列出所配置的命名空间。
-5. `sudo systemctl enable sandbox-vswitch`。
+3. `sudo systemctl start connector`。
+4. 验证:`systemctl status connector` 为 active;
+   `connector-ctl vswitch status sw0 --ready` 退出 0;`ip netns list` 列出所配置的命名空间。
+5. `sudo systemctl enable connector`。
 
 ## 4. 网络架构
 
@@ -845,7 +844,7 @@ provisioned"的前提。
 
 交接遵循 [tapfd.md](tapfd.md) 的厂商无关协议(`SCM_RIGHTS` + NUL 结尾 `key=value`
 元数据 + `TAPFD_SOCKET` 获取契约),协议规格独立可读,第三方 VMM 据此即可对接。本节
-只记录 sandbox-vswitch 作为 provider 实现的具体取舍。
+只记录 connector 作为 provider 实现的具体取舍。
 
 **元数据字段**(tapfd.md §2.3):除必填的 `fd=` 外,发送 `mac`(端口派生 MAC,VMM 须
 mirror 到 virtio-net——数据面据此识别端口)、`mtu`、`ip`(沙箱 inner IP),并附扩展
@@ -902,7 +901,7 @@ transit device eth1 MTU 1500 is too small:
 
 ### 7.1 威胁模型
 
-sandbox-vswitch 是 microVM 之外的**纵深防御**层,hypervisor 仍是首要安全边界;沙箱
+connector 是 microVM 之外的**纵深防御**层,hypervisor 仍是首要安全边界;沙箱
 代码按半信任对待(可能恶意,但被 VMM 约束)。
 
 | # | 威胁 | 缓解 |
@@ -972,7 +971,7 @@ Linux 5.8+ 上 `CAP_BPF` 可替代部分 `CAP_SYS_ADMIN`;TC 与 netns 操作仍�
 | `transit device not found` | 配置中 `TRANSIT_DEV` 与 `ip link` 不一致;纠正后重启 |
 | `transit device eth1 must be DOWN before use` | 启动安全检查;`ip link set eth1 down` 后重启 |
 | `failed to pin maps: ...bpffs not mounted` | `mount -t bpf bpf /sys/fs/bpf`,并加入 `/etc/fstab` |
-| `switch already exists` | 上次未干净 stop;`vswitch-ctl stop <name>`,最后手段 `rm -rf /sys/fs/bpf/<name>` |
+| `switch already exists` | 上次未干净 stop;`connector-ctl vswitch stop <name>`,最后手段 `rm -rf /sys/fs/bpf/<name>` |
 | 升级后 ABI 不兼容 | `rm -rf /sys/fs/bpf/<name>` 后重启 service |
 | `port not provisioned` | ProvisionPorts 尚未完成;等 `status` 的 `PortDevicesReady` 转 True 后重试 |
 | open-port 报 `port not attached` | 先 attach 再 open-port |
@@ -1008,7 +1007,7 @@ encap/decap 主导耗时。
 异步启动时间线(128 端口):
 
 ```
-t=0 ms      vswitch-ctl serve starts
+t=0 ms      connector-ctl vswitch serve starts
 t=100 ms    sd_notify READY=1            ← dependent services may start
 t=200 ms    ~first port attachable (Free)
 t=8700 ms   all 128 ports Free
@@ -1050,8 +1049,8 @@ t=8700 ms   all 128 ports Free
 ## 11. 内部组织
 
 ```
-cmd/vswitch-ctl/        CLI(cobra);printJSON 与依赖注入函数变量留在此处
-cmd/tapfd-get/          独立 tapfd provider helper
+cmd/connector-ctl/        CLI(cobra);printJSON 与依赖注入函数变量留在此处
+cmd/connector-ctl/          tapfd provider 子命令
 pkg/tapfd/      (公开)  tapfd 协议参考库,收发两侧:PortMetadata/OpenTap/SendFd/
                         RecvFd/RecvFds/RecvFdsWithNetns/ConnectUnix/UnixConnFromFd
 pkg/vswitch/    (公开)  交换机生命周期编排(主 Go API):
@@ -1079,7 +1078,7 @@ dist/                   systemd 单元与配置模板
 依赖箭头(无环):
 
 ```
-cmd/vswitch-ctl ──▶ pkg/vswitch ──▶ pkg/internal/bpfmap ──▶ pkg/internal/bpf
+cmd/connector-ctl ──▶ pkg/vswitch ──▶ pkg/internal/bpfmap ──▶ pkg/internal/bpf
                   └─▶ pkg/tapfd
                   └─▶ pkg/{netlink, netns, dhcp, daemon}
 
@@ -1090,7 +1089,7 @@ pkg/tapfd   : self-contained (stdlib + golang.org/x/sys)
 ## 12. See Also
 
 - [tapfd.md](tapfd.md) — tap 设备文件描述符交接协议规格(provider/consumer 双侧契约)。
-- `sandbox-runtime/docs/sandbox.md` — 消费侧:sandbox-ctl 按 tapfd 契约 exec helper
+- `sandboxer/docs/sandbox.md` — 消费侧:sandbox-ctl 按 tapfd 契约 exec helper
   获取沙箱网卡。
 - RFC 8926 — GENEVE: Generic Network Virtualization Encapsulation。
 - kernel commit `fc9702273e2e` — bpf: add mmap() support for `BPF_MAP_TYPE_ARRAY`。

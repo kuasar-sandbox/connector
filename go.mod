@@ -1,4 +1,4 @@
-module github.com/kuasar-sandbox/sandbox-vswitch
+module github.com/kuasar-sandbox/connector
 
 go 1.24.0
 

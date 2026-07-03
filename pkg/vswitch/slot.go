@@ -5,8 +5,8 @@ import (
 
 	"github.com/cilium/ebpf"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpf"
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/internal/bpfmap"
+	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
+	"github.com/kuasar-sandbox/connector/pkg/internal/bpfmap"
 )
 
 // Type aliases re-exporting the BPF and bpfmap types so vswitch callers
@@ -34,9 +34,9 @@ const (
 // Function-level re-exports so existing vswitch code can call these without
 // the bpfmap. prefix everywhere.
 var (
-	NewMmappedSlots = bpfmap.NewMmappedSlots
-	NewStatsManager = bpfmap.NewStatsManager
-	InitSlotReserved = bpfmap.InitSlotReserved
+	NewMmappedSlots      = bpfmap.NewMmappedSlots
+	NewStatsManager      = bpfmap.NewStatsManager
+	InitSlotReserved     = bpfmap.InitSlotReserved
 	IsSlotFreeOrReserved = bpfmap.IsSlotFreeOrReserved
 	IsSlotAllocated      = bpfmap.IsSlotAllocated
 	PortMAC              = bpfmap.PortMAC

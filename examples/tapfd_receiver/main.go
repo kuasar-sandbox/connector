@@ -1,7 +1,7 @@
 // tapfd_receiver listens on a unix socket and prints the tap fd + metadata
-// (and the optional netns fd) it receives from vswitch-ctl. Pair it with:
+// (and the optional netns fd) it receives from connector-ctl vswitch. Pair it with:
 //
-//	TAPFD_SOCKET=/tmp/recv.sock vswitch-ctl open-port <sw> --port=N
+//	TAPFD_SOCKET=/tmp/recv.sock connector-ctl vswitch open-port <sw> --port=N
 //
 // To also receive the tap's netns fd, add TAPFD_WANT_NETNS=1 to that command.
 //
@@ -15,7 +15,7 @@ import (
 	"net"
 	"os"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/tapfd"
+	"github.com/kuasar-sandbox/connector/pkg/tapfd"
 )
 
 func main() {
@@ -34,7 +34,7 @@ func main() {
 		ln.Close()
 		os.Remove(path)
 	}()
-	fmt.Fprintf(os.Stderr, "listening on %s (waiting for vswitch-ctl)\n", path)
+	fmt.Fprintf(os.Stderr, "listening on %s (waiting for connector-ctl vswitch)\n", path)
 
 	c, err := ln.Accept()
 	if err != nil {

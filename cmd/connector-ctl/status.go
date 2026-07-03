@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
 
 var statusReadyOnly bool
@@ -32,8 +32,8 @@ Exit codes:
   4  Switch exists but Ready=False (--ready mode)
 
 Example:
-  vswitch-ctl status sw1
-  vswitch-ctl status sw1 --ready`,
+  connector-ctl vswitch status sw1
+  connector-ctl vswitch status sw1 --ready`,
 	Args: cobra.ExactArgs(1),
 	RunE: runStatus,
 }

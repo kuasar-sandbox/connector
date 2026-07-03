@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
 
 var reserveCmd = &cobra.Command{
@@ -16,8 +16,8 @@ var reserveCmd = &cobra.Command{
 Use --force to force-reserve any port (even allocated ones).
 
 Example:
-  vswitch-ctl reserve sw0 --port=42
-  vswitch-ctl reserve sw0 --port=42 --force`,
+  connector-ctl vswitch reserve sw0 --port=42
+  connector-ctl vswitch reserve sw0 --port=42 --force`,
 	Args: cobra.ExactArgs(1),
 	RunE: runReserve,
 }

@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/vswitch"
+	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
 
 var detachCmd = &cobra.Command{
@@ -18,7 +18,7 @@ sandbox namespace to the ports namespace. If omitted, the command verifies
 the port device is already in the ports namespace before resetting the slot.
 
 Example:
-  vswitch-ctl detach sw1 --port=3 --from-netns=sandbox1`,
+  connector-ctl vswitch detach sw1 --port=3 --from-netns=sandbox1`,
 	Args: cobra.ExactArgs(1),
 	RunE: runDetach,
 }

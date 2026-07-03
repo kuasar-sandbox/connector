@@ -15,10 +15,10 @@ set -euo pipefail
 
 if [ -n "${SWITCH_BIN:-}" ]; then
     : # Use environment variable
-elif [ -x "bin/vswitch-ctl" ]; then
-    SWITCH_BIN="bin/vswitch-ctl"
+elif [ -x "bin/connector-ctl" ]; then
+    SWITCH_BIN="bin/connector-ctl vswitch"
 else
-    SWITCH_BIN="/usr/sbin/vswitch-ctl"
+    SWITCH_BIN="/usr/sbin/connector-ctl vswitch"
 fi
 
 PASS=0
@@ -137,7 +137,7 @@ teardown() {
         kill "$SERVE_PID" 2>/dev/null || true
         wait "$SERVE_PID" 2>/dev/null || true
     fi
-    pkill -f "vswitch-ctl serve ${SW_NAME}" 2>/dev/null || true
+    pkill -f "connector-ctl vswitch serve ${SW_NAME}" 2>/dev/null || true
     ${SWITCH_BIN} stop ${SW_NAME} --force --force-clean || [ $? = 3 ]
     for ns in sandbox1 sw_ns port_ns; do
         ip netns del "$ns" 2>/dev/null || true

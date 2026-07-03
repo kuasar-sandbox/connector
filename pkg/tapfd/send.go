@@ -34,7 +34,7 @@ func SendFd(sock *net.UnixConn, payload []byte, fds ...uintptr) error {
 }
 
 // ConnectUnix dials a stream unix socket at the given filesystem path.
-// Use this for the "vswitch-ctl is the client, VMM listens" pattern.
+// Use this for the "connector-ctl vswitch is the client, VMM listens" pattern.
 func ConnectUnix(path string) (*net.UnixConn, error) {
 	addr, err := net.ResolveUnixAddr("unix", path)
 	if err != nil {

@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuasar-sandbox/sandbox-vswitch/pkg/dhcp"
+	"github.com/kuasar-sandbox/connector/pkg/dhcp"
 )
 
 var dhcpCmd = &cobra.Command{
@@ -27,8 +27,8 @@ var dhcpRequestCmd = &cobra.Command{
 on the specified network interface and print the acquired lease as JSON.
 
 Example:
-  vswitch-ctl dhcp request --dev=eth1
-  vswitch-ctl dhcp request --dev=eth1 --timeout=10s --retries=5`,
+  connector-ctl vswitch dhcp request --dev=eth1
+  connector-ctl vswitch dhcp request --dev=eth1 --timeout=10s --retries=5`,
 	RunE: runDHCPRequest,
 }
 
