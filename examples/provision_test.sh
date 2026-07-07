@@ -573,15 +573,21 @@ test_a1_serve_lifecycle() {
     rm -f "$notify_sock" /tmp/test-notify-data
 
     python3 -c "
-import socket, sys
+import socket, time
 s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
 s.bind('${notify_sock}')
-s.settimeout(30)
-try:
-    data = s.recv(256)
-    open('/tmp/test-notify-data', 'w').write(data.decode())
-except socket.timeout:
-    open('/tmp/test-notify-data', 'w').write('TIMEOUT')
+s.settimeout(0.5)
+deadline = time.time() + 60
+with open('/tmp/test-notify-data', 'a') as f:
+    while time.time() < deadline:
+        try:
+            data = s.recv(1024)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        f.write(data.decode(errors='replace') + '\n')
+        f.flush()
 s.close()
 " &
     local notify_pid=$!
@@ -610,11 +616,16 @@ s.close()
         return
     fi
 
-    # Wait for notify listener to finish
-    wait "$notify_pid" 2>/dev/null || true
-
     # Check sd_notify received READY=1
-    if [ -f /tmp/test-notify-data ] && grep -q "READY=1" /tmp/test-notify-data; then
+    local ready_notify=0
+    for _ in $(seq 1 50); do
+        if [ -f /tmp/test-notify-data ] && grep -q "READY=1" /tmp/test-notify-data; then
+            ready_notify=1
+            break
+        fi
+        sleep 0.1
+    done
+    if [ "$ready_notify" -eq 1 ]; then
         pass "A1: sd_notify READY=1 received"
     else
         fail "A1: sd_notify READY=1 not received (got: $(cat /tmp/test-notify-data 2>/dev/null || echo 'none'))"
@@ -652,6 +663,8 @@ s.close()
         pass "A1: serve process terminated"
     fi
     SERVE_PID=""
+    kill "$notify_pid" 2>/dev/null || true
+    wait "$notify_pid" 2>/dev/null || true
 
     stop_switch
     rm -f "$notify_sock" /tmp/test-notify-data

@@ -134,6 +134,9 @@ while True:
         # Give the listener a moment to bind.
         sleep 0.5
     else
+        if [ "${REQUIRE_CONNECTOR_E2E:-0}" = "1" ]; then
+            fail "python3 not found — service NAT backend is required"
+        fi
         echo "    python3 not found — service NAT backend skipped (test 7 will SKIP)"
     fi
 
@@ -181,7 +184,7 @@ run_tests() {
     fi
 
     # --- Test 5: sandbox1 -> sandbox2 inner IP (must fail) ---
-    echo "[5/7] sandbox1 -> sandbox2 inner IP (169.254.1.1) [expect FAIL]"
+    echo "[5/7] sandbox1 -> sandbox2 inner IP (169.254.1.1) [expect blocked]"
     if ip netns exec sandbox1 ping -c 2 -W 2 169.254.1.1 &>/dev/null; then
         fail "sandbox1 can reach sandbox2 inner IP (isolation broken!)"
     else
@@ -189,7 +192,7 @@ run_tests() {
     fi
 
     # --- Test 6: sandbox1 -> sandbox2 floating IP (must fail) ---
-    echo "[6/7] sandbox1 -> sandbox2 floating IP (100.100.96.1) [expect FAIL]"
+    echo "[6/7] sandbox1 -> sandbox2 floating IP (100.100.96.1) [expect blocked]"
     if ip netns exec sandbox1 ping -c 2 -W 2 100.100.96.1 &>/dev/null; then
         fail "sandbox1 can reach sandbox2 floating IP (isolation broken!)"
     else
@@ -199,8 +202,11 @@ run_tests() {
     # --- Test 7: sandbox1 -> VIP:vport (--mgmt-service) ---
     echo "[7/7] sandbox1 -> ${SVC_VIP}:${SVC_VPORT} (--mgmt-service -> ${SVC_TARGET}:${SVC_TARGET_PORT})"
     if ! command -v python3 &>/dev/null; then
+        if [ "${REQUIRE_CONNECTOR_E2E:-0}" = "1" ]; then
+            fail "python3 unavailable, cannot run service NAT backend"
+        fi
         echo "  SKIP: python3 unavailable, cannot run service NAT backend"
-    elif ip netns exec sandbox1 timeout 5 bash -c '
+    elif ip netns exec sandbox1 timeout -k 2s 5 bash -c '
         exec 3<>/dev/tcp/'"${SVC_VIP}"'/'"${SVC_VPORT}"' || exit 1
         read -t 3 resp <&3
         [ "$resp" = "OK" ]
