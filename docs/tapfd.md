@@ -13,7 +13,7 @@ MUST / MUST NOT / SHOULD / SHOULD NOT / MAY。consumer 如何在自身配置中�
 参考实现:`connector-ctl vswitch open-port` 与`connector-ctl tapfd get` 子命令 是 provider 实现
 ([vswitch.md](vswitch.md) §2.8、§2.13);Go 参考库
 `github.com/kuasar-sandbox/connector/pkg/tapfd` 覆盖收发两侧;可运行的
-consumer 示例见 `examples/tapfd_receiver/`。
+consumer 示例见源码树 `examples/tapfd_receiver/`。
 
 ## 1. 概述
 
@@ -270,8 +270,9 @@ if err != nil { log.Fatal(err) }
 // tapFiles[0] 交给 VMM;netnsFile(可能为 nil)可用于 setns(CLONE_NEWNET)
 ```
 
-不依赖参考库时,可按 §2.4 直接基于 `recvmsg(2)` + `SCM_RIGHTS` 实现。可运行示例见
-`examples/tapfd_receiver/`。
+不依赖参考库时,可按 §2.4 直接基于 `recvmsg(2)` + `SCM_RIGHTS` 实现。Go 示例见
+源码树 `examples/tapfd_receiver/`;发布包中的 `tap_test.sh` 使用内嵌 Python receiver,
+不要求现场构建该示例。
 
 ## 8. See Also
 
@@ -279,7 +280,7 @@ if err != nil { log.Fatal(err) }
   `connector-ctl tapfd get`(§2.13)是本协议的 provider 实现,§6.7 记录其实现取舍。
 - `pkg/tapfd` — Go 参考库:provider 侧 `OpenTap`/`SendFd`,consumer 侧
   `RecvFd`/`RecvFds`/`RecvFdsWithNetns`,建连 `ConnectUnix`/`UnixConnFromFd`。
-- `examples/tapfd_receiver/` — 可运行的 consumer 示例。
+- 源码树 `examples/tapfd_receiver/` — 可运行的 consumer 示例。
 - unix(7)、cmsg(3) — `SCM_RIGHTS` 文件描述符传递。
 
 ## 附录 A:元数据 payload ABNF

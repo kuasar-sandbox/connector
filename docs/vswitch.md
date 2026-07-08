@@ -869,7 +869,7 @@ provision(`ifindex != 0`)、已 attach(inner IP 为真实 IP,故 `ip` 字段总�
 交换机未运行 → 退出码 `3`。
 
 **接收方**:第三方实现 tapfd.md §2 即可;本仓提供 Go 参考库 `pkg/tapfd`
-(`RecvFd`/`RecvFds`/`RecvFdsWithNetns`)与可运行示例 `examples/tapfd_receiver/`。
+(`RecvFd`/`RecvFds`/`RecvFdsWithNetns`)与源码树示例 `examples/tapfd_receiver/`。
 
 ### 6.8 MTU 校验
 
@@ -1066,7 +1066,7 @@ pkg/internal/bpf/       (私有,BPF-ABI)cilium/ebpf 生成绑定 + 类型 + 加�
 pkg/internal/bpfmap/    (私有,BPF-ABI)与 BPF 内存布局耦合的原语:
                           mmap slots、原子 CAS、stats、MAC 派生
 bpf/                    eBPF C 源(switch_kern.c + common.h + vmlinux.h)
-examples/               e2e 测试脚本 + tapfd_receiver 消费端示例
+examples/               e2e 测试脚本 + 源码树 tapfd_receiver 消费端示例
 dist/                   systemd 单元与配置模板
 ```
 

@@ -121,7 +121,7 @@ test-e2e: connector-ctl
 		echo "========================================="; \
 		echo "  $$t"; \
 		echo "========================================="; \
-		sudo bash $$t all || exit 1; \
+		sudo env REQUIRE_CONNECTOR_E2E=1 bash $$t all || exit 1; \
 	done
 	@echo ""
 	@echo "==> All end-to-end tests passed."

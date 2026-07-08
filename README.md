@@ -51,7 +51,7 @@ connector-ctl vswitch stop sw1
 ```
 
 命令与参数详见 [docs/vswitch.md](docs/vswitch.md) §2;Go 接收端(consumer)示例见
-[docs/tapfd.md](docs/tapfd.md) §7 与 [`examples/tapfd_receiver/`](examples/tapfd_receiver/main.go)。
+[docs/tapfd.md](docs/tapfd.md) §7 与源码树 `examples/tapfd_receiver/`。
 
 ## 文档
 
