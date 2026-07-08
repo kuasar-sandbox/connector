@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sync"
@@ -19,6 +20,7 @@ const (
 )
 
 var serveWatchInterval time.Duration
+var serveTapFDListen string
 
 var serveCmd = &cobra.Command{
 	Use:   "serve [switch_name]",
@@ -57,6 +59,7 @@ func init() {
 	serveCmd.Flags().StringVar(&startMACAddr, "mac-addr", "", "Virtual MAC address (required)")
 	serveCmd.Flags().StringVar(&startFloatingIPBase, "floating-ip-base", "", "Floating IP base address (required)")
 	serveCmd.Flags().StringArrayVar(&startMgmtExtracts, "mgmt-extract", nil, "Management plane extraction (format: <netns>:<dev>:<route1>,<route2>,...; leave <netns> empty, e.g. ':mgmt0:1.2.3.4', to keep the peer in the caller/host netns)")
+	serveCmd.Flags().StringArrayVar(&startMgmtServices, "mgmt-service", nil, "Management service VIP<->target translation (format: <VIP>:<vport>:<targetIP>:<targetPort>; repeatable). VIP must fall within a --mgmt-extract route. Translates both TCP and UDP. Each (targetIP,targetPort) must be unique. Loopback targets require route_localnet=1 on the mgmt dev.")
 	serveCmd.Flags().StringVar(&startTransitDev, "transit-dev", "", "Transit device name")
 	serveCmd.Flags().StringVar(&startTransitDevAddr, "transit-dev-addr", "", "Transit device address (format: <ip>/<prefix>:<nexthop> or 'auto' for DHCP)")
 	serveCmd.Flags().StringVar(&startTransitDevMTU, "transit-dev-mtu", "", "Transit device MTU ('auto' or specific value, default: no change)")
@@ -66,6 +69,7 @@ func init() {
 	serveCmd.Flags().StringVar(&startPortMACAddr, "port-mac-addr", "fixed", "Port MAC address mode: 'fixed' (default), 'per-port', or specific MAC address")
 	serveCmd.Flags().StringVar(&startMode, "mode", "tap", `Port kind for auto-provision: "tap" (default) or "veth". With veth, --port-netns is required.`)
 	serveCmd.Flags().DurationVar(&serveWatchInterval, "watch-interval", 30*time.Second, "Health check interval")
+	serveCmd.Flags().StringVar(&serveTapFDListen, "tapfd-listen", "", "Unix socket path for persistent tapfd handoff requests")
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
@@ -97,6 +101,20 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("open switch: %w", err)
 	}
 	defer sw.Close()
+
+	serveCtx, stopServe := context.WithCancel(context.Background())
+	defer stopServe()
+
+	var tapFDErrC <-chan error
+	if serveTapFDListen != "" {
+		tapFDSrv, err := startTapFDServer(serveCtx, serveTapFDListen, cfg.Name, sw)
+		if err != nil {
+			return err
+		}
+		defer tapFDSrv.Close()
+		tapFDErrC = tapFDSrv.Err()
+		fmt.Fprintf(os.Stderr, "[info] switch %s: tapfd listening on %s\n", cfg.Name, serveTapFDListen)
+	}
 
 	// Step 3: Notify systemd (before status check so READY=1 is first datagram)
 	daemon.NotifyReady()
@@ -139,7 +157,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 		select {
 		case sig := <-sigCh:
 			fmt.Fprintf(os.Stderr, "[info] received %s, shutting down\n", sig)
+			stopServe()
 			return nil
+		case err := <-tapFDErrC:
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[fatal] switch %s: tapfd listener failed: %v\n", cfg.Name, err)
+				osExit(1)
+				return err
+			}
 		case err := <-provDone:
 			provDone = nil // nil channel blocks forever in select
 			if err != nil {

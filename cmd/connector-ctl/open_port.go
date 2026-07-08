@@ -109,29 +109,9 @@ func runOpenPort(cmd *cobra.Command, args []string) error {
 	}
 	defer sw.Close()
 
-	cfg := sw.Config()
-	slotID := uint32(openPortPort - 1)
-	if slotID >= cfg.N_ports {
-		return fmt.Errorf("port %d out of range (max %d)", openPortPort, cfg.N_ports)
-	}
-
-	// Gate checks — fail fast, BEFORE entering switch-netns or opening any tap fd:
-	//   (1) port must be tap-mode (open-port is meaningless for veth)
-	//   (2) port must be currently attached to a sandbox (innerIP is a real IP,
-	//       not Free/Reserved). The "attached is prerequisite" rule means we
-	//       don't hand out fds for unconfigured slots; the orchestrator must
-	//       attach first to claim the slot.
-	slot := sw.MmapSlots().GetSlot(slotID)
-	kind := vswitch.SlotPortKind(slot)
-	if kind != vswitch.PortKindTap {
-		return fmt.Errorf("port %d is %s, not tap (open-port only valid for tap slots)", openPortPort, kind)
-	}
-	if slot.Ifindex == 0 {
-		return fmt.Errorf("port %d: %w (must run 'provision --mode=tap' first)", openPortPort, vswitch.ErrPortNotProvisioned)
-	}
-	innerIP := sw.MmapSlots().GetInnerIP(slotID)
-	if innerIP == vswitch.InnerIPFree || innerIP == vswitch.InnerIPReserved {
-		return fmt.Errorf("port %d: %w (run 'attach' before 'open-port')", openPortPort, vswitch.ErrPortNotAttached)
+	slotID, err := validateOpenPort(sw, openPortPort)
+	if err != nil {
+		return err
 	}
 
 	result, err := openPortAndSend(sw, switchName, slotID, socketSpec, wantNetnsFD())
@@ -167,6 +147,48 @@ type OpenPortResult struct {
 // SCM_RIGHTS fd and advertised via netns_fd=1, letting the receiver enter the
 // tap's namespace with setns(2).
 func openPortAndSend(sw vswitch.Interface, switchName string, slotID uint32, socketSpec string, withNetnsFD bool) (*OpenPortResult, error) {
+	conn, err := dialTapSocket(socketSpec)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	return openPortAndSendToConn(sw, switchName, slotID, conn, socketSpec, withNetnsFD, false)
+}
+
+// validateOpenPort checks the port can produce a tapfd handoff. It performs
+// only cheap slot-state checks, before any netns switch or tap open.
+func validateOpenPort(sw vswitch.Interface, port int) (uint32, error) {
+	if port <= 0 {
+		return 0, fmt.Errorf("--port must be a positive integer")
+	}
+	cfg := sw.Config()
+	slotID := uint32(port - 1)
+	if slotID >= cfg.N_ports {
+		return 0, fmt.Errorf("port %d: %w (max %d)", port, vswitch.ErrPortOutOfRange, cfg.N_ports)
+	}
+
+	// Gate checks:
+	//   (1) port must be tap-mode (open-port is meaningless for veth)
+	//   (2) port must be currently attached to a sandbox (innerIP is a real IP,
+	//       not Free/Reserved). The "attached is prerequisite" rule means we
+	//       don't hand out fds for unconfigured slots; the orchestrator must
+	//       attach first to claim the slot.
+	slot := sw.MmapSlots().GetSlot(slotID)
+	kind := vswitch.SlotPortKind(slot)
+	if kind != vswitch.PortKindTap {
+		return 0, fmt.Errorf("port %d is %s, not tap (open-port only valid for tap slots)", port, kind)
+	}
+	if slot.Ifindex == 0 {
+		return 0, fmt.Errorf("port %d: %w (must run 'provision --mode=tap' first)", port, vswitch.ErrPortNotProvisioned)
+	}
+	innerIP := sw.MmapSlots().GetInnerIP(slotID)
+	if innerIP == vswitch.InnerIPFree || innerIP == vswitch.InnerIPReserved {
+		return 0, fmt.Errorf("port %d: %w (run 'attach' before 'open-port')", port, vswitch.ErrPortNotAttached)
+	}
+	return slotID, nil
+}
+
+func openPortAndSendToConn(sw vswitch.Interface, switchName string, slotID uint32, conn *net.UnixConn, sentTo string, withNetnsFD bool, okPrefix bool) (*OpenPortResult, error) {
 	tapName := fmt.Sprintf("%s-t%d", switchName, slotID+1)
 	cfg := sw.Config()
 	slot := sw.MmapSlots().GetSlot(slotID)
@@ -178,16 +200,7 @@ func openPortAndSend(sw vswitch.Interface, switchName string, slotID uint32, soc
 	}
 	defer switchNs.Close()
 
-	// 1) Connect to the destination socket BEFORE entering switch-netns so
-	// any connection errors surface early; the connection then accompanies us
-	// through the netns switch (the underlying fd is unaffected by netns).
-	conn, err := dialTapSocket(socketSpec)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-
-	// 2) Open a tap fd inside switch-netns; also read MTU back from the
+	// Open a tap fd inside switch-netns; also read MTU back from the
 	// netdev there (single source of truth for what the kernel actually set).
 	var tapFile *os.File
 	var mtu int
@@ -211,7 +224,7 @@ func openPortAndSend(sw vswitch.Interface, switchName string, slotID uint32, soc
 	}
 	defer tapFile.Close()
 
-	// 3) Build the metadata payload and send fd(s) + payload atomically.
+	// Build the metadata payload and send fd(s) + payload atomically.
 	portMAC := vswitch.GetPortMAC(cfg.SwitchMac[:], cfg.PortMac[:], slotID)
 	meta := &tapfd.PortMetadata{
 		Port:    slotID + 1,
@@ -233,6 +246,12 @@ func openPortAndSend(sw vswitch.Interface, switchName string, slotID uint32, soc
 	if err != nil {
 		return nil, fmt.Errorf("build metadata payload: %w", err)
 	}
+	if okPrefix {
+		payload, err = tapfd.BuildOKResponse(payload)
+		if err != nil {
+			return nil, fmt.Errorf("build OK response: %w", err)
+		}
+	}
 	if err := tapfd.SendFd(conn, payload, fds...); err != nil {
 		return nil, fmt.Errorf("transfer tap fd: %w", err)
 	}
@@ -240,7 +259,7 @@ func openPortAndSend(sw vswitch.Interface, switchName string, slotID uint32, soc
 	return &OpenPortResult{
 		Port:      slotID + 1,
 		TapDev:    tapName,
-		SentTo:    socketSpec,
+		SentTo:    sentTo,
 		MAC:       meta.MAC,
 		MTU:       meta.MTU,
 		InnerIP:   meta.InnerIP,

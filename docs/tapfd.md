@@ -60,7 +60,7 @@ Layer 1  fd handoff wire protocol (normative, §2)
   consumer(见 §2.3、§2.5)。netns fd 永远排在 ancillary 的**末尾**,故 ancillary 内
   fd 总数 = `fd` + `netns_fd`。
 - 交接成功后,provider **应当**关闭其本地 fd;consumer 此时持有这些引用
-  (生命周期见 §4)。
+  (生命周期见 §5)。
 
 ### 2.3 元数据 payload
 
@@ -112,7 +112,7 @@ port=1 mac=02:00:00:00:80:01 mtu=1500 ip=169.254.1.1 fd=1\0
 6. 任意一步出错时,**必须**关闭所有已收 fd 后再返回,避免描述符泄漏。
 
 tap fd 是对 tun 队列的内核引用,跨 network namespace 有效;consumer **无需**与 tap
-设备处于同一 netns(见 §4)。
+设备处于同一 netns(见 §5)。
 
 ### 2.5 netns fd(可选)
 
@@ -125,9 +125,9 @@ ancillary 末尾的 K 个 fd 是 tap 设备所在 network namespace 的打开引
   是否**提供**:tap 处于独立 netns 时提供其 netns fd;若 provider 的 tap 没有 netns
   隔离,则无需提供(仍可正常完成 §2 的 tap fd 交接)。
 - consumer **可**对收到的 netns fd 执行 `setns(2, CLONE_NEWNET)` 进入该 netns。
-- 收发帧本身无需 netns fd(tap fd 跨 netns 可用,§4);netns fd 仅服务于需要**进入**
+- 收发帧本身无需 netns fd(tap fd 跨 netns 可用,§5);netns fd 仅服务于需要**进入**
   该 netns 操作设备本体的 consumer。
-- netns fd 同样是一种能力(capability,见 §5):持有它即可进入该网络命名空间,provider
+- netns fd 同样是一种能力(capability,见 §6):持有它即可进入该网络命名空间,provider
   与 consumer 都应按此对待其传递与持有。
 - consumer 不需要 netns fd 时**应当**关闭它以免泄漏。
 
@@ -201,7 +201,45 @@ netns fd。
 若 helper 在一次调用中既分配接口又交接 fd,交接失败时**应当**回滚其分配,避免"已分配但
 未交付"的中间态。退出码约定见附录 B。
 
-## 4. 生命周期与幂等
+## 4. 持久 provider socket(normative)
+
+为避免每次交接都 fork/exec helper,provider 可长期监听一个 `AF_UNIX SOCK_STREAM`
+套接字。consumer 连接该 socket,发送一行请求,provider 在同一连接上返回一条响应。
+
+请求行:
+
+```text
+TAPFD/1 OPEN want_netns=1 VSWITCH=sw0 PORT=3\n
+```
+
+- `TAPFD/1` 是协议版本,`OPEN` 是当前唯一操作。
+- `want_netns=1` 与 §3.4 语义相同:consumer 请求 provider 追加 tap 所在 netns fd。
+- 其余 `key=value` token 是 provider 私有字段。`connector-ctl vswitch serve` 接受
+  `switch`/`vswitch`/`VSWITCH` 与 `port`/`PORT`。
+- 行最大 512 字节,不得包含 NUL 或内嵌换行。
+
+成功响应在 §2 metadata 前加版本化状态前缀,并与 fd 一起通过 `SCM_RIGHTS` 返回:
+
+```text
+TAPFD/1 OK port=3 mac=02:00:00:00:80:01 mtu=1500 ip=169.254.3.1 fd=1 netns_fd=1\0
+```
+
+consumer **应当**接受该 `TAPFD/1 OK` 前缀;为兼容 exec helper,也可接受裸 §2 metadata。
+
+失败响应不携带 fd:
+
+```text
+TAPFD/1 ERR code=PORT_UNAVAILABLE message=port_not_attached\n
+```
+
+错误码建议使用 `BAD_REQUEST`、`SWITCH_MISMATCH`、`PORT_INVALID`、
+`PORT_UNAVAILABLE`、`PROVIDER_INTERNAL`。收到 `ERR` 时 consumer **不得**启用网卡。
+
+`connector-ctl vswitch serve --tapfd-listen /run/kuasar/connector/sw0/tapfd.sock`
+是本模式的参考 provider。它复用 `open-port` 的 slot 校验、tap 打开、metadata 生成与
+SCM_RIGHTS 发送路径,仅把"谁拨号谁监听"改为 consumer 拨号 provider。
+
+## 5. 生命周期与幂等
 
 - **设备与 fd 解耦**:tap 设备的生命周期由 provider 独立管理,与交接出去的 fd 解耦。
   被传递的 fd 只是该设备的一个队列引用;consumer 关闭 fd **不会**销毁设备。provider
@@ -211,7 +249,7 @@ netns fd。
 - **fd 跨 netns**:tap 设备可能位于 provider 的某个 network namespace,但队列 fd 是
   内核引用,consumer **无需**进入该 netns 即可使用。
 
-## 5. 安全考量
+## 6. 安全考量
 
 - **套接字访问即网络访问授权**:任何能读到该 unix 套接字的进程都会收到 tap 队列 fd。
   runtime **应当**严格限制套接字(如 `0600` 与受限父目录权限);R1(继承 fd)天然不

@@ -99,12 +99,27 @@ func RecvFdsWithNetns(conn *net.UnixConn) (tapFiles []*os.File, netnsFile *os.Fi
 		}
 	}
 	if len(fds) == 0 {
+		if code, msg, ok, perr := ParseErrorResponse(buf[:n]); ok {
+			if perr != nil {
+				return nil, nil, nil, perr
+			}
+			if msg != "" {
+				return nil, nil, nil, fmt.Errorf("tapfd provider error %s: %s", code, msg)
+			}
+			return nil, nil, nil, fmt.Errorf("tapfd provider error %s", code)
+		}
 		return nil, nil, nil, fmt.Errorf("no SCM_RIGHTS fds in message")
 	}
 
 	// Decode payload before wrapping fds, so a malformed payload still closes
-	// the fds and returns clean.
-	meta, err = ParsePayload(buf[:n])
+	// the fds and returns clean. Persistent socket providers prefix success
+	// with "TAPFD/1 OK"; exec helpers may still send bare metadata.
+	payload, err := StripOKResponse(buf[:n])
+	if err != nil {
+		closeIntFds(fds)
+		return nil, nil, nil, fmt.Errorf("parse response: %w", err)
+	}
+	meta, err = ParsePayload(payload)
 	if err != nil {
 		closeIntFds(fds)
 		return nil, nil, nil, fmt.Errorf("parse payload: %w", err)

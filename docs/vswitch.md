@@ -84,7 +84,7 @@ L4+ 策略的多租户控制面、需要连接跟踪/L7 过滤的安全网关。
 | 命令 | 用途 |
 | --- | --- |
 | `start [switch_name]` | 创建并启动交换机(StartReserved + 同步 ProvisionPorts),返回后用户态退出 |
-| `serve [switch_name]` | systemd `Type=notify` 长驻:StartReserved → READY=1 → 后台 ProvisionPorts → 健康检查循环 |
+| `serve [switch_name]` | systemd `Type=notify` 长驻:StartReserved → tapfd listen(可选) → READY=1 → 后台 ProvisionPorts → 健康检查循环 |
 | `stop <name>` | 卸载 eBPF、删除 pinned maps、删除 veth/tap、把 transit 设备还回原 netns |
 | `attach <name>` | 分配端口(CAS Free→IP);veth 模式可把端口设备移入沙箱 netns |
 | `detach <name> --port=N` | 释放端口(CAS IP→Free) |
@@ -140,9 +140,12 @@ connector-ctl vswitch stop sw1
 | `--reserved` | – | 仅做 StartReserved,不自动 ProvisionPorts。port-netns 由 start 写入交换机配置、`provision` 无独立 flag 覆盖,故计划用 veth 端口时 start 仍需给 `--port-netns` |
 | `--config` | – | 从 JSON 文件读取以上参数(§2.14) |
 
-`serve` 复用 `start` 的交换机参数,差异:无 `--mgmt-service` 与 `--reserved` 两个
-flag(service 经 `--config` 的 `mgmt_services` 字段仍可配置),另有
-`--watch-interval`(健康检查间隔,默认 30s)。
+`serve` 复用 `start` 的交换机参数,差异:无 `--reserved` flag,另有:
+
+| 参数 | 说明 |
+| --- | --- |
+| `--watch-interval` | 健康检查间隔,默认 30s |
+| `--tapfd-listen` | 持久 tapfd provider UDS。consumer 发送 `TAPFD/1 OPEN ...`,serve 返回 `TAPFD/1 OK` + metadata + SCM_RIGHTS;详见 [tapfd.md](tapfd.md) §4 |
 
 `start` 输出:
 

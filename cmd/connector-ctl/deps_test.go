@@ -29,6 +29,9 @@ func resetDeps() {
 	dhcpNewServer = dhcp.NewServer
 	signalNotify = signal.Notify
 	timeNow = time.Now
+	serveTapFDListen = ""
+	startMgmtExtracts = nil
+	startMgmtServices = nil
 	stopForce = false
 	stopForceClean = false
 	reservePort = 0
