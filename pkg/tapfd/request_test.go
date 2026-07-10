@@ -57,7 +57,7 @@ func TestErrorResponse(t *testing.T) {
 }
 
 func TestOKResponse(t *testing.T) {
-	payload := []byte("port=1 mac=02:00:00:00:00:01 mtu=1500 ip=100.100.96.1 fd=1\x00")
+	payload := []byte("port=1 mac=02:00:00:00:00:01 ip=100.100.96.1 fd=1\x00")
 	resp, err := BuildOKResponse(payload)
 	if err != nil {
 		t.Fatalf("BuildOKResponse: %v", err)

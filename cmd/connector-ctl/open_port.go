@@ -10,15 +10,10 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/sys/unix"
 
-	nllink "github.com/kuasar-sandbox/connector/pkg/netlink"
 	"github.com/kuasar-sandbox/connector/pkg/netns"
 	"github.com/kuasar-sandbox/connector/pkg/tapfd"
 	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
-
-// netlinkGetMTU is the GetMTU function we call from inside switch-netns;
-// pulled into a var so tests could substitute it.
-var netlinkGetMTU = nllink.GetMTU
 
 var openPortCmd = &cobra.Command{
 	Use:   "open-port <switch_name>",
@@ -129,7 +124,6 @@ type OpenPortResult struct {
 	TapDev    string `json:"tap_dev"`
 	SentTo    string `json:"sent_to"`
 	MAC       string `json:"mac"`
-	MTU       uint32 `json:"mtu"`
 	InnerIP   string `json:"inner_ip"`
 	NetnsSent bool   `json:"netns_sent"`
 }
@@ -137,8 +131,8 @@ type OpenPortResult struct {
 // openPortAndSend is the reusable core used by both 'open-port' and
 // 'attach --open-port'. It enters the switch netns, opens a queue fd on the
 // persistent tap, then sends that fd over the destination socket via
-// SCM_RIGHTS — accompanied by a metadata payload that lets the receiving VMM
-// orchestrator configure its virtio-net device without a separate query.
+// SCM_RIGHTS — accompanied by the metadata the receiving VMM orchestrator
+// needs to bind the virtio-net device to the vswitch port.
 //
 // After a successful send, the local fd is closed (the receiver now holds
 // the only reference; the persistent tap survives via TUNSETPERSIST).
@@ -152,7 +146,7 @@ func openPortAndSend(sw vswitch.Interface, switchName string, slotID uint32, soc
 		return nil, err
 	}
 	defer conn.Close()
-	return openPortAndSendToConn(sw, switchName, slotID, conn, socketSpec, withNetnsFD, false)
+	return openPortAndSendToConn(sw, switchName, slotID, conn, socketSpec, withNetnsFD, false, nil)
 }
 
 // validateOpenPort checks the port can produce a tapfd handoff. It performs
@@ -188,22 +182,27 @@ func validateOpenPort(sw vswitch.Interface, port int) (uint32, error) {
 	return slotID, nil
 }
 
-func openPortAndSendToConn(sw vswitch.Interface, switchName string, slotID uint32, conn *net.UnixConn, sentTo string, withNetnsFD bool, okPrefix bool) (*OpenPortResult, error) {
+func openPortAndSendToConn(sw vswitch.Interface, switchName string, slotID uint32, conn *net.UnixConn, sentTo string, withNetnsFD bool, okPrefix bool, switchNs *netns.NetNS) (*OpenPortResult, error) {
 	tapName := fmt.Sprintf("%s-t%d", switchName, slotID+1)
 	cfg := sw.Config()
 	slot := sw.MmapSlots().GetSlot(slotID)
 
-	switchNsName := sw.Metadata().SwitchNetnsName()
-	switchNs, err := netns.GetByName(switchNsName)
-	if err != nil {
-		return nil, fmt.Errorf("switch netns %s: %w", switchNsName, err)
+	closeSwitchNs := false
+	if switchNs == nil {
+		switchNsName := sw.Metadata().SwitchNetnsName()
+		ns, err := netns.GetByName(switchNsName)
+		if err != nil {
+			return nil, fmt.Errorf("switch netns %s: %w", switchNsName, err)
+		}
+		switchNs = ns
+		closeSwitchNs = true
 	}
-	defer switchNs.Close()
+	if closeSwitchNs {
+		defer switchNs.Close()
+	}
 
-	// Open a tap fd inside switch-netns; also read MTU back from the
-	// netdev there (single source of truth for what the kernel actually set).
+	// Open a tap fd inside switch-netns.
 	var tapFile *os.File
-	var mtu int
 	if err := switchNs.Do(func() error {
 		// IFF_VNET_HDR makes the delivered queue fd carry a virtio-net
 		// header — the framing every mainstream virtio VMM (cloud-hypervisor,
@@ -217,8 +216,7 @@ func openPortAndSendToConn(sw vswitch.Interface, switchName string, slotID uint3
 			return err
 		}
 		tapFile = f
-		mtu, err = netlinkGetMTU(tapName)
-		return err
+		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("open tap %s: %w", tapName, err)
 	}
@@ -229,7 +227,6 @@ func openPortAndSendToConn(sw vswitch.Interface, switchName string, slotID uint3
 	meta := &tapfd.PortMetadata{
 		Port:    slotID + 1,
 		MAC:     portMAC.String(),
-		MTU:     uint32(mtu),
 		InnerIP: vswitch.Uint32ToIP(slot.InnerIp).String(),
 		FDCount: 1,
 	}
@@ -261,7 +258,6 @@ func openPortAndSendToConn(sw vswitch.Interface, switchName string, slotID uint3
 		TapDev:    tapName,
 		SentTo:    sentTo,
 		MAC:       meta.MAC,
-		MTU:       meta.MTU,
 		InnerIP:   meta.InnerIP,
 		NetnsSent: withNetnsFD,
 	}, nil

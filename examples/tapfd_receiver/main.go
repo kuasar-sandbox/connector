@@ -66,6 +66,6 @@ func main() {
 	if netnsFile != nil {
 		netnsFD = int64(netnsFile.Fd())
 	}
-	fmt.Printf("port=%d mac=%s mtu=%d ip=%s fd_count=%d tap_fd=%d netns_fd=%d\n",
-		meta.Port, meta.MAC, meta.MTU, meta.InnerIP, meta.FDCount, tapFD, netnsFD)
+	fmt.Printf("port=%d mac=%s ip=%s fd_count=%d tap_fd=%d netns_fd=%d\n",
+		meta.Port, meta.MAC, meta.InnerIP, meta.FDCount, tapFD, netnsFD)
 }

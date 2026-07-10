@@ -230,7 +230,7 @@ netns。内部分两步 `ReleasePorts` + `StopReleased`。
 {
   "port": 4, "port_dev": "sw1-t4",
   "port_mac": "02:00:00:00:80:01",
-  "inner_ip": "169.254.4.1", "mtu": 1500,
+  "inner_ip": "169.254.4.1",
   "tap_sent_to": "/tmp/recv.sock"
 }
 ```
@@ -293,8 +293,8 @@ TAPFD_SOCKET=fd=3 connector-ctl vswitch open-port sw0 --port=3      # 继承 fd 
 ```json
 {
   "port": 3, "tap_dev": "sw0-t3", "sent_to": "/run/vm1.sock",
-  "mac": "02:00:00:00:80:01", "mtu": 1500,
-  "inner_ip": "169.254.3.1", "netns_sent": false
+  "mac": "02:00:00:00:80:01", "inner_ip": "169.254.3.1",
+  "netns_sent": false
 }
 ```
 
@@ -389,7 +389,6 @@ connector-ctl tapfd get --new [<tap>]    # 不存在则创建;省略名时内核
 | `--host-cidr=IP/N` | 给 `<tap>` 分配宿主侧 IP/CIDR 并拉起(点对点对端,便于连通性测试) |
 | `--mac=...` | 写入交接元数据的 guest MAC |
 | `--ip=...` | 写入元数据的 guest inner IP(裸地址或 CIDR) |
-| `--mtu=N` | 写入元数据的 guest MTU(`0` = 省略) |
 
 经 `--new` 创建的 tap **不是**持久设备:交接出去的 fd 维持其存活,所有引用关闭后设备
 随之消失(对比 vswitch 端口的持久 tap,§6.6)。
@@ -850,11 +849,11 @@ provisioned"的前提。
 只记录 connector 作为 provider 实现的具体取舍。
 
 **元数据字段**(tapfd.md §2.3):除必填的 `fd=` 外,发送 `mac`(端口派生 MAC,VMM 须
-mirror 到 virtio-net——数据面据此识别端口)、`mtu`、`ip`(沙箱 inner IP),并附扩展
+mirror 到 virtio-net——数据面据此识别端口)、`ip`(沙箱 inner IP),并附扩展
 字段 `port`(1-based slot 编号,仅供诊断,consumer 可忽略):
 
 ```
-port=1 mac=02:00:00:00:80:01 mtu=1500 ip=169.254.1.1 fd=1\0
+port=1 mac=02:00:00:00:80:01 ip=169.254.1.1 fd=1\0
 ```
 
 consumer 经 `TAPFD_WANT_NETNS` 请求时(tapfd.md §3.4),在 tap fd 之后追加 switch

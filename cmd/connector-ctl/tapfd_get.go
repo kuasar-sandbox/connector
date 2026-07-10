@@ -9,7 +9,7 @@
 // The delivered fd carries IFF_TAP|IFF_NO_PI|IFF_VNET_HDR (the framing
 // cloud-hypervisor / Firecracker / QEMU expect on a tap fd). Optional
 // --host-cidr assigns a host-side IP and brings the tap up (a point-to-point
-// peer, handy for connectivity tests); --mac/--ip/--mtu populate the handoff
+// peer, handy for connectivity tests); --mac/--ip populate the handoff
 // metadata line. Run as root (touches /dev/net/tun and `ip`).
 //
 // A tap created via --new is NOT persistent: the handed-off fd keeps it alive
@@ -56,7 +56,6 @@ func runTapfdGetCmd(cmd *cobra.Command, args []string) error {
 	hostCIDR := fs.String("host-cidr", "", "assign this host-side IP/CIDR and bring <tap> up (point-to-point peer for tests)")
 	mac := fs.String("mac", "", "guest MAC to advertise in the handoff metadata")
 	ip := fs.String("ip", "", "guest inner IP in the metadata (bare or CIDR)")
-	mtu := fs.Int("mtu", 0, "guest MTU in the metadata (0 = omit)")
 	fs.Usage = func() {
 		fmt.Fprintf(cmd.ErrOrStderr(), "usage: connector-ctl tapfd get [flags] [<tap>]\n\n"+
 			"Opens <tap> and hands its IFF_VNET_HDR queue fd to TAPFD_SOCKET via\n"+
@@ -76,10 +75,10 @@ func runTapfdGetCmd(cmd *cobra.Command, args []string) error {
 		fs.Usage()
 		return fmt.Errorf("tapfd get: <tap> is required (or use --new to auto-create one)")
 	}
-	return runTapfdGet(tap, *newTap, *hostCIDR, *mac, *ip, *mtu)
+	return runTapfdGet(tap, *newTap, *hostCIDR, *mac, *ip)
 }
 
-func runTapfdGet(tap string, create bool, hostCIDR, mac, ip string, mtu int) error {
+func runTapfdGet(tap string, create bool, hostCIDR, mac, ip string) error {
 	sockSpec := os.Getenv(tapSocketEnv)
 	if sockSpec == "" {
 		return fmt.Errorf("%s not set (run me as a tapfd helper)", tapSocketEnv)
@@ -112,7 +111,7 @@ func runTapfdGet(tap string, create bool, hostCIDR, mac, ip string, mtu int) err
 		return err
 	}
 
-	payload := buildPayload(mac, ip, mtu)
+	payload := buildPayload(mac, ip)
 	if _, _, err := conn.WriteMsgUnix(payload, unix.UnixRights(queue), nil); err != nil {
 		return fmt.Errorf("send fd: %w", err)
 	}
@@ -273,13 +272,10 @@ func cstr(b []byte) string {
 	return string(b)
 }
 
-func buildPayload(mac, ip string, mtu int) []byte {
+func buildPayload(mac, ip string) []byte {
 	var b strings.Builder
 	if mac != "" {
 		fmt.Fprintf(&b, "mac=%s ", mac)
-	}
-	if mtu > 0 {
-		fmt.Fprintf(&b, "mtu=%d ", mtu)
 	}
 	if ip != "" {
 		fmt.Fprintf(&b, "ip=%s ", ip)

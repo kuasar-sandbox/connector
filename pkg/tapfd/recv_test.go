@@ -56,7 +56,7 @@ func TestRecvFdRoundTrip(t *testing.T) {
 	defer pr.Close()
 
 	in := PortMetadata{
-		Port: 3, MAC: "02:00:00:00:80:03", MTU: 1500, InnerIP: "169.254.1.3", FDCount: 1,
+		Port: 3, MAC: "02:00:00:00:80:03", InnerIP: "169.254.1.3", FDCount: 1,
 	}
 	wire, err := in.Marshal()
 	if err != nil {
@@ -103,7 +103,7 @@ func TestRecvFdRejectsZeroFds(t *testing.T) {
 	defer sender.Close()
 	defer receiver.Close()
 
-	in := PortMetadata{Port: 1, MAC: "02:00:00:00:80:01", MTU: 1500, InnerIP: "1.2.3.4", FDCount: 1}
+	in := PortMetadata{Port: 1, MAC: "02:00:00:00:80:01", InnerIP: "1.2.3.4", FDCount: 1}
 	wire, err := in.Marshal()
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -130,7 +130,7 @@ func TestRecvFdsMultiFd(t *testing.T) {
 	defer pw1.Close()
 	defer pw2.Close()
 
-	in := PortMetadata{Port: 1, MAC: "02:00:00:00:80:01", MTU: 1500, InnerIP: "1.2.3.4", FDCount: 2}
+	in := PortMetadata{Port: 1, MAC: "02:00:00:00:80:01", InnerIP: "1.2.3.4", FDCount: 2}
 	wire, err := in.Marshal()
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -172,7 +172,7 @@ func TestRecvFdsWithNetnsRoundTrip(t *testing.T) {
 	defer nsW.Close()
 
 	in := PortMetadata{
-		Port: 3, MAC: "02:00:00:00:80:03", MTU: 1500, InnerIP: "169.254.1.3",
+		Port: 3, MAC: "02:00:00:00:80:03", InnerIP: "169.254.1.3",
 		FDCount: 1, NetnsFDCount: 1,
 	}
 	wire, err := in.Marshal()
@@ -238,7 +238,7 @@ func TestRecvFdsDropsNetnsFD(t *testing.T) {
 	defer nsR.Close()
 	defer nsW.Close()
 
-	in := PortMetadata{Port: 1, MAC: "02:00:00:00:80:01", MTU: 1500, InnerIP: "1.2.3.4", FDCount: 1, NetnsFDCount: 1}
+	in := PortMetadata{Port: 1, MAC: "02:00:00:00:80:01", InnerIP: "1.2.3.4", FDCount: 1, NetnsFDCount: 1}
 	wire, err := in.Marshal()
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)

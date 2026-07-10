@@ -10,7 +10,6 @@ func TestPortMetadataMarshalRoundTrip(t *testing.T) {
 	in := PortMetadata{
 		Port:    7,
 		MAC:     "02:00:00:00:80:07",
-		MTU:     1500,
 		InnerIP: "169.254.1.7",
 		FDCount: 1,
 	}
@@ -22,7 +21,7 @@ func TestPortMetadataMarshalRoundTrip(t *testing.T) {
 		t.Errorf("payload must end with NUL byte, got tail %#x", wire[len(wire)-1])
 	}
 	// Field ordering is documented; tests pin it to catch accidental changes.
-	want := "port=7 mac=02:00:00:00:80:07 mtu=1500 ip=169.254.1.7 fd=1\x00"
+	want := "port=7 mac=02:00:00:00:80:07 ip=169.254.1.7 fd=1\x00"
 	if string(wire) != want {
 		t.Errorf("wire mismatch:\n got: %q\nwant: %q", string(wire), want)
 	}
@@ -40,7 +39,6 @@ func TestPortMetadataMarshalNetnsFD(t *testing.T) {
 	in := PortMetadata{
 		Port:         3,
 		MAC:          "02:00:00:00:80:03",
-		MTU:          1500,
 		InnerIP:      "169.254.1.3",
 		FDCount:      1,
 		NetnsFDCount: 1,
@@ -50,7 +48,7 @@ func TestPortMetadataMarshalNetnsFD(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 	// netns_fd is appended after fd when nonzero.
-	want := "port=3 mac=02:00:00:00:80:03 mtu=1500 ip=169.254.1.3 fd=1 netns_fd=1\x00"
+	want := "port=3 mac=02:00:00:00:80:03 ip=169.254.1.3 fd=1 netns_fd=1\x00"
 	if string(wire) != want {
 		t.Errorf("wire mismatch:\n got: %q\nwant: %q", string(wire), want)
 	}
@@ -64,9 +62,9 @@ func TestPortMetadataMarshalNetnsFD(t *testing.T) {
 }
 
 func TestPortMetadataMarshalOmitsNetnsFDWhenZero(t *testing.T) {
-	// Default (no netns fd) wire must be byte-for-byte identical to v1 so old
-	// receivers and the fd-count check are unaffected.
-	in := PortMetadata{Port: 1, MAC: "02:00:00:00:80:01", MTU: 1500, InnerIP: "1.2.3.4", FDCount: 1}
+	// Default (no netns fd) wire must not advertise extra fd-bearing metadata,
+	// so receivers and the fd-count check are unaffected.
+	in := PortMetadata{Port: 1, MAC: "02:00:00:00:80:01", InnerIP: "1.2.3.4", FDCount: 1}
 	wire, err := in.Marshal()
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -102,12 +100,12 @@ func TestPortMetadataMarshalValidates(t *testing.T) {
 func TestParsePayloadStripsAfterNul(t *testing.T) {
 	// Bytes after the NUL terminator must be ignored (could be garbage from
 	// previous socket state or padding).
-	buf := []byte("port=1 mac=02:00:00:00:80:01 mtu=1500 ip=1.2.3.4 fd=1\x00GARBAGE")
+	buf := []byte("port=1 mac=02:00:00:00:80:01 ip=1.2.3.4 fd=1\x00GARBAGE")
 	m, err := ParsePayload(buf)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if m.Port != 1 || m.MAC != "02:00:00:00:80:01" || m.MTU != 1500 || m.InnerIP != "1.2.3.4" || m.FDCount != 1 {
+	if m.Port != 1 || m.MAC != "02:00:00:00:80:01" || m.InnerIP != "1.2.3.4" || m.FDCount != 1 {
 		t.Errorf("unexpected parse result: %+v", m)
 	}
 }
@@ -120,7 +118,7 @@ func TestParsePayloadIgnoresUnknownKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if m.MTU != 9000 || m.FDCount != 2 {
+	if m.FDCount != 2 || m.InnerIP != "10.0.0.1" {
 		t.Errorf("unexpected: %+v", m)
 	}
 }
@@ -137,7 +135,6 @@ func TestPortMetadataPayloadFitsLimit(t *testing.T) {
 	in := PortMetadata{
 		Port:    4096,
 		MAC:     "ff:ff:ff:ff:ff:ff",
-		MTU:     65535,
 		InnerIP: "255.255.255.255",
 		FDCount: 255,
 	}

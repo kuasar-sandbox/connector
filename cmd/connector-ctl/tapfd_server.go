@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kuasar-sandbox/connector/pkg/netns"
 	"github.com/kuasar-sandbox/connector/pkg/tapfd"
 	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
@@ -25,6 +26,7 @@ type tapFDServer struct {
 	path   string
 	ln     *net.UnixListener
 	cancel context.CancelFunc
+	netns  *netns.NetNS
 	done   chan struct{}
 	errCh  chan error
 }
@@ -33,17 +35,35 @@ func startTapFDServer(parent context.Context, path, switchName string, sw vswitc
 	if err := prepareTapFDListenPath(path); err != nil {
 		return nil, err
 	}
+	var switchNs *netns.NetNS
+	if sw != nil {
+		switchNsName := sw.Metadata().SwitchNetnsName()
+		ns, err := netns.GetByName(switchNsName)
+		if err != nil {
+			return nil, fmt.Errorf("switch netns %s: %w", switchNsName, err)
+		}
+		switchNs = ns
+	}
 	addr, err := net.ResolveUnixAddr("unix", path)
 	if err != nil {
+		if switchNs != nil {
+			_ = switchNs.Close()
+		}
 		return nil, fmt.Errorf("resolve tapfd socket %s: %w", path, err)
 	}
 	ln, err := net.ListenUnix("unix", addr)
 	if err != nil {
+		if switchNs != nil {
+			_ = switchNs.Close()
+		}
 		return nil, fmt.Errorf("listen tapfd socket %s: %w", path, err)
 	}
 	if err := os.Chmod(path, 0660); err != nil {
 		_ = ln.Close()
 		_ = os.Remove(path)
+		if switchNs != nil {
+			_ = switchNs.Close()
+		}
 		return nil, fmt.Errorf("chmod tapfd socket %s: %w", path, err)
 	}
 
@@ -52,6 +72,7 @@ func startTapFDServer(parent context.Context, path, switchName string, sw vswitc
 		path:   path,
 		ln:     ln,
 		cancel: cancel,
+		netns:  switchNs,
 		done:   make(chan struct{}),
 		errCh:  make(chan error, 1),
 	}
@@ -65,6 +86,11 @@ func (s *tapFDServer) Close() error {
 	<-s.done
 	if rmErr := os.Remove(s.path); rmErr != nil && !os.IsNotExist(rmErr) && err == nil {
 		err = rmErr
+	}
+	if s.netns != nil {
+		if nsErr := s.netns.Close(); nsErr != nil && err == nil {
+			err = nsErr
+		}
 	}
 	return err
 }
@@ -87,7 +113,7 @@ func (s *tapFDServer) serve(ctx context.Context, switchName string, sw vswitch.I
 			}
 			return
 		}
-		go handleTapFDConn(conn, switchName, sw)
+		go handleTapFDConn(conn, switchName, sw, s.netns)
 	}
 }
 
@@ -123,7 +149,7 @@ func prepareTapFDListenPath(path string) error {
 	return nil
 }
 
-func handleTapFDConn(conn *net.UnixConn, switchName string, sw vswitch.Interface) {
+func handleTapFDConn(conn *net.UnixConn, switchName string, sw vswitch.Interface, switchNs *netns.NetNS) {
 	defer conn.Close()
 
 	if err := conn.SetReadDeadline(time.Now().Add(tapFDRequestTimeout)); err != nil {
@@ -151,6 +177,10 @@ func handleTapFDConn(conn *net.UnixConn, switchName string, sw vswitch.Interface
 		sendTapFDError(conn, tapfd.ErrorCodeSwitchMismatch, fmt.Errorf("requested switch %s, serving %s", requestSwitch, switchName))
 		return
 	}
+	if sw == nil {
+		sendTapFDError(conn, tapfd.ErrorCodeProviderInternal, fmt.Errorf("switch handle unavailable"))
+		return
+	}
 
 	portText := requestField(req, "port", "PORT")
 	if portText == "" {
@@ -168,7 +198,7 @@ func handleTapFDConn(conn *net.UnixConn, switchName string, sw vswitch.Interface
 		sendTapFDError(conn, tapFDErrorCode(err), err)
 		return
 	}
-	if _, err := openPortAndSendToConn(sw, switchName, slotID, conn, "tapfd-listen:"+switchName, req.WantNetns, true); err != nil {
+	if _, err := openPortAndSendToConn(sw, switchName, slotID, conn, "tapfd-listen:"+switchName, req.WantNetns, true, switchNs); err != nil {
 		sendTapFDError(conn, tapFDErrorCode(err), err)
 	}
 }

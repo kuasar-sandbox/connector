@@ -68,7 +68,7 @@ payload 为单行 ASCII 文本,由空格分隔的 `key=value` 组成,**必须**�
 结尾:
 
 ```
-port=1 mac=02:00:00:00:80:01 mtu=1500 ip=169.254.1.1 fd=1\0
+port=1 mac=02:00:00:00:80:01 ip=169.254.1.1 fd=1\0
 ```
 
 **帧规则**:
@@ -90,7 +90,6 @@ port=1 mac=02:00:00:00:80:01 mtu=1500 ip=169.254.1.1 fd=1\0
   | key | 格式 | 含义 |
   | --- | --- | --- |
   | `mac` | `xx:xx:xx:xx:xx:xx` | provider 为该接口分配的 MAC。provider 可能据此识别该接口的流量,consumer 与之不一致可能导致丢包。 |
-  | `mtu` | 十进制整数 | 接口 MTU。 |
   | `ip`  | IPv4 点分四段 | 接口的 L3 地址。 |
   | `port` | 十进制整数 | provider 侧端口/槽位标识,仅供诊断/回查(扩展字段,consumer 可忽略)。参考实现(`pkg/tapfd`)总是把它作为元数据行的**首个** token 发出。 |
   | `netns_fd` | 十进制整数(0 或 1) | 紧跟在 tap fd **之后**追加的 netns fd 个数;缺省/`0` 表示未附带。非 0 时,ancillary 的**最后** `netns_fd` 个 fd 为 tap 设备所在 netns 的引用(见 §2.5)。consumer 据此把 ancillary 切分为前 `fd` 个 tap fd 与后 `netns_fd` 个 netns fd。 |
@@ -221,7 +220,7 @@ TAPFD/1 OPEN want_netns=1 VSWITCH=sw0 PORT=3\n
 成功响应在 §2 metadata 前加版本化状态前缀,并与 fd 一起通过 `SCM_RIGHTS` 返回:
 
 ```text
-TAPFD/1 OK port=3 mac=02:00:00:00:80:01 mtu=1500 ip=169.254.3.1 fd=1 netns_fd=1\0
+TAPFD/1 OK port=3 mac=02:00:00:00:80:01 ip=169.254.3.1 fd=1 netns_fd=1\0
 ```
 
 consumer **应当**接受该 `TAPFD/1 OK` 前缀;为兼容 exec helper,也可接受裸 §2 metadata。
@@ -282,7 +281,7 @@ consumer (runtime)                       provider helper (exec'ed with TAPFD_SOC
  │ listen(AF_UNIX, /run/vm5.sock)
  │ exec helper (inject TAPFD_SOCKET) ──▶ │ read TAPFD_SOCKET; check interface is serviceable
  │                                       │ open(/dev/net/tun) + TUNSETIFF(IFF_TAP|IFF_NO_PI|IFF_VNET_HDR)
- │                                       │ payload: port=5 mac=.. mtu=1500 ip=169.254.1.5 fd=1\0
+ │                                       │ payload: port=5 mac=.. ip=169.254.1.5 fd=1\0
  │ recvmsg() ◀────────────────────────── │ sendmsg(payload, SCM_RIGHTS[tapfd]); close(fd); exit 0
  │ parse payload; take fd; mirror mac= onto virtio-net;
  │ hand fd to the VMM backend (CH --net fd=, Firecracker tap fd)
@@ -296,7 +295,7 @@ c, _ := ln.Accept()
 tapFile, meta, err := tapfd.RecvFd(c.(*net.UnixConn)) // 收 1 个 tap fd + 解析元数据
 if err != nil { log.Fatal(err) }
 // 若 meta.MAC 非空,必须镜像到 virtio-net;tapFile.Fd() 交给 VMM 的 tap 后端
-fmt.Printf("mac=%s mtu=%d ip=%s\n", meta.MAC, meta.MTU, meta.InnerIP)
+fmt.Printf("mac=%s ip=%s\n", meta.MAC, meta.InnerIP)
 ```
 
 若 provider 还会附带 netns fd(§2.5),改用 `RecvFdsWithNetns` 把它取出(`RecvFd`/

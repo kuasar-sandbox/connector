@@ -11,18 +11,17 @@ import (
 // tap fd via SCM_RIGHTS. The wire format is a single line of space-separated
 // key=value pairs terminated by a NUL byte:
 //
-//	port=1 mac=02:00:00:00:80:01 mtu=1500 ip=169.254.1.1 fd=1\0
+//	port=1 mac=02:00:00:00:80:01 ip=169.254.1.1 fd=1\0
 //
 // When the provider also delivers the tap's network namespace fd, a netns_fd
 // key is appended and one extra fd rides at the END of the SCM_RIGHTS array:
 //
-//	port=1 mac=02:00:00:00:80:01 mtu=1500 ip=169.254.1.1 fd=1 netns_fd=1\0
+//	port=1 mac=02:00:00:00:80:01 ip=169.254.1.1 fd=1 netns_fd=1\0
 //
 // Field semantics:
 //
 //	port      1-based port number (slot_id + 1)
 //	mac       per-port MAC the sandbox/VMM must configure on its virtio-net device
-//	mtu       MTU of the tap netdev (kernel default 1500 unless overridden)
 //	ip        sandbox inner IP that was assigned by 'attach' (open-port requires attached)
 //	fd        number of tap-queue file descriptors included in the SCM_RIGHTS
 //	          ancillary (always 1 today; reserved for future multi-queue support)
@@ -40,7 +39,6 @@ import (
 type PortMetadata struct {
 	Port    uint32
 	MAC     string // canonical "xx:xx:xx:xx:xx:xx"
-	MTU     uint32
 	InnerIP string // dotted-quad
 	FDCount uint8  // number of tap-queue fds delivered alongside (1 today)
 	// NetnsFDCount is the number of netns fds appended after the tap fds
@@ -69,8 +67,8 @@ func (m *PortMetadata) Marshal() ([]byte, error) {
 		return nil, fmt.Errorf("PortMetadata.FDCount must be at least 1")
 	}
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "port=%d mac=%s mtu=%d ip=%s fd=%d",
-		m.Port, m.MAC, m.MTU, m.InnerIP, m.FDCount)
+	fmt.Fprintf(&b, "port=%d mac=%s ip=%s fd=%d",
+		m.Port, m.MAC, m.InnerIP, m.FDCount)
 	// netns_fd is emitted only when nonzero; a consumer that didn't request the
 	// netns fd receives the plain payload with no extra key or fd.
 	if m.NetnsFDCount > 0 {
@@ -110,12 +108,6 @@ func ParsePayload(buf []byte) (*PortMetadata, error) {
 			m.Port = uint32(v)
 		case "mac":
 			m.MAC = val
-		case "mtu":
-			v, err := strconv.ParseUint(val, 10, 32)
-			if err != nil {
-				return nil, fmt.Errorf("mtu=%q: %w", val, err)
-			}
-			m.MTU = uint32(v)
 		case "ip":
 			m.InnerIP = val
 		case "fd":

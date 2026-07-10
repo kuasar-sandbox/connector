@@ -16,7 +16,7 @@
 // The wire format is a single line of space-separated key=value pairs
 // followed by a NUL byte:
 //
-//	port=1 mac=02:00:00:00:80:01 mtu=1500 ip=169.254.1.1 fd=1\0
+//	port=1 mac=02:00:00:00:80:01 ip=169.254.1.1 fd=1\0
 //
 // Unknown keys are tolerated so receivers built against this version remain
 // forward-compatible with future connector-ctl vswitch releases.
@@ -41,11 +41,11 @@
 //	}
 //	defer tapFile.Close()
 //
-//	// Configure your VMM's virtio-net using meta.MAC / meta.MTU / meta.InnerIP,
+//	// Configure your VMM's virtio-net using meta.MAC / meta.InnerIP,
 //	// then hand tapFile.Fd() to the VMM's tap-backend (cloud-hypervisor's
 //	// --net fd= argument, firecracker's tap-fd plumbing, etc.).
-//	fmt.Printf("port=%d mac=%s mtu=%d ip=%s\n",
-//	    meta.Port, meta.MAC, meta.MTU, meta.InnerIP)
+//	fmt.Printf("port=%d mac=%s ip=%s\n",
+//	    meta.Port, meta.MAC, meta.InnerIP)
 //
 // # Example: socketpair / inherited-fd handshake
 //
