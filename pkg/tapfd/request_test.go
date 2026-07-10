@@ -29,6 +29,34 @@ func TestBuildAndParseOpenRequest(t *testing.T) {
 	}
 }
 
+func TestBuildAndParsePrepareReleaseRequests(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		op    string
+		extra string
+	}{
+		{"prepare", RequestOpPrepare, "VSWITCH=sw0 INNER_IP=169.254.0.21"},
+		{"release", RequestOpRelease, "VSWITCH=sw0 PORT=7"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			line, err := BuildRequest(tt.op, tt.extra, false)
+			if err != nil {
+				t.Fatalf("BuildRequest: %v", err)
+			}
+			req, err := ParseRequestLine(strings.TrimSuffix(string(line), "\n"))
+			if err != nil {
+				t.Fatalf("ParseRequestLine: %v", err)
+			}
+			if req.Version != RequestVersion || req.Op != tt.op || req.WantNetns {
+				t.Fatalf("request header = %+v", req)
+			}
+			if req.Fields["VSWITCH"] != "sw0" {
+				t.Fatalf("request fields = %+v", req.Fields)
+			}
+		})
+	}
+}
+
 func TestParseOpenRequestRejectsMalformed(t *testing.T) {
 	for _, line := range []string{
 		"",
@@ -43,6 +71,9 @@ func TestParseOpenRequestRejectsMalformed(t *testing.T) {
 	if _, err := BuildOpenRequest("switch=sw0\nport=1", true); err == nil {
 		t.Fatal("BuildOpenRequest with newline: want error")
 	}
+	if _, err := BuildRequest("CLOSE", "switch=sw0", false); err == nil {
+		t.Fatal("BuildRequest with unsupported op: want error")
+	}
 }
 
 func TestErrorResponse(t *testing.T) {
@@ -53,6 +84,19 @@ func TestErrorResponse(t *testing.T) {
 	}
 	if !ok || code != "BAD_REQUEST" || msg != "port_1_not_attached" {
 		t.Fatalf("parsed error = code=%q msg=%q ok=%t", code, msg, ok)
+	}
+}
+
+func TestOKLine(t *testing.T) {
+	resp, err := BuildOKLine("port=7 released=1")
+	if err != nil {
+		t.Fatalf("BuildOKLine: %v", err)
+	}
+	if got, want := string(resp), "TAPFD/1 OK port=7 released=1\n"; got != want {
+		t.Fatalf("OK line = %q, want %q", got, want)
+	}
+	if _, err := BuildOKLine("port=7\nreleased=1"); err == nil {
+		t.Fatal("BuildOKLine with newline: want error")
 	}
 }
 

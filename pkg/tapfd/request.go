@@ -9,6 +9,8 @@ import (
 const (
 	RequestVersion     = "TAPFD/1"
 	RequestOpOpen      = "OPEN"
+	RequestOpPrepare   = "PREPARE"
+	RequestOpRelease   = "RELEASE"
 	ResponseStatusOK   = "OK"
 	ResponseStatusERR  = "ERR"
 	RequestMaxLineSize = 512
@@ -68,11 +70,20 @@ func StripOKResponse(payload []byte) ([]byte, error) {
 // BuildOpenRequest builds a single-line socket-mode request. extra is a
 // provider-specific list of key=value tokens, for example "switch=sw0 port=1".
 func BuildOpenRequest(extra string, wantNetns bool) ([]byte, error) {
+	return BuildRequest(RequestOpOpen, extra, wantNetns)
+}
+
+// BuildRequest builds a single-line TAPFD/1 request. extra is a provider-
+// specific list of key=value tokens, for example "VSWITCH=sw0 PORT=1".
+func BuildRequest(op, extra string, wantNetns bool) ([]byte, error) {
+	if !validRequestOp(op) {
+		return nil, fmt.Errorf("unsupported tapfd request op %q", op)
+	}
 	extra = strings.TrimSpace(extra)
 	if strings.ContainsAny(extra, "\r\n\x00") {
 		return nil, fmt.Errorf("tapfd request contains a line break or NUL")
 	}
-	line := RequestVersion + " " + RequestOpOpen
+	line := RequestVersion + " " + op
 	if wantNetns {
 		line += " want_netns=1"
 	}
@@ -81,6 +92,23 @@ func BuildOpenRequest(extra string, wantNetns bool) ([]byte, error) {
 	}
 	if len(line)+1 > RequestMaxLineSize {
 		return nil, fmt.Errorf("tapfd request line too long: %d > %d", len(line)+1, RequestMaxLineSize)
+	}
+	return []byte(line + "\n"), nil
+}
+
+// BuildOKLine builds a single-line success response for operations that do not
+// transfer file descriptors, such as PREPARE and RELEASE.
+func BuildOKLine(extra string) ([]byte, error) {
+	extra = strings.TrimSpace(extra)
+	if strings.ContainsAny(extra, "\r\n\x00") {
+		return nil, fmt.Errorf("tapfd OK response contains a line break or NUL")
+	}
+	line := RequestVersion + " " + ResponseStatusOK
+	if extra != "" {
+		line += " " + extra
+	}
+	if len(line)+1 > RequestMaxLineSize {
+		return nil, fmt.Errorf("tapfd OK response line too long: %d > %d", len(line)+1, RequestMaxLineSize)
 	}
 	return []byte(line + "\n"), nil
 }
@@ -102,7 +130,7 @@ func ParseRequestLine(line string) (*Request, error) {
 	if toks[0] != RequestVersion {
 		return nil, fmt.Errorf("unsupported request version %q", toks[0])
 	}
-	if toks[1] != RequestOpOpen {
+	if !validRequestOp(toks[1]) {
 		return nil, fmt.Errorf("unsupported request op %q", toks[1])
 	}
 	req := &Request{
@@ -122,6 +150,15 @@ func ParseRequestLine(line string) (*Request, error) {
 		req.Fields[key] = val
 	}
 	return req, nil
+}
+
+func validRequestOp(op string) bool {
+	switch op {
+	case RequestOpOpen, RequestOpPrepare, RequestOpRelease:
+		return true
+	default:
+		return false
+	}
 }
 
 // BuildErrorResponse builds a single-line error response for socket-mode

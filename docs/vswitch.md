@@ -145,7 +145,7 @@ connector-ctl vswitch stop sw1
 | 参数 | 说明 |
 | --- | --- |
 | `--watch-interval` | 健康检查间隔,默认 30s |
-| `--tapfd-listen` | 持久 tapfd provider UDS。consumer 发送 `TAPFD/1 OPEN ...`,serve 返回 `TAPFD/1 OK` + metadata + SCM_RIGHTS;详见 [tapfd.md](tapfd.md) §4 |
+| `--tapfd-listen` | 持久 vswitch/tapfd UDS。支持 `TAPFD/1 PREPARE` / `OPEN` / `RELEASE`;`OPEN` 返回 `TAPFD/1 OK` + metadata + SCM_RIGHTS;详见 [tapfd.md](tapfd.md) §4 |
 
 `start` 输出:
 

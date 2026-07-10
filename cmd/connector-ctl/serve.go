@@ -69,7 +69,7 @@ func init() {
 	serveCmd.Flags().StringVar(&startPortMACAddr, "port-mac-addr", "fixed", "Port MAC address mode: 'fixed' (default), 'per-port', or specific MAC address")
 	serveCmd.Flags().StringVar(&startMode, "mode", "tap", `Port kind for auto-provision: "tap" (default) or "veth". With veth, --port-netns is required.`)
 	serveCmd.Flags().DurationVar(&serveWatchInterval, "watch-interval", 30*time.Second, "Health check interval")
-	serveCmd.Flags().StringVar(&serveTapFDListen, "tapfd-listen", "", "Unix socket path for persistent tapfd handoff requests")
+	serveCmd.Flags().StringVar(&serveTapFDListen, "tapfd-listen", "", "Unix socket path for persistent TAPFD/1 PREPARE/OPEN/RELEASE requests")
 }
 
 func runServe(cmd *cobra.Command, args []string) error {

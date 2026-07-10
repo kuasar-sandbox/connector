@@ -182,6 +182,39 @@ func handleTapFDConn(conn *net.UnixConn, switchName string, sw vswitch.Interface
 		return
 	}
 
+	switch req.Op {
+	case tapfd.RequestOpPrepare:
+		handleTapFDPrepare(conn, sw, req)
+	case tapfd.RequestOpOpen:
+		handleTapFDOpen(conn, switchName, sw, switchNs, req)
+	case tapfd.RequestOpRelease:
+		handleTapFDRelease(conn, sw, req)
+	default:
+		sendTapFDError(conn, tapfd.ErrorCodeBadRequest, fmt.Errorf("unsupported request op %q", req.Op))
+	}
+}
+
+func handleTapFDPrepare(conn *net.UnixConn, sw vswitch.Interface, req *tapfd.Request) {
+	opts, err := prepareAttachOptions(req)
+	if err != nil {
+		sendTapFDError(conn, tapfd.ErrorCodeBadRequest, err)
+		return
+	}
+	out, err := sw.Attach(opts)
+	if err != nil {
+		sendTapFDError(conn, tapFDErrorCode(err), err)
+		return
+	}
+	if out.Mode != vswitch.PortKindTap.String() {
+		_ = sw.Detach(vswitch.DetachOptions{Port: int(out.Port), SkipDevice: true})
+		sendTapFDError(conn, tapfd.ErrorCodePortInvalid, fmt.Errorf("port %d is %s, not tap", out.Port, out.Mode))
+		return
+	}
+	sendTapFDOK(conn, fmt.Sprintf("port=%d floating_ip=%s mac=%s ip=%s mode=%s",
+		out.Port, out.FloatingIP, out.PortMAC, out.InnerIP, out.Mode))
+}
+
+func handleTapFDOpen(conn *net.UnixConn, switchName string, sw vswitch.Interface, switchNs *netns.NetNS, req *tapfd.Request) {
 	portText := requestField(req, "port", "PORT")
 	if portText == "" {
 		sendTapFDError(conn, tapfd.ErrorCodePortInvalid, fmt.Errorf("missing port field"))
@@ -201,6 +234,58 @@ func handleTapFDConn(conn *net.UnixConn, switchName string, sw vswitch.Interface
 	if _, err := openPortAndSendToConn(sw, switchName, slotID, conn, "tapfd-listen:"+switchName, req.WantNetns, true, switchNs); err != nil {
 		sendTapFDError(conn, tapFDErrorCode(err), err)
 	}
+}
+
+func handleTapFDRelease(conn *net.UnixConn, sw vswitch.Interface, req *tapfd.Request) {
+	portText := requestField(req, "port", "PORT")
+	if portText == "" {
+		sendTapFDError(conn, tapfd.ErrorCodePortInvalid, fmt.Errorf("missing port field"))
+		return
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port <= 0 {
+		sendTapFDError(conn, tapfd.ErrorCodePortInvalid, fmt.Errorf("invalid port %q", portText))
+		return
+	}
+	if err := sw.Detach(vswitch.DetachOptions{Port: port}); err != nil {
+		sendTapFDError(conn, tapFDErrorCode(err), err)
+		return
+	}
+	sendTapFDOK(conn, fmt.Sprintf("port=%d released=1", port))
+}
+
+func prepareAttachOptions(req *tapfd.Request) (vswitch.AttachOptions, error) {
+	innerText := requestField(req, "inner_ip", "INNER_IP")
+	if innerText == "" {
+		return vswitch.AttachOptions{}, fmt.Errorf("missing inner_ip field")
+	}
+	innerIP := net.ParseIP(innerText)
+	if innerIP == nil {
+		return vswitch.AttachOptions{}, fmt.Errorf("invalid inner_ip %q", innerText)
+	}
+	opts := vswitch.AttachOptions{InnerIP: innerIP}
+
+	if gatewayText := requestField(req, "transit_gateway_ip", "transit-gateway-ip", "TRANSIT_GATEWAY_IP"); gatewayText != "" {
+		opts.TransitGatewayIP = net.ParseIP(gatewayText)
+		if opts.TransitGatewayIP == nil {
+			return vswitch.AttachOptions{}, fmt.Errorf("invalid transit_gateway_ip %q", gatewayText)
+		}
+	}
+	if vniText := requestField(req, "transit_geneve_vni", "transit-geneve-vni", "TRANSIT_GENEVE_VNI"); vniText != "" {
+		vni, err := strconv.ParseUint(vniText, 10, 32)
+		if err != nil {
+			return vswitch.AttachOptions{}, fmt.Errorf("invalid transit_geneve_vni %q", vniText)
+		}
+		opts.TransitGeneveVNI = uint32(vni)
+	}
+	if macText := requestField(req, "transit_mac", "transit-mac", "transit-mac-addr", "TRANSIT_MAC"); macText != "" {
+		mac, err := net.ParseMAC(macText)
+		if err != nil {
+			return vswitch.AttachOptions{}, fmt.Errorf("invalid transit_mac %q: %w", macText, err)
+		}
+		opts.TransitMAC = mac
+	}
+	return opts, nil
 }
 
 func readTapFDRequestLine(conn *net.UnixConn) (string, error) {
@@ -236,11 +321,22 @@ func sendTapFDError(conn *net.UnixConn, code string, err error) {
 	_, _ = conn.Write(tapfd.BuildErrorResponse(code, msg))
 }
 
+func sendTapFDOK(conn *net.UnixConn, fields string) {
+	msg, err := tapfd.BuildOKLine(fields)
+	if err != nil {
+		_, _ = conn.Write(tapfd.BuildErrorResponse(tapfd.ErrorCodeProviderInternal, err.Error()))
+		return
+	}
+	_, _ = conn.Write(msg)
+}
+
 func tapFDErrorCode(err error) string {
 	switch {
 	case vswitch.IsPortOutOfRange(err):
 		return tapfd.ErrorCodePortInvalid
-	case vswitch.IsPortNotAttached(err), vswitch.IsPortNotProvisioned(err):
+	case vswitch.IsPortAllocated(err), vswitch.IsPortNotAttached(err), vswitch.IsPortNotProvisioned(err):
+		return tapfd.ErrorCodePortUnavailable
+	case strings.Contains(err.Error(), "no free slots available"):
 		return tapfd.ErrorCodePortUnavailable
 	case strings.Contains(err.Error(), "not tap"):
 		return tapfd.ErrorCodePortInvalid

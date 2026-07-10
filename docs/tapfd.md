@@ -208,22 +208,36 @@ netns fd。
 请求行:
 
 ```text
+TAPFD/1 PREPARE VSWITCH=sw0 INNER_IP=169.254.0.21\n
 TAPFD/1 OPEN want_netns=1 VSWITCH=sw0 PORT=3\n
+TAPFD/1 RELEASE VSWITCH=sw0 PORT=3\n
 ```
 
-- `TAPFD/1` 是协议版本,`OPEN` 是当前唯一操作。
-- `want_netns=1` 与 §3.4 语义相同:consumer 请求 provider 追加 tap 所在 netns fd。
+- `TAPFD/1` 是协议版本。操作包括 `PREPARE`、`OPEN`、`RELEASE`。
+- `PREPARE` 分配并配置一个后续可 `OPEN` 的 port slot。`connector-ctl vswitch serve`
+  接受 `INNER_IP` 以及可选 `TRANSIT_GATEWAY_IP`、`TRANSIT_GENEVE_VNI`、
+  `TRANSIT_MAC`。
+- `OPEN` 打开已分配 port 的 tap queue fd 并经 `SCM_RIGHTS` 返回。`want_netns=1`
+  与 §3.4 语义相同:consumer 请求 provider 追加 tap 所在 netns fd。
+- `RELEASE` 释放已分配 port slot。
 - 其余 `key=value` token 是 provider 私有字段。`connector-ctl vswitch serve` 接受
   `switch`/`vswitch`/`VSWITCH` 与 `port`/`PORT`。
 - 行最大 512 字节,不得包含 NUL 或内嵌换行。
 
-成功响应在 §2 metadata 前加版本化状态前缀,并与 fd 一起通过 `SCM_RIGHTS` 返回:
+`OPEN` 成功响应在 §2 metadata 前加版本化状态前缀,并与 fd 一起通过 `SCM_RIGHTS` 返回:
 
 ```text
 TAPFD/1 OK port=3 mac=02:00:00:00:80:01 ip=169.254.3.1 fd=1 netns_fd=1\0
 ```
 
 consumer **应当**接受该 `TAPFD/1 OK` 前缀;为兼容 exec helper,也可接受裸 §2 metadata。
+
+`PREPARE`/`RELEASE` 成功响应不携带 fd:
+
+```text
+TAPFD/1 OK port=3 floating_ip=100.100.96.3 mac=02:00:00:00:80:01 ip=169.254.0.21 mode=tap\n
+TAPFD/1 OK port=3 released=1\n
+```
 
 失败响应不携带 fd:
 
@@ -235,8 +249,8 @@ TAPFD/1 ERR code=PORT_UNAVAILABLE message=port_not_attached\n
 `PORT_UNAVAILABLE`、`PROVIDER_INTERNAL`。收到 `ERR` 时 consumer **不得**启用网卡。
 
 `connector-ctl vswitch serve --tapfd-listen /run/kuasar/connector/sw0/tapfd.sock`
-是本模式的参考 provider。它复用 `open-port` 的 slot 校验、tap 打开、metadata 生成与
-SCM_RIGHTS 发送路径,仅把"谁拨号谁监听"改为 consumer 拨号 provider。
+是本模式的参考 provider。它在同一个常驻 switch handle 上完成 `PREPARE`/`OPEN`/
+`RELEASE`,避免热路径反复 fork/exec 和重新打开 pinned BPF maps。
 
 ## 5. 生命周期与幂等
 
