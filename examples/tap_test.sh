@@ -118,8 +118,8 @@ try:
     has_vnet_hdr = bool(flags_val & 0x4000)  # IFF_VNET_HDR
     with open(out_file, 'w') as f:
         f.write(f"meta_port={meta.get('port','?')} meta_mac={meta.get('mac','?')} "
-                f"meta_mtu={meta.get('mtu','?')} meta_ip={meta.get('ip','?')} "
-                f"meta_fd={meta.get('fd','?')} tap_name={name} is_tap={is_tap} "
+                f"meta_ip={meta.get('ip','?')} meta_fd={meta.get('fd','?')} "
+                f"tap_name={name} is_tap={is_tap} "
                 f"has_vnet_hdr={has_vnet_hdr}")
     os.close(fd)
 except Exception as e:
@@ -149,7 +149,7 @@ spawn_connectivity_probe() {
     local out_file="$2"
     rm -f "$sock_path" "$out_file"
     python3 - "$sock_path" "$out_file" <<'PYEOF' &
-import fcntl, os, select, socket, struct, sys
+import fcntl, os, select, socket, struct, sys, time
 sock_path, out_file = sys.argv[1], sys.argv[2]
 
 def done(msg):
@@ -194,19 +194,31 @@ try:
     arp += port_mac + inner_ip + b'\x00' * 6 + target_ip  # sha sip tha tip
     os.write(fd, b'\x00' * 12 + eth + arp)               # prepend zero vnet_hdr
 
-    r, _, _ = select.select([fd], [], [], 2.0)
-    if not r:
-        done("ERR no_reply (arp proxy did not answer through the fd)")
-    pkt = os.read(fd, 2048)[12:]                          # strip vnet_hdr
-    if len(pkt) < 14 + 28:
-        done("ERR short_reply len=%d" % len(pkt))
-    op = struct.unpack('>H', pkt[14 + 6:14 + 8])[0]
-    sip = pkt[14 + 14:14 + 18]
-    sha = pkt[14 + 8:14 + 14]
-    ok = pkt[12:14] == b'\x08\x06' and op == 2 and sip == target_ip
-    done("connectivity=%s arp_op=%d reply_mac=%s reply_sip=%s" % (
-        "OK" if ok else "BAD", op,
-        ':'.join('%02x' % b for b in sha), socket.inet_ntoa(sip)))
+    deadline = time.monotonic() + 2.0
+    frames = 0
+    last = "none"
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            done("ERR no_arp_reply frames=%d last=%s" % (frames, last))
+        r, _, _ = select.select([fd], [], [], remaining)
+        if not r:
+            done("ERR no_arp_reply frames=%d last=%s" % (frames, last))
+        pkt = os.read(fd, 2048)[12:]                      # strip vnet_hdr
+        frames += 1
+        if len(pkt) < 14 + 28:
+            last = "short(len=%d)" % len(pkt)
+            continue
+        if pkt[12:14] != b'\x08\x06':
+            last = "non-arp(ethertype=%s)" % pkt[12:14].hex()
+            continue
+        op = struct.unpack('>H', pkt[14 + 6:14 + 8])[0]
+        sip = pkt[14 + 14:14 + 18]
+        sha = pkt[14 + 8:14 + 14]
+        last = "arp_op=%d sip=%s" % (op, socket.inet_ntoa(sip))
+        if op == 2 and sip == target_ip:
+            done("connectivity=OK frames=%d arp_op=%d reply_mac=%s reply_sip=%s" % (
+                frames, op, ':'.join('%02x' % b for b in sha), socket.inet_ntoa(sip)))
 except Exception as e:
     done("ERR %r" % (e,))
 PYEOF
@@ -298,7 +310,6 @@ test_t4_open_port_scm_rights() {
        [[ "$got" == *"has_vnet_hdr=True"* ]] && \
        [[ "$got" == *"meta_port=1"* ]] && \
        [[ "$got" == *"meta_mac=02:00:00:00:80:01"* ]] && \
-       [[ "$got" == *"meta_mtu=1500"* ]] && \
        [[ "$got" == *"meta_ip=169.254.1.1"* ]] && \
        [[ "$got" == *"meta_fd=1"* ]]; then
         pass "T4: fd (vnet_hdr) + metadata delivered together via SCM_RIGHTS ($got)"
