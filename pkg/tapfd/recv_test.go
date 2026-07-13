@@ -41,6 +41,19 @@ func socketpairUnixConns(t *testing.T) (a, b *net.UnixConn) {
 	return a, b
 }
 
+func sendAsync(fn func() error) <-chan error {
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	return done
+}
+
+func waitSend(t *testing.T, done <-chan error) {
+	t.Helper()
+	if err := <-done; err != nil {
+		t.Errorf("send: %v", err)
+	}
+}
+
 func TestRecvFdRoundTrip(t *testing.T) {
 	sender, receiver := socketpairUnixConns(t)
 	defer sender.Close()
@@ -63,13 +76,10 @@ func TestRecvFdRoundTrip(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	go func() {
-		if err := SendFd(sender, wire, pr.Fd()); err != nil {
-			t.Errorf("SendFd: %v", err)
-		}
-	}()
+	sent := sendAsync(func() error { return SendFd(sender, wire, pr.Fd()) })
 
 	gotFile, gotMeta, err := RecvFd(receiver)
+	waitSend(t, sent)
 	if err != nil {
 		t.Fatalf("RecvFd: %v", err)
 	}
@@ -109,11 +119,14 @@ func TestRecvFdRejectsZeroFds(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	go func() {
-		_, _, _ = sender.WriteMsgUnix(wire, nil, nil) // no SCM_RIGHTS
-	}()
+	sent := sendAsync(func() error {
+		_, _, err := sender.WriteMsgUnix(wire, nil, nil) // no SCM_RIGHTS
+		return err
+	})
 
-	if _, _, err := RecvFd(receiver); err == nil {
+	_, _, err = RecvFd(receiver)
+	waitSend(t, sent)
+	if err == nil {
 		t.Fatal("expected error for missing SCM_RIGHTS, got nil")
 	}
 }
@@ -136,12 +149,14 @@ func TestRecvFdsMultiFd(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	go func() {
+	sent := sendAsync(func() error {
 		rights := syscall.UnixRights(int(pr1.Fd()), int(pr2.Fd()))
-		_, _, _ = sender.WriteMsgUnix(wire, rights, nil)
-	}()
+		_, _, err := sender.WriteMsgUnix(wire, rights, nil)
+		return err
+	})
 
 	files, gotMeta, err := RecvFds(receiver)
+	waitSend(t, sent)
 	if err != nil {
 		t.Fatalf("RecvFds: %v", err)
 	}
@@ -180,13 +195,10 @@ func TestRecvFdsWithNetnsRoundTrip(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	go func() {
-		if err := SendFd(sender, wire, tapR.Fd(), nsR.Fd()); err != nil {
-			t.Errorf("SendFd: %v", err)
-		}
-	}()
+	sent := sendAsync(func() error { return SendFd(sender, wire, tapR.Fd(), nsR.Fd()) })
 
 	tapFiles, netnsFile, gotMeta, err := RecvFdsWithNetns(receiver)
+	waitSend(t, sent)
 	if err != nil {
 		t.Fatalf("RecvFdsWithNetns: %v", err)
 	}
@@ -243,13 +255,10 @@ func TestRecvFdsDropsNetnsFD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	go func() {
-		if err := SendFd(sender, wire, tapR.Fd(), nsR.Fd()); err != nil {
-			t.Errorf("SendFd: %v", err)
-		}
-	}()
+	sent := sendAsync(func() error { return SendFd(sender, wire, tapR.Fd(), nsR.Fd()) })
 
 	files, gotMeta, err := RecvFds(receiver)
+	waitSend(t, sent)
 	if err != nil {
 		t.Fatalf("RecvFds: %v", err)
 	}
@@ -273,12 +282,15 @@ func TestRecvFdsWithNetnsCountMismatch(t *testing.T) {
 	defer pr.Close()
 	defer pw.Close()
 
-	go func() {
+	sent := sendAsync(func() error {
 		rights := syscall.UnixRights(int(pr.Fd()))
-		_, _, _ = sender.WriteMsgUnix(bogus, rights, nil)
-	}()
+		_, _, err := sender.WriteMsgUnix(bogus, rights, nil)
+		return err
+	})
 
-	if _, _, _, err := RecvFdsWithNetns(receiver); err == nil {
+	_, _, _, err := RecvFdsWithNetns(receiver)
+	waitSend(t, sent)
+	if err == nil {
 		t.Fatal("expected fd count mismatch error, got nil")
 	}
 }
@@ -294,12 +306,15 @@ func TestRecvFdFdCountMismatch(t *testing.T) {
 	defer pr.Close()
 	defer pw.Close()
 
-	go func() {
+	sent := sendAsync(func() error {
 		rights := syscall.UnixRights(int(pr.Fd()))
-		_, _, _ = sender.WriteMsgUnix(bogus, rights, nil)
-	}()
+		_, _, err := sender.WriteMsgUnix(bogus, rights, nil)
+		return err
+	})
 
-	if _, _, err := RecvFds(receiver); err == nil {
+	_, _, err := RecvFds(receiver)
+	waitSend(t, sent)
+	if err == nil {
 		t.Fatal("expected fd count mismatch error, got nil")
 	}
 }
