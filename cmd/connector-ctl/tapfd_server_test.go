@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -71,6 +72,62 @@ func TestPrepareTapFDListenPathRejectsNonSocket(t *testing.T) {
 	}
 }
 
+func TestTapFDServerCloseWaitsForHandlers(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "tapfd.sock")
+	addr, err := net.ResolveUnixAddr("unix", sock)
+	if err != nil {
+		t.Fatalf("ResolveUnixAddr: %v", err)
+	}
+	ln, err := net.ListenUnix("unix", addr)
+	if err != nil {
+		t.Fatalf("ListenUnix: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	srv := &tapFDServer{
+		path:   sock,
+		ln:     ln,
+		cancel: cancel,
+		done:   make(chan struct{}),
+		errCh:  make(chan error, 1),
+	}
+	attachStarted := make(chan struct{})
+	continueAttach := make(chan struct{})
+	fake := &fakeVSwitch{
+		attachOut:      &vswitch.AttachOutput{Port: 7, InnerIP: "169.254.0.21", Mode: "tap"},
+		attachStarted:  attachStarted,
+		continueAttach: continueAttach,
+	}
+	go srv.serve(ctx, "sw0", fake)
+
+	conn, err := tapfd.ConnectUnix(sock)
+	if err != nil {
+		t.Fatalf("ConnectUnix: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("TAPFD/1 PREPARE VSWITCH=sw0 INNER_IP=169.254.0.21\n")); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	<-attachStarted
+
+	closed := make(chan error, 1)
+	go func() { closed <- srv.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned while handler was blocked: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(continueAttach)
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not return after handler exited")
+	}
+}
+
 func TestTapFDServerPrepare(t *testing.T) {
 	server, client := unixSocketPair(t)
 	defer client.Close()
@@ -124,6 +181,37 @@ func TestTapFDServerPrepareRejectsNonTapAndRollsBack(t *testing.T) {
 	}
 }
 
+func TestTapFDServerPrepareResponseFailureRollsBack(t *testing.T) {
+	server, client := unixSocketPair(t)
+	attachStarted := make(chan struct{})
+	continueAttach := make(chan struct{})
+	fake := &fakeVSwitch{
+		attachOut:      &vswitch.AttachOutput{Port: 7, InnerIP: "169.254.0.21", Mode: "tap"},
+		attachStarted:  attachStarted,
+		continueAttach: continueAttach,
+	}
+	done := make(chan struct{})
+	go func() {
+		handleTapFDConn(server, "sw0", fake, nil)
+		close(done)
+	}()
+
+	if _, err := client.Write([]byte("TAPFD/1 PREPARE VSWITCH=sw0 INNER_IP=169.254.0.21\n")); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	<-attachStarted
+	_ = client.Close()
+	close(continueAttach)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not return")
+	}
+	if fake.detachOpts.Port != 7 || !fake.detachOpts.SkipDevice {
+		t.Fatalf("response failure rollback opts = %+v", fake.detachOpts)
+	}
+}
+
 func TestTapFDServerRelease(t *testing.T) {
 	server, client := unixSocketPair(t)
 	defer client.Close()
@@ -144,15 +232,21 @@ func TestTapFDServerRelease(t *testing.T) {
 
 type fakeVSwitch struct {
 	vswitch.Interface
-	attachOpts vswitch.AttachOptions
-	attachOut  *vswitch.AttachOutput
-	attachErr  error
-	detachOpts vswitch.DetachOptions
-	detachErr  error
+	attachOpts     vswitch.AttachOptions
+	attachOut      *vswitch.AttachOutput
+	attachErr      error
+	attachStarted  chan struct{}
+	continueAttach chan struct{}
+	detachOpts     vswitch.DetachOptions
+	detachErr      error
 }
 
 func (f *fakeVSwitch) Attach(opts vswitch.AttachOptions) (*vswitch.AttachOutput, error) {
 	f.attachOpts = opts
+	if f.attachStarted != nil {
+		close(f.attachStarted)
+		<-f.continueAttach
+	}
 	return f.attachOut, f.attachErr
 }
 

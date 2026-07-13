@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kuasar-sandbox/connector/pkg/netns"
@@ -23,12 +24,13 @@ const (
 )
 
 type tapFDServer struct {
-	path   string
-	ln     *net.UnixListener
-	cancel context.CancelFunc
-	netns  *netns.NetNS
-	done   chan struct{}
-	errCh  chan error
+	path     string
+	ln       *net.UnixListener
+	cancel   context.CancelFunc
+	netns    *netns.NetNS
+	handlers sync.WaitGroup
+	done     chan struct{}
+	errCh    chan error
 }
 
 func startTapFDServer(parent context.Context, path, switchName string, sw vswitch.Interface) (*tapFDServer, error) {
@@ -84,6 +86,7 @@ func (s *tapFDServer) Close() error {
 	s.cancel()
 	err := s.ln.Close()
 	<-s.done
+	s.handlers.Wait()
 	if rmErr := os.Remove(s.path); rmErr != nil && !os.IsNotExist(rmErr) && err == nil {
 		err = rmErr
 	}
@@ -113,7 +116,11 @@ func (s *tapFDServer) serve(ctx context.Context, switchName string, sw vswitch.I
 			}
 			return
 		}
-		go handleTapFDConn(conn, switchName, sw, s.netns)
+		s.handlers.Add(1)
+		go func() {
+			defer s.handlers.Done()
+			handleTapFDConn(conn, switchName, sw, s.netns)
+		}()
 	}
 }
 
@@ -206,12 +213,20 @@ func handleTapFDPrepare(conn *net.UnixConn, sw vswitch.Interface, req *tapfd.Req
 		return
 	}
 	if out.Mode != vswitch.PortKindTap.String() {
-		_ = sw.Detach(vswitch.DetachOptions{Port: int(out.Port), SkipDevice: true})
+		if detachErr := sw.Detach(vswitch.DetachOptions{Port: int(out.Port), SkipDevice: true}); detachErr != nil {
+			sendTapFDError(conn, tapfd.ErrorCodeProviderInternal,
+				fmt.Errorf("port %d is %s, not tap; rollback: %w", out.Port, out.Mode, detachErr))
+			return
+		}
 		sendTapFDError(conn, tapfd.ErrorCodePortInvalid, fmt.Errorf("port %d is %s, not tap", out.Port, out.Mode))
 		return
 	}
-	sendTapFDOK(conn, fmt.Sprintf("port=%d floating_ip=%s mac=%s ip=%s mode=%s",
-		out.Port, out.FloatingIP, out.PortMAC, out.InnerIP, out.Mode))
+	if err := sendTapFDOK(conn, fmt.Sprintf("port=%d floating_ip=%s mac=%s ip=%s mode=%s",
+		out.Port, out.FloatingIP, out.PortMAC, out.InnerIP, out.Mode)); err != nil {
+		// The client never received the allocated port number and therefore cannot
+		// RELEASE it. Roll back here so a disconnected caller cannot leak a slot.
+		_ = sw.Detach(vswitch.DetachOptions{Port: int(out.Port), SkipDevice: true})
+	}
 }
 
 func handleTapFDOpen(conn *net.UnixConn, switchName string, sw vswitch.Interface, switchNs *netns.NetNS, req *tapfd.Request) {
@@ -251,7 +266,7 @@ func handleTapFDRelease(conn *net.UnixConn, sw vswitch.Interface, req *tapfd.Req
 		sendTapFDError(conn, tapFDErrorCode(err), err)
 		return
 	}
-	sendTapFDOK(conn, fmt.Sprintf("port=%d released=1", port))
+	_ = sendTapFDOK(conn, fmt.Sprintf("port=%d released=1", port))
 }
 
 func prepareAttachOptions(req *tapfd.Request) (vswitch.AttachOptions, error) {
@@ -321,13 +336,20 @@ func sendTapFDError(conn *net.UnixConn, code string, err error) {
 	_, _ = conn.Write(tapfd.BuildErrorResponse(code, msg))
 }
 
-func sendTapFDOK(conn *net.UnixConn, fields string) {
+func sendTapFDOK(conn *net.UnixConn, fields string) error {
 	msg, err := tapfd.BuildOKLine(fields)
 	if err != nil {
 		_, _ = conn.Write(tapfd.BuildErrorResponse(tapfd.ErrorCodeProviderInternal, err.Error()))
-		return
+		return err
 	}
-	_, _ = conn.Write(msg)
+	n, err := conn.Write(msg)
+	if err != nil {
+		return err
+	}
+	if n != len(msg) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func tapFDErrorCode(err error) string {
