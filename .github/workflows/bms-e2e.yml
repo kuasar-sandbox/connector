@@ -36,6 +36,27 @@ jobs:
       PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
 
     steps:
+      - name: Reset interrupted E2E state
+        run: |
+          set -euo pipefail
+
+          privileged=()
+          if [ "$(id -u)" -ne 0 ]; then
+            privileged=(sudo -n)
+          fi
+
+          "${privileged[@]}" systemctl stop 'sandbox-runner@*.service' 'sandbox-builder@*.service'
+          if ip link show sb-tap0 >/dev/null 2>&1; then
+            "${privileged[@]}" ip link del sb-tap0
+          fi
+          "${privileged[@]}" rm -f \
+            /run/systemd/system/sandbox-runner@.service \
+            /run/systemd/system/sandbox-builder@.service \
+            /run/systemd/system/sandbox-runner.slice \
+            /run/systemd/system/sandbox-builder.slice
+          "${privileged[@]}" systemctl reset-failed 'sandbox-runner@*.service' 'sandbox-builder@*.service'
+          "${privileged[@]}" systemctl daemon-reload
+
       - name: Create source token
         id: source-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
