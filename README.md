@@ -27,12 +27,16 @@ import);协议规格见 [docs/tapfd.md](docs/tapfd.md)。
 ```bash
 make build                      # bin/<arch>/connector-ctl;纯 Go,CGO_ENABLED=0
 make build TARGET_ARCH=aarch64  # 交叉编译(别名 amd64 / arm64)
-make release                    # build/dist/connector-<ver>-linux-<arch>.tar.gz
+make release VERSION=v0.1.0     # build/release-bundle:archive + checksums + provenance
 make generate                   # 仅修改 bpf/*.c 时需要(clang 12+)
 make test                       # 单元测试;集成/e2e 见 docs/vswitch.md §10
 ```
 
 运行需要 Linux 5.10+(BTF + TC BPF)与 root;构建需要 Go 1.24+。
+
+仓库的 `Release` workflow 从 `main` 的精确提交发布独立 `vX.Y.Z` 版本。发布包
+`connector-vX.Y.Z-linux-<arch>.tar.gz` 可与其他 Kuasar Sandbox 组件直接解压到
+同一部署目录。
 
 ## 快速开始
 
