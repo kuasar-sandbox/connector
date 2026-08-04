@@ -441,7 +441,7 @@ connector-ctl tapfd get --new [<tap>]    # 不存在则创建;省略名时内核
 ```bash
 make build                      # 产物: bin/<arch>/connector-ctl(并在 bin/ 建同名软链)
 make build TARGET_ARCH=aarch64  # 交叉编译(纯 Go,无需交叉工具链);别名 amd64 / arm64
-make release                    # 打包: build/dist/connector-<ver>-linux-<arch>.tar.gz
+make release VERSION=vX.Y.Z     # 打包并校验 build/release-bundle
 make generate                   # 仅修改 bpf/*.c 时需要(clang 12+);仓库自带预生成 .o
 make test                       # 单元测试
 sudo make test-integration      # 集成测试(root + BPF 内核)

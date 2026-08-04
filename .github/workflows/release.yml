@@ -1,0 +1,118 @@
+name: Release
+run-name: Release ${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Component version in vX.Y.Z form
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: component-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out trusted release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate release request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [ "$GITHUB_REF" = refs/heads/main ] \
+            || { echo "Release must be dispatched from main" >&2; exit 1; }
+          bash scripts/publish-release.sh check "$VERSION"
+
+  build:
+    needs: preflight
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - kuasar-e2e
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      TARGET_ARCH: x86_64
+      GOPROXY: https://goproxy.cn,direct
+      GOSUMDB: sum.golang.google.cn
+      GOTOOLCHAIN: local
+    steps:
+      - name: Check out exact component source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Attach native source cache
+        run: |
+          set -euo pipefail
+          install -d -m 0755 /var/cache/kuasar/tarballs
+          mkdir -p build
+          ln -sfn /var/cache/kuasar/tarballs build/tarball
+
+      - name: Build and test connector
+        run: |
+          set -euo pipefail
+          make test
+          make vet
+          make build
+
+      - name: Package the component release
+        env:
+          VERSION: ${{ inputs.version }}
+          RELEASE_WORKFLOW_REPOSITORY: ${{ github.repository }}
+          RELEASE_WORKFLOW_RUN_ID: ${{ github.run_id }}
+          RELEASE_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          RELEASE_WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          printf 'repository\trequested_ref\tresolved_sha\trole\n' > revisions.tsv
+          printf '%s\t%s\t%s\t%s\n' \
+            "$GITHUB_REPOSITORY" main "$GITHUB_SHA" primary >> revisions.tsv
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          export SOURCE_DATE_EPOCH
+          bash scripts/release.sh package "$VERSION" "$TARGET_ARCH" revisions.tsv release-bundle
+
+      - name: Upload validated release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: component-release-${{ inputs.version }}-${{ github.run_id }}
+          path: release-bundle
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Check out trusted publish tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download validated release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: component-release-${{ inputs.version }}-${{ github.run_id }}
+          path: release-bundle
+
+      - name: Publish component release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/publish-release.sh publish release-bundle

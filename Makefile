@@ -1,7 +1,7 @@
 # connector Makefile
 SHELL := /bin/bash
 
-.PHONY: all generate build connector-ctl clean test test-integration test-all test-e2e bench release release-clean deps fmt lint vet vmlinux help
+.PHONY: all generate build connector-ctl clean test test-integration test-all test-e2e bench release test-release release-clean deps fmt lint vet vmlinux help
 
 # ---------------------------------------------------------------------------
 # Architecture selection
@@ -48,8 +48,7 @@ BINDIR      := bin/$(TARGET_ARCH)
 BINARY      := $(BINDIR)/$(BINARY_NAME)
 BUILD_DIR   := build
 COVERAGE    := $(BUILD_DIR)/coverage.out
-RELEASE_DIR := $(BUILD_DIR)/dist
-VERSION     ?= v0.1
+VERSION     ?= v0.1.0
 GO          := go
 CLANG       := clang
 GO_BUILD_FLAGS := -trimpath
@@ -134,36 +133,23 @@ bench: connector-ctl
 # ---------------------------------------------------------------------------
 # Release packaging
 # ---------------------------------------------------------------------------
-# `make release` builds for the current TARGET_ARCH and packs the binary plus
-# deployment configs, examples and docs into
-#   build/dist/connector-$(VERSION)-linux-$(TARGET_ARCH).tar.gz
-# The arch is in the tarball name, so `make release TARGET_ARCH=x86_64` and
-# `... TARGET_ARCH=aarch64` produce two non-colliding tarballs.
-#
-# The binary is self-contained (eBPF objects are embedded), so the tarball
-# carries no bpf/ sources or shared libraries.
+# The binary is self-contained (eBPF objects are embedded). The release bundle
+# contains a merge-safe archive, checksums, provenance and release notes.
 release: build
-	@echo "==> Packaging connector $(VERSION) ($(TARGET_ARCH))..."
-	@rm -rf $(RELEASE_DIR)/connector-$(VERSION)
-	@mkdir -p $(RELEASE_DIR)/connector-$(VERSION)/bin \
-	          $(RELEASE_DIR)/connector-$(VERSION)/docs
-	cp $(BINARY) $(RELEASE_DIR)/connector-$(VERSION)/bin/$(BINARY_NAME)
-	cp -r dist examples $(RELEASE_DIR)/connector-$(VERSION)/
-	cp README.md $(RELEASE_DIR)/connector-$(VERSION)/
-	cp docs/PROPOSAL.md $(RELEASE_DIR)/connector-$(VERSION)/docs/
-	@{ echo "version: $(VERSION)"; \
-	   echo "arch:    $(TARGET_ARCH)"; \
-	   echo "commit:  $$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"; \
-	   echo "built:   $$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
-	 } > $(RELEASE_DIR)/connector-$(VERSION)/VERSION
-	tar -C $(RELEASE_DIR) -czf \
-	    $(RELEASE_DIR)/connector-$(VERSION)-linux-$(TARGET_ARCH).tar.gz \
-	    connector-$(VERSION)
-	@echo "==> Wrote $(RELEASE_DIR)/connector-$(VERSION)-linux-$(TARGET_ARCH).tar.gz"
+	@mkdir -p $(BUILD_DIR)
+	@printf 'repository\trequested_ref\tresolved_sha\trole\n' > $(BUILD_DIR)/revisions.tsv
+	@printf 'kuasar-sandbox/connector\tHEAD\t%s\tprimary\n' "$$(git rev-parse HEAD)" >> $(BUILD_DIR)/revisions.tsv
+	rm -rf $(BUILD_DIR)/release-bundle
+	SOURCE_DATE_EPOCH="$$(git show -s --format=%ct HEAD)" \
+		bash scripts/release.sh package "$(VERSION)" "$(TARGET_ARCH)" \
+		$(BUILD_DIR)/revisions.tsv $(BUILD_DIR)/release-bundle
+
+test-release:
+	bash scripts/test-release.sh
 
 release-clean:
 	@echo "==> Removing release artifacts..."
-	rm -rf $(RELEASE_DIR)
+	rm -rf $(BUILD_DIR)/release-bundle $(BUILD_DIR)/revisions.tsv
 
 # ---------------------------------------------------------------------------
 # Misc
@@ -201,8 +187,9 @@ help:
 	@echo "  test-all         - Alias for test-integration"
 	@echo "  test-e2e         - Run end-to-end shell tests (requires root + BPF)"
 	@echo "  bench            - Run performance benchmark (requires root + iperf3)"
-	@echo "  release          - Pack binary + configs + docs into a per-arch tarball under $(RELEASE_DIR)"
-	@echo "  release-clean    - Remove $(RELEASE_DIR)"
+	@echo "  release          - Build a validated component release bundle"
+	@echo "  test-release     - Test component release packaging"
+	@echo "  release-clean    - Remove release bundle outputs"
 	@echo "  deps             - Check dependencies and download Go modules"
 	@echo "  fmt              - Format Go and BPF C sources"
 	@echo "  lint             - go vet ./..."
