@@ -28,6 +28,8 @@ env \
   RELEASE_WORKFLOW_RUN_URL=https://github.com/kuasar-sandbox/connector/actions/runs/123 \
   "$ROOT/scripts/release.sh" package v1.2.3 x86_64 "$TMP/revisions.tsv" "$TMP/bundle"
 "$ROOT/scripts/release.sh" validate "$TMP/bundle"
+bash "$ROOT/scripts/test-publisher.sh" "$ROOT/scripts/publish-release.sh" \
+  "$TMP/bundle" kuasar-sandbox/connector v1.2.3
 
 archive="$TMP/bundle/assets/connector-v1.2.3-linux-x86_64.tar.gz"
 for path in \

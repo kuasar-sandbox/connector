@@ -37,6 +37,9 @@ make test                       # 单元测试;集成/e2e 见 docs/vswitch.md §
 仓库的 `Release` workflow 从 `main` 的精确提交发布独立 `vX.Y.Z` 版本。发布包
 `connector-vX.Y.Z-linux-<arch>.tar.gz` 可与其他 Kuasar Sandbox 组件直接解压到
 同一部署目录。
+正式版之前,workflow 每天按上海日期发布
+`v0.1.0-preview.YYYYMMDD` prerelease;preview 不更新 GitHub Latest,正式
+`v0.1.0` 由独立构建发布。
 
 ## 快速开始
 

@@ -11,6 +11,12 @@ BUNDLE="$2"
 REPOSITORY="$3"
 TAG="$4"
 COMMIT="$(jq -er '.commit // .mapping.commit' "$BUNDLE/release.json")"
+EXPECTED_PRERELEASE=false
+EXPECTED_LATEST=true
+if [[ "$TAG" = *-preview.* ]]; then
+  EXPECTED_PRERELEASE=true
+  EXPECTED_LATEST=false
+fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/state"
@@ -99,7 +105,7 @@ if [ "${1:-}" = api ]; then
       ;;
     "PATCH repos/$repository/releases/77")
       [ "$(jq -er '.draft' "$request")" = false ] || exit 2
-      jq -er '.prerelease' "$request" > "$state/release-prerelease"
+      jq -r '.prerelease' "$request" > "$state/release-prerelease"
       jq -er '.make_latest' "$request" > "$state/make-latest"
       printf 'false\n' > "$state/release-draft"
       emit "$(release_json)" "$filter"
@@ -173,12 +179,12 @@ env "${common_env[@]}" "$PUBLISHER" publish "$BUNDLE"
   echo "test-publisher: release remains a draft" >&2
   exit 1
 }
-[ "$(cat "$TMP/state/release-prerelease")" = true ] || {
-  echo "test-publisher: preview was not published as a prerelease" >&2
+[ "$(cat "$TMP/state/release-prerelease")" = "$EXPECTED_PRERELEASE" ] || {
+  echo "test-publisher: release has the wrong prerelease state" >&2
   exit 1
 }
-[ "$(cat "$TMP/state/make-latest")" = false ] || {
-  echo "test-publisher: preview attempted to replace the latest release" >&2
+[ "$(cat "$TMP/state/make-latest")" = "$EXPECTED_LATEST" ] || {
+  echo "test-publisher: release has the wrong latest policy" >&2
   exit 1
 }
 if env "${common_env[@]}" "$PUBLISHER" check "$TAG" >/dev/null 2>&1; then
@@ -187,4 +193,3 @@ if env "${common_env[@]}" "$PUBLISHER" check "$TAG" >/dev/null 2>&1; then
 fi
 
 echo "test-publisher: PASS"
-
