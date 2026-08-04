@@ -43,6 +43,19 @@ if "$ROOT/scripts/release.sh" validate "$TMP/tampered" >/dev/null 2>&1; then
   fail "validator accepted a tampered archive"
 fi
 
+env \
+  RELEASE_BIN_DIR="$TMP/bin" \
+  SOURCE_DATE_EPOCH=1700000000 \
+  RELEASE_WORKFLOW_REPOSITORY=kuasar-sandbox/connector \
+  RELEASE_WORKFLOW_RUN_ID=124 \
+  RELEASE_WORKFLOW_RUN_ATTEMPT=1 \
+  RELEASE_WORKFLOW_RUN_URL=https://github.com/kuasar-sandbox/connector/actions/runs/124 \
+  "$ROOT/scripts/release.sh" package v1.2.3-preview.20260804 x86_64 \
+    "$TMP/revisions.tsv" "$TMP/preview-bundle"
+"$ROOT/scripts/release.sh" validate "$TMP/preview-bundle"
+bash "$ROOT/scripts/test-publisher.sh" "$ROOT/scripts/publish-release.sh" \
+  "$TMP/preview-bundle" kuasar-sandbox/connector v1.2.3-preview.20260804
+
 if RELEASE_BIN_DIR="$TMP/bin" "$ROOT/scripts/release.sh" package 01.2.3 x86_64 \
   "$TMP/revisions.tsv" "$TMP/invalid" >/dev/null 2>&1; then
   fail "packager accepted an invalid version"
