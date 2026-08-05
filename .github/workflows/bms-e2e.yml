@@ -369,6 +369,7 @@ jobs:
               "$source_dir" "$source_dir/$resolved_sha.tar.gz"
           done < <(tail -n +2 "$KUASAR_REVISION_MANIFEST")
 
+          rm -f go.work go.work.sum src/go.work src/go.work.sum
           cd src
           go work init ./accelerator ./connector ./guest-runtime ./orchestrator ./sandboxer
 
