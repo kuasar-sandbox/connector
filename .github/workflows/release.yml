@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: component-release-${{ github.repository }}
+  group: component-release-${{ github.repository }}-${{ github.event_name }}
   cancel-in-progress: false
 
 jobs:
@@ -84,9 +84,6 @@ jobs:
       GOPROXY: https://goproxy.cn,direct
       GOSUMDB: sum.golang.google.cn
       GOTOOLCHAIN: local
-      http_proxy: ${{ secrets.KUASAR_CI_PROXY_URL }}
-      https_proxy: ${{ secrets.KUASAR_CI_PROXY_URL }}
-      no_proxy: ${{ vars.KUASAR_CI_NO_PROXY }}
     steps:
       - name: Check out exact component source
         id: checkout-source
