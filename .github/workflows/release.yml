@@ -141,6 +141,9 @@ jobs:
       - preflight
       - build
     runs-on: ubuntu-latest
+    concurrency:
+      group: component-publish-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       actions: read
       contents: write
