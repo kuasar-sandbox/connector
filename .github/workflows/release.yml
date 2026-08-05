@@ -9,7 +9,9 @@ on:
         required: true
         type: string
   schedule:
-    - cron: "27 0 * * *"
+    - cron: "12 2 * * *"
+      timezone: Asia/Shanghai
+    - cron: "12 4 * * *"
       timezone: Asia/Shanghai
 
 permissions:
@@ -74,7 +76,7 @@ jobs:
       - Linux
       - X64
       - kuasar-e2e
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
     env:
@@ -82,8 +84,19 @@ jobs:
       GOPROXY: https://goproxy.cn,direct
       GOSUMDB: sum.golang.google.cn
       GOTOOLCHAIN: local
+      http_proxy: ${{ secrets.KUASAR_CI_PROXY_URL }}
+      https_proxy: ${{ secrets.KUASAR_CI_PROXY_URL }}
+      no_proxy: ${{ vars.KUASAR_CI_NO_PROXY }}
     steps:
       - name: Check out exact component source
+        id: checkout-source
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Retry exact component source checkout
+        if: steps.checkout-source.outcome == 'failure'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
