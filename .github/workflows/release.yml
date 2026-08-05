@@ -9,14 +9,16 @@ on:
         required: true
         type: string
   schedule:
-    - cron: "27 0 * * *"
+    - cron: "12 2 * * *"
+      timezone: Asia/Shanghai
+    - cron: "12 4 * * *"
       timezone: Asia/Shanghai
 
 permissions:
   contents: read
 
 concurrency:
-  group: component-release-${{ github.repository }}
+  group: component-release-${{ github.repository }}-${{ github.event_name }}
   cancel-in-progress: false
 
 jobs:
@@ -74,7 +76,7 @@ jobs:
       - Linux
       - X64
       - kuasar-e2e
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
     env:
@@ -84,6 +86,14 @@ jobs:
       GOTOOLCHAIN: local
     steps:
       - name: Check out exact component source
+        id: checkout-source
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Retry exact component source checkout
+        if: steps.checkout-source.outcome == 'failure'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -131,6 +141,9 @@ jobs:
       - preflight
       - build
     runs-on: ubuntu-latest
+    concurrency:
+      group: component-publish-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       actions: read
       contents: write
@@ -149,4 +162,21 @@ jobs:
       - name: Publish component release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/publish-release.sh publish release-bundle
+          STABLE_VERSION: v0.1.0
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            status=$(curl --show-error --silent \
+              --retry 4 --retry-all-errors --connect-timeout 10 --max-time 60 \
+              --output /dev/null --write-out '%{http_code}' \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$STABLE_VERSION")
+            case "$status" in
+              200) echo "stable release $STABLE_VERSION exists; skipping preview publication"; exit 0 ;;
+              404) ;;
+              *) echo "failed to check stable release $STABLE_VERSION: HTTP $status" >&2; exit 1 ;;
+            esac
+          fi
+          bash scripts/publish-release.sh publish release-bundle
