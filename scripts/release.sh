@@ -3,7 +3,9 @@
 set -euo pipefail
 
 NAME=connector
-REPOSITORY=kuasar-sandbox/connector
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
 
 fail() {
   echo "release: $*" >&2
@@ -12,268 +14,161 @@ fail() {
 
 validate_version() {
   [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-preview\.[0-9]{8})?$ ]] \
-    || fail "version must match vX.Y.Z or vX.Y.Z-preview.YYYYMMDD without leading zeroes"
+    || fail "version must match vX.Y.Z or vX.Y.Z-preview.YYYYMMDD"
 }
 
 normalize_arch() {
   case "$1" in
-    amd64) echo x86_64 ;;
-    arm64) echo aarch64 ;;
-    x86_64|aarch64) echo "$1" ;;
-    *) fail "unsupported architecture: $1" ;;
+    amd64|x86_64) printf 'x86_64\n' ;;
+    *) fail "unsupported release architecture: $1; current release target is x86_64" ;;
   esac
 }
 
-read_revisions() {
-  local manifest="$1"
-  [ -f "$manifest" ] || fail "revision manifest not found: $manifest"
-  IFS= read -r header < "$manifest" || fail "revision manifest is empty"
-  [ "$header" = $'repository\trequested_ref\tresolved_sha\trole' ] \
-    || fail "unexpected revision manifest header"
-
-  local rows="$WORK/revisions.ndjson"
-  : > "$rows"
-  local line=1 repository requested_ref resolved_sha role extra
-  while IFS=$'\t' read -r repository requested_ref resolved_sha role extra; do
-    line=$((line + 1))
-    if [ -z "$repository" ] || [ -z "$requested_ref" ] || [ -z "$resolved_sha" ] \
-      || [ -z "$role" ] || [ -n "${extra:-}" ]; then
-      fail "malformed revision manifest row $line"
-    fi
-    [[ "$repository" =~ ^kuasar-sandbox/[A-Za-z0-9_.-]+$ ]] \
-      || fail "invalid repository at row $line"
-    [[ "$resolved_sha" =~ ^[0-9a-f]{40}$ ]] \
-      || fail "invalid commit at row $line"
-    jq -cn \
-      --arg repository "$repository" \
-      --arg requested_ref "$requested_ref" \
-      --arg commit "$resolved_sha" \
-      --arg role "$role" \
-      '{repository: $repository, requestedRef: $requested_ref, commit: $commit, role: $role}' \
-      >> "$rows"
-  done < <(sed -n '2,$p' "$manifest")
-
-  [ -s "$rows" ] || fail "revision manifest has no entries"
-  [ "$(jq -s --arg repository "$REPOSITORY" '[.[] | select(.repository == $repository)] | length' "$rows")" -eq 1 ] \
-    || fail "revision manifest must contain exactly one $REPOSITORY entry"
-  jq -s '.' "$rows" > "$WORK/revisions.json"
+archive_name() {
+  local version="$1" arch
+  validate_version "$version"
+  arch="$(normalize_arch "$2")"
+  printf '%s-%s-linux-%s.tar.gz\n' "$NAME" "$version" "$arch"
 }
 
 copy_file() {
-  local source="$1"
-  local destination="$2"
+  local source="$1" destination="$2"
   [ -f "$ROOT/$source" ] || fail "missing release input: $ROOT/$source"
   mkdir -p "$(dirname "$STAGE/$destination")"
   install -m 0644 "$ROOT/$source" "$STAGE/$destination"
 }
 
 copy_executable() {
-  local source="$1"
-  local destination="$2"
+  local source="$1" destination="$2"
   [ -x "$source" ] || fail "missing executable release input: $source"
   mkdir -p "$(dirname "$STAGE/$destination")"
   install -m 0755 "$source" "$STAGE/$destination"
 }
 
-copy_root_script() {
-  local source="$1"
-  local destination="$2"
-  [ -f "$ROOT/$source" ] || fail "missing script release input: $ROOT/$source"
+copy_root_executable() {
+  local source="$1" destination="$2"
+  [ -x "$ROOT/$source" ] || fail "missing executable release input: $ROOT/$source"
   mkdir -p "$(dirname "$STAGE/$destination")"
   install -m 0755 "$ROOT/$source" "$STAGE/$destination"
 }
 
-package_release() {
-  [ "$#" -eq 4 ] || fail "usage: release.sh package <version> <arch> <revisions.tsv> <output-dir>"
-  local version="$1"
-  local arch
-  arch="$(normalize_arch "$2")"
-  local revisions="$3"
-  local output="$4"
+check_go_binary() {
+  local file="$1"
+  go version -m "$file" >/dev/null 2>&1 \
+    || fail "Go build info is missing from $file"
+}
 
-  validate_version "$version"
+validate_archive_paths() {
+  local archive="$1" listing="$WORK/listing"
+  tar -tzf "$archive" > "$listing"
+  awk '
+    /^\// { exit 1 }
+    { path=$0; sub(/^\.\//, "", path); if (path ~ /(^|\/)\.\.($|\/)/) exit 1 }
+  ' "$listing" || fail "$archive contains an unsafe path"
+  if grep -E '(^|/)release\.json$|(^|/)release/[^/]+\.json$' "$listing" >/dev/null; then
+    fail "$archive contains release metadata JSON"
+  fi
+  awk '
+    { path=$0; sub(/^\.\//, "", path) }
+    path != "" && path !~ /\/$/ && path !~ /^(bin|deploy|docs|test)\// { exit 1 }
+  ' "$listing" || fail "$archive contains a file outside bin/, docs/, or test/"
+}
+
+validate_bundle() {
+  [ "$#" -eq 3 ] || fail "usage: release.sh validate <version> <arch> <bundle-dir>"
+  local version="$1" arch archive bundle="$3"
+  arch="$(normalize_arch "$2")"
+  archive="$(archive_name "$version" "$arch")"
+  [ -s "$bundle/release-notes.md" ] || fail "release-notes.md is missing"
+  [ -d "$bundle/assets" ] || fail "assets directory is missing"
+
+  local expected="$WORK/expected-assets" actual="$WORK/actual-assets"
+  printf '%s\n' "$archive" SHA256SUMS | LC_ALL=C sort > "$expected"
+  find "$bundle/assets" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > "$actual"
+  cmp -s "$expected" "$actual" \
+    || { diff -u "$expected" "$actual" >&2 || true; fail "bundle contains an unexpected asset set"; }
+  [ "$(grep -cve '^[[:space:]]*$' "$bundle/assets/SHA256SUMS")" -eq 1 ] \
+    || fail "SHA256SUMS must contain exactly one entry"
+  local digest listed extra
+  read -r digest listed extra < "$bundle/assets/SHA256SUMS"
+  listed="${listed#\*}"
+  if ! [[ "$digest" =~ ^[0-9a-f]{64}$ ]] \
+    || [ "$listed" != "$archive" ] || [ -n "${extra:-}" ]; then
+    fail "SHA256SUMS does not describe the expected archive"
+  fi
+  (cd "$bundle/assets" && sha256sum --quiet -c SHA256SUMS) \
+    || fail "SHA256SUMS validation failed"
+
+  validate_archive_paths "$bundle/assets/$archive"
+  local extract="$WORK/extract"
+  rm -rf "$extract"
+  mkdir -p "$extract"
+  tar -xzf "$bundle/assets/$archive" -C "$extract"
+  [ -x "$extract/bin/connector-ctl" ] \
+    || fail "$archive is missing executable bin/connector-ctl"
+  check_go_binary "$extract/bin/connector-ctl"
+  local file
+  for file in docs/connector.md docs/vswitch.md docs/tapfd.md \
+    deploy/connector-vswitch.service deploy/connector-switch.conf \
+    deploy/NetworkManager-connector.conf test/connector/geneve_eth_test.sh \
+    test/connector/geneve_ip_test.sh test/connector/manage_switch.sh \
+    test/connector/mgmt_isolation_test.sh test/connector/perf_bench.sh \
+    test/connector/provision_test.sh test/connector/start_perf_bench.sh \
+    test/connector/tap_test.sh; do
+    [ -f "$extract/$file" ] || fail "$archive is missing $file"
+  done
+}
+
+package_release() {
+  [ "$#" -eq 3 ] || fail "usage: release.sh package <version> <arch> <output-dir>"
+  local version="$1" arch output="$3" archive epoch bin_dir
+  arch="$(normalize_arch "$2")"
+  archive="$(archive_name "$version" "$arch")"
   if [ -z "$output" ] || [ "$output" = / ] || [ "$output" = . ]; then
     fail "unsafe output directory: $output"
   fi
   [ ! -e "$output" ] || fail "output already exists: $output"
-  read_revisions "$revisions"
-
-  local commit
-  commit="$(jq -er --arg repository "$REPOSITORY" '.[] | select(.repository == $repository) | .commit' "$WORK/revisions.json")"
-  local epoch="${SOURCE_DATE_EPOCH:-0}"
+  epoch="${SOURCE_DATE_EPOCH:-0}"
   [[ "$epoch" =~ ^[0-9]+$ ]] || fail "SOURCE_DATE_EPOCH must be an integer"
-  local created_at
-  created_at="$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ)"
-  local archive="$NAME-$version-linux-$arch.tar.gz"
 
   STAGE="$WORK/stage"
-  mkdir -p "$STAGE/bin" "$STAGE/release"
-  local bin_dir="${RELEASE_BIN_DIR:-$ROOT/bin/$arch}"
+  rm -rf "$STAGE"
+  mkdir -p "$STAGE"
+  bin_dir="${RELEASE_BIN_DIR:-$ROOT/bin/$arch}"
   copy_executable "$bin_dir/connector-ctl" bin/connector-ctl
+  check_go_binary "$STAGE/bin/connector-ctl"
   copy_file README.md docs/connector.md
   copy_file docs/vswitch.md docs/vswitch.md
   copy_file docs/tapfd.md docs/tapfd.md
-  copy_root_script examples/geneve_eth_test.sh test/connector/geneve_eth_test.sh
-  copy_root_script examples/geneve_ip_test.sh test/connector/geneve_ip_test.sh
-  copy_root_script examples/manage_switch.sh test/connector/manage_switch.sh
-  copy_root_script examples/mgmt_isolation_test.sh test/connector/mgmt_isolation_test.sh
-  copy_root_script examples/perf_bench.sh test/connector/perf_bench.sh
-  copy_root_script examples/provision_test.sh test/connector/provision_test.sh
-  copy_root_script examples/start_perf_bench.sh test/connector/start_perf_bench.sh
-  copy_root_script examples/tap_test.sh test/connector/tap_test.sh
+  copy_root_executable examples/geneve_eth_test.sh test/connector/geneve_eth_test.sh
+  copy_root_executable examples/geneve_ip_test.sh test/connector/geneve_ip_test.sh
+  copy_root_executable examples/manage_switch.sh test/connector/manage_switch.sh
+  copy_root_executable examples/mgmt_isolation_test.sh test/connector/mgmt_isolation_test.sh
+  copy_root_executable examples/perf_bench.sh test/connector/perf_bench.sh
+  copy_root_executable examples/provision_test.sh test/connector/provision_test.sh
+  copy_root_executable examples/start_perf_bench.sh test/connector/start_perf_bench.sh
+  copy_root_executable examples/tap_test.sh test/connector/tap_test.sh
   copy_file dist/connector-vswitch.service deploy/connector-vswitch.service
   copy_file dist/connector-switch.conf deploy/connector-switch.conf
   copy_file dist/NetworkManager-connector.conf deploy/NetworkManager-connector.conf
-
-  jq -n \
-    --arg name "$NAME" \
-    --arg version "$version" \
-    --arg architecture "$arch" \
-    --arg archive "$archive" \
-    --arg repository "$REPOSITORY" \
-    --arg commit "$commit" \
-    --arg created_at "$created_at" \
-    --slurpfile sources "$WORK/revisions.json" '
-      {
-        schemaVersion: 1,
-        name: $name,
-        version: $version,
-        architecture: $architecture,
-        archive: $archive,
-        repository: $repository,
-        commit: $commit,
-        createdAt: $created_at,
-        sources: $sources[0]
-      }
-    ' > "$STAGE/release/$NAME.json"
 
   mkdir -p "$output/assets"
   tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$epoch" \
     --pax-option=delete=atime,delete=ctime -czf "$output/assets/$archive" -C "$STAGE" .
   (cd "$output/assets" && sha256sum "$archive" > SHA256SUMS)
-
-  local artifacts="$WORK/artifacts.ndjson"
-  for filename in "$archive" SHA256SUMS; do
-    jq -cn \
-      --arg name "$filename" \
-      --arg sha256 "$(sha256sum "$output/assets/$filename" | awk '{print $1}')" \
-      --argjson size "$(stat -c '%s' "$output/assets/$filename")" \
-      '{name: $name, sha256: $sha256, size: $size}' >> "$artifacts"
-  done
-
-  : "${RELEASE_WORKFLOW_REPOSITORY:=local}"
-  : "${RELEASE_WORKFLOW_RUN_ID:=0}"
-  : "${RELEASE_WORKFLOW_RUN_ATTEMPT:=0}"
-  : "${RELEASE_WORKFLOW_RUN_URL:=local}"
-  jq -n \
-    --slurpfile package "$STAGE/release/$NAME.json" \
-    --slurpfile artifacts "$artifacts" \
-    --arg workflow_repository "$RELEASE_WORKFLOW_REPOSITORY" \
-    --argjson workflow_run_id "$RELEASE_WORKFLOW_RUN_ID" \
-    --argjson workflow_run_attempt "$RELEASE_WORKFLOW_RUN_ATTEMPT" \
-    --arg workflow_run_url "$RELEASE_WORKFLOW_RUN_URL" '
-      $package[0] + {
-        kind: "component",
-        tag: $package[0].version,
-        validation: {
-          workflowRepository: $workflow_repository,
-          workflowRunId: $workflow_run_id,
-          workflowRunAttempt: $workflow_run_attempt,
-          workflowRunUrl: $workflow_run_url
-        },
-        artifacts: $artifacts
-      }
-    ' > "$output/release.json"
   cat > "$output/release-notes.md" <<EOF
 $NAME $version for Linux $arch.
 
-The release archive is merge-safe: extract it directly into a Kuasar Sandbox deployment directory. Verify it with \`SHA256SUMS\`. The attached \`release.json\` records the exact source revision and artifact digest.
+Extract the archive into a Kuasar Sandbox deployment root and verify it with \`SHA256SUMS\`. GitHub provides the source archives for this tag automatically.
 EOF
-  validate_bundle "$output"
+  validate_bundle "$version" "$arch" "$output"
   echo "==> prepared $output for $version"
 }
 
-validate_bundle() {
-  [ "$#" -eq 1 ] || fail "usage: release.sh validate <bundle-dir>"
-  local bundle="$1"
-  local manifest="$bundle/release.json"
-  [ -f "$manifest" ] || fail "release.json is missing"
-  [ -s "$bundle/release-notes.md" ] || fail "release-notes.md is missing"
-  [ -d "$bundle/assets" ] || fail "assets directory is missing"
-
-  jq -e \
-    --arg name "$NAME" \
-    --arg repository "$REPOSITORY" '
-      .schemaVersion == 1
-      and .kind == "component"
-      and .name == $name
-      and .repository == $repository
-      and (.version | test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-preview\\.[0-9]{8})?$"))
-      and .tag == .version
-      and (.architecture == "x86_64" or .architecture == "aarch64")
-      and (.commit | test("^[0-9a-f]{40}$"))
-      and .archive == ($name + "-" + .version + "-linux-" + .architecture + ".tar.gz")
-      and (.sources | type == "array" and length >= 1)
-      and (.commit as $commit | [.sources[] | select(.repository == $repository and .commit == $commit)] | length == 1)
-      and (.artifacts | length == 2)
-      and ([.artifacts[].name] | unique | length == 2)
-      and ([.artifacts[].sha256] | all(test("^[0-9a-f]{64}$")))
-      and ([.artifacts[].size] | all(type == "number" and . >= 0))
-    ' "$manifest" >/dev/null || fail "release.json failed schema validation"
-
-  local archive
-  archive="$(jq -er '.archive' "$manifest")"
-  local expected="$WORK/expected-names"
-  local actual="$WORK/actual-names"
-  printf '%s\n' "$archive" SHA256SUMS | LC_ALL=C sort > "$expected"
-  find "$bundle/assets" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > "$actual"
-  cmp -s "$expected" "$actual" || fail "bundle contains an unexpected asset set"
-
-  local name sha size actual_sha actual_size count=0
-  while IFS=$'\t' read -r name sha size; do
-    [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || fail "unsafe artifact name: $name"
-    [ -f "$bundle/assets/$name" ] || fail "missing artifact: $name"
-    actual_sha="$(sha256sum "$bundle/assets/$name" | awk '{print $1}')"
-    actual_size="$(stat -c '%s' "$bundle/assets/$name")"
-    [ "$actual_sha" = "$sha" ] || fail "checksum mismatch: $name"
-    [ "$actual_size" = "$size" ] || fail "size mismatch: $name"
-    count=$((count + 1))
-  done < <(jq -r '.artifacts[] | [.name, .sha256, (.size | tostring)] | @tsv' "$manifest")
-  [ "$count" -eq 2 ] || fail "release.json must describe two artifacts"
-  (cd "$bundle/assets" && sha256sum --quiet -c SHA256SUMS) \
-    || fail "SHA256SUMS validation failed"
-
-  local metadata
-  metadata="$(tar -xOzf "$bundle/assets/$archive" "./release/$NAME.json" 2>/dev/null)" \
-    || fail "$archive does not contain release/$NAME.json"
-  jq -e --slurpfile releases "$manifest" '
-    $releases[0] as $release
-    | .name == $release.name
-    and .version == $release.version
-    and .architecture == $release.architecture
-    and .archive == $release.archive
-    and .repository == $release.repository
-    and .commit == $release.commit
-    and .sources == $release.sources
-  ' <<< "$metadata" >/dev/null || fail "archive metadata does not match release.json"
-}
-
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-
-command -v jq >/dev/null || fail "jq is required"
-
+command -v go >/dev/null || fail "go is required"
 case "${1:-}" in
-  package)
-    shift
-    package_release "$@"
-    ;;
-  validate)
-    shift
-    validate_bundle "$@"
-    ;;
-  *)
-    fail "usage: release.sh <package <version> <arch> <revisions.tsv> <output-dir>|validate <bundle-dir>>"
-    ;;
+  archive-name) shift; [ "$#" -eq 2 ] || fail "usage: release.sh archive-name <version> <arch>"; archive_name "$@" ;;
+  package) shift; package_release "$@" ;;
+  validate) shift; validate_bundle "$@" ;;
+  *) fail "usage: release.sh <archive-name|package|validate> ..." ;;
 esac
