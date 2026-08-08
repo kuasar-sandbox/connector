@@ -134,22 +134,20 @@ bench: connector-ctl
 # Release packaging
 # ---------------------------------------------------------------------------
 # The binary is self-contained (eBPF objects are embedded). The release bundle
-# contains a merge-safe archive, checksums, provenance and release notes.
+# contains one target archive, checksums and release notes.
 release: build
 	@mkdir -p $(BUILD_DIR)
-	@printf 'repository\trequested_ref\tresolved_sha\trole\n' > $(BUILD_DIR)/revisions.tsv
-	@printf 'kuasar-sandbox/connector\tHEAD\t%s\tprimary\n' "$$(git rev-parse HEAD)" >> $(BUILD_DIR)/revisions.tsv
 	rm -rf $(BUILD_DIR)/release-bundle
 	SOURCE_DATE_EPOCH="$$(git show -s --format=%ct HEAD)" \
 		bash scripts/release.sh package "$(VERSION)" "$(TARGET_ARCH)" \
-		$(BUILD_DIR)/revisions.tsv $(BUILD_DIR)/release-bundle
+		$(BUILD_DIR)/release-bundle
 
 test-release:
 	bash scripts/test-release.sh
 
 release-clean:
 	@echo "==> Removing release artifacts..."
-	rm -rf $(BUILD_DIR)/release-bundle $(BUILD_DIR)/revisions.tsv
+	rm -rf $(BUILD_DIR)/release-bundle
 
 # ---------------------------------------------------------------------------
 # Misc
