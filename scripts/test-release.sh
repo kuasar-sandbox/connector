@@ -11,6 +11,15 @@ fail() {
   exit 1
 }
 
+for entrypoint in \
+  examples/geneve_eth_test.sh examples/geneve_ip_test.sh \
+  examples/manage_switch.sh examples/mgmt_isolation_test.sh \
+  examples/perf_bench.sh examples/provision_test.sh \
+  examples/start_perf_bench.sh examples/tap_test.sh; do
+  [ "$(git -C "$ROOT" ls-files -s -- "$entrypoint" | awk '{print $1}')" = 100755 ] \
+    || fail "$entrypoint is not executable in the Git index"
+done
+
 mkdir -p "$TMP/bin" "$TMP/src"
 printf 'package main\nfunc main() {}\n' > "$TMP/src/main.go"
 GO111MODULE=off go build -o "$TMP/go-fixture" "$TMP/src/main.go"
