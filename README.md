@@ -35,9 +35,10 @@ make test                       # 单元测试;集成/e2e 见 docs/vswitch.md §
 运行需要 Linux 5.10+(BTF + TC BPF)与 root;构建需要 Go 1.24+。
 
 仓库的 `Release` workflow 从 `main` 的精确提交发布独立 `vX.Y.Z` 版本。发布包
-`connector-vX.Y.Z-linux-<arch>.tar.gz` 可与其他 Kuasar Sandbox 组件直接解压到
+`connector-vX.Y.Z-linux-x86_64.tar.gz` 可与其他 Kuasar Sandbox 组件直接解压到
 同一部署目录。
-正式版之前,workflow 每天按上海日期发布
+当前 Release 只发布已完成全量构建与 BMS 验证的 Linux x86_64 目标。正式版之前,
+`platform` 仓的每日协调器按上海日期触发
 `v0.1.0-preview.YYYYMMDD` prerelease;preview 不更新 GitHub Latest,正式
 `v0.1.0` 由独立构建发布。
 
