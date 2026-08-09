@@ -114,16 +114,7 @@ test-all: test-integration
 
 # Run end-to-end shell tests (requires root + a BPF-capable kernel).
 test-e2e: connector-ctl
-	@echo "==> Running end-to-end tests..."
-	@for t in examples/*_test.sh; do \
-		echo ""; \
-		echo "========================================="; \
-		echo "  $$t"; \
-		echo "========================================="; \
-		sudo env REQUIRE_CONNECTOR_E2E=1 bash $$t all || exit 1; \
-	done
-	@echo ""
-	@echo "==> All end-to-end tests passed."
+	BIN="$(abspath $(BINDIR))" bash test/e2e/run_all.sh
 
 # Run the performance benchmark (requires root + iperf3).
 bench: connector-ctl

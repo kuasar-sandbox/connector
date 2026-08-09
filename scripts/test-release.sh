@@ -11,11 +11,10 @@ fail() {
   exit 1
 }
 
-for entrypoint in \
-  examples/geneve_eth_test.sh examples/geneve_ip_test.sh \
-  examples/manage_switch.sh examples/mgmt_isolation_test.sh \
-  examples/perf_bench.sh examples/provision_test.sh \
-  examples/start_perf_bench.sh examples/tap_test.sh; do
+for entrypoint in test/e2e/run_all.sh test/e2e/geneve_eth_test.sh \
+  test/e2e/geneve_ip_test.sh test/e2e/mgmt_isolation_test.sh \
+  test/e2e/provision_test.sh test/e2e/tap_test.sh examples/manage_switch.sh \
+  examples/perf_bench.sh examples/start_perf_bench.sh; do
   [ "$(git -C "$ROOT" ls-files -s -- "$entrypoint" | awk '{print $1}')" = 100755 ] \
     || fail "$entrypoint is not executable in the Git index"
 done
@@ -33,10 +32,13 @@ SOURCE_DATE_EPOCH=1700000000 RELEASE_BIN_DIR="$TMP/bin" \
   1111111111111111111111111111111111111111
 
 archive="$TMP/bundle/assets/connector-v1.2.3-linux-x86_64.tar.gz"
-for path in ./bin/connector-ctl ./docs/connector.md ./deploy/connector-vswitch.service \
-  ./test/connector/tap_test.sh; do
+for path in ./bin/connector-ctl ./deploy/connector-vswitch.service \
+  ./test/connector/perf_bench.sh; do
   tar -tzf "$archive" | grep -Fx "$path" >/dev/null || fail "archive is missing $path"
 done
+if tar -tzf "$archive" | grep -E '^\./(docs|test/e2e)(/|$)|^\./test/connector/(geneve_.*_test|mgmt_isolation_test|provision_test|tap_test)\.sh$' >/dev/null; then
+  fail "component archive contains documentation or E2E sources"
+fi
 if tar -tzf "$archive" | grep -E '(^|/)release\.json$|(^|/)release/[^/]+\.json$' >/dev/null; then
   fail "archive contains release metadata JSON"
 fi

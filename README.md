@@ -30,13 +30,15 @@ make build TARGET_ARCH=aarch64  # 交叉编译(别名 amd64 / arm64)
 make release VERSION=v0.1.0     # build/release-bundle:archive + checksums + provenance
 make generate                   # 仅修改 bpf/*.c 时需要(clang 12+)
 make test                       # 单元测试;集成/e2e 见 docs/vswitch.md §10
+sudo make test-e2e              # 运行 test/e2e/run_all.sh
 ```
 
 运行需要 Linux 5.10+(BTF + TC BPF)与 root;构建需要 Go 1.24+。
 
 仓库的 `Release` workflow 从 `main` 的精确提交发布独立 `vX.Y.Z` 版本。发布包
 `connector-vX.Y.Z-linux-x86_64.tar.gz` 可与其他 Kuasar Sandbox 组件直接解压到
-同一部署目录。
+同一部署目录,包含二进制、部署文件和运维/性能辅助脚本。本仓文档与 `test/e2e/`
+仅由 platform 从所选 tag 聚合进 platform 包,不在组件包中重复交付。
 当前 Release 只发布已完成全量构建与 BMS 验证的 Linux x86_64 目标。正式版之前,
 `platform` 仓的每日协调器按上海日期触发
 `v0.1.0-preview.YYYYMMDD` prerelease;preview 不更新 GitHub Latest,正式

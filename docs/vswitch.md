@@ -445,7 +445,7 @@ make release VERSION=vX.Y.Z     # 打包并校验 build/release-bundle
 make generate                   # 仅修改 bpf/*.c 时需要(clang 12+);仓库自带预生成 .o
 make test                       # 单元测试
 sudo make test-integration      # 集成测试(root + BPF 内核)
-sudo make test-e2e              # 端到端(examples/*_test.sh all)
+sudo make test-e2e              # 端到端(test/e2e/run_all.sh)
 sudo make bench                 # 性能基准(root + iperf3)
 make lint / make fmt            # go vet / go fmt + clang-format
 make vmlinux                    # 重新生成 bpf/vmlinux.h(需 bpftool)
@@ -1033,7 +1033,7 @@ t=8700 ms   all 128 ports Free
 2. **`BPF_PROG_TEST_RUN`** — 直接执行 eBPF 程序,喂入手工构造的报文,断言返回 action
    与输出字节。`BPF_PROG_TEST_RUN` 不易设置 `skb->ingress_ifindex`,对 `tc_ingress_nx`
    经 `ifindex=0 → slot_id` 的 map 项绕过。
-3. **真实拓扑** — `examples/*_test.sh` 建立完整网络拓扑,用真实 ping/iperf 验证转发。
+3. **真实拓扑** — `test/e2e/*_test.sh` 建立完整网络拓扑,用真实 ping/iperf 验证转发。
 
 ### 10.3 e2e 套件
 
@@ -1068,7 +1068,8 @@ pkg/internal/bpf/       (私有,BPF-ABI)cilium/ebpf 生成绑定 + 类型 + 加�
 pkg/internal/bpfmap/    (私有,BPF-ABI)与 BPF 内存布局耦合的原语:
                           mmap slots、原子 CAS、stats、MAC 派生
 bpf/                    eBPF C 源(switch_kern.c + common.h + vmlinux.h)
-examples/               e2e 测试脚本 + 源码树 tapfd_receiver 消费端示例
+test/e2e/               组件 E2E 套件与统一入口 run_all.sh
+examples/               运维/性能脚本 + 源码树 tapfd_receiver 消费端示例
 dist/                   systemd 单元与配置模板
 ```
 
