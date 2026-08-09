@@ -70,8 +70,8 @@ validate_archive_paths() {
   fi
   awk '
     { path=$0; sub(/^\.\//, "", path) }
-    path != "" && path !~ /\/$/ && path !~ /^(bin|deploy|docs|test)\// { exit 1 }
-  ' "$listing" || fail "$archive contains a file outside bin/, docs/, or test/"
+    path != "" && path !~ /\/$/ && path !~ /^(bin|deploy)\// && path !~ /^test\/connector\// { exit 1 }
+  ' "$listing" || fail "$archive contains a file outside bin/, deploy/, or test/connector/"
 }
 
 validate_bundle() {
@@ -108,13 +108,9 @@ validate_bundle() {
     || fail "$archive is missing executable bin/connector-ctl"
   check_go_binary "$extract/bin/connector-ctl"
   local file
-  for file in docs/connector.md docs/vswitch.md docs/tapfd.md \
-    deploy/connector-vswitch.service deploy/connector-switch.conf \
-    deploy/NetworkManager-connector.conf test/connector/geneve_eth_test.sh \
-    test/connector/geneve_ip_test.sh test/connector/manage_switch.sh \
-    test/connector/mgmt_isolation_test.sh test/connector/perf_bench.sh \
-    test/connector/provision_test.sh test/connector/start_perf_bench.sh \
-    test/connector/tap_test.sh; do
+  for file in deploy/connector-vswitch.service deploy/connector-switch.conf \
+    deploy/NetworkManager-connector.conf test/connector/manage_switch.sh \
+    test/connector/perf_bench.sh test/connector/start_perf_bench.sh; do
     [ -f "$extract/$file" ] || fail "$archive is missing $file"
   done
 }
@@ -137,17 +133,9 @@ package_release() {
   bin_dir="${RELEASE_BIN_DIR:-$ROOT/bin/$arch}"
   copy_executable "$bin_dir/connector-ctl" bin/connector-ctl
   check_go_binary "$STAGE/bin/connector-ctl"
-  copy_file README.md docs/connector.md
-  copy_file docs/vswitch.md docs/vswitch.md
-  copy_file docs/tapfd.md docs/tapfd.md
-  copy_root_executable examples/geneve_eth_test.sh test/connector/geneve_eth_test.sh
-  copy_root_executable examples/geneve_ip_test.sh test/connector/geneve_ip_test.sh
   copy_root_executable examples/manage_switch.sh test/connector/manage_switch.sh
-  copy_root_executable examples/mgmt_isolation_test.sh test/connector/mgmt_isolation_test.sh
   copy_root_executable examples/perf_bench.sh test/connector/perf_bench.sh
-  copy_root_executable examples/provision_test.sh test/connector/provision_test.sh
   copy_root_executable examples/start_perf_bench.sh test/connector/start_perf_bench.sh
-  copy_root_executable examples/tap_test.sh test/connector/tap_test.sh
   copy_file dist/connector-vswitch.service deploy/connector-vswitch.service
   copy_file dist/connector-switch.conf deploy/connector-switch.conf
   copy_file dist/NetworkManager-connector.conf deploy/NetworkManager-connector.conf
@@ -159,7 +147,7 @@ package_release() {
   cat > "$output/release-notes.md" <<EOF
 $NAME $version for Linux $arch.
 
-Extract the archive into a Kuasar Sandbox deployment root and verify it with \`SHA256SUMS\`. GitHub provides the source archives for this tag automatically.
+Extract the archive into a Kuasar Sandbox deployment root and verify it with \`SHA256SUMS\`. Documentation and E2E suites from this exact tag are collected by the aggregate platform release.
 EOF
   validate_bundle "$version" "$arch" "$output"
   echo "==> prepared $output for $version"

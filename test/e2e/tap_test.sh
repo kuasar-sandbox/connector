@@ -21,10 +21,10 @@
 #   T11. tap-mode connectivity: ARP round-trip through the handed-off vnet_hdr fd
 #
 # Usage:
-#   sudo bash examples/tap_test.sh setup
-#   sudo bash examples/tap_test.sh test
-#   sudo bash examples/tap_test.sh teardown
-#   sudo bash examples/tap_test.sh all
+#   sudo bash test/e2e/tap_test.sh setup
+#   sudo bash test/e2e/tap_test.sh test
+#   sudo bash test/e2e/tap_test.sh teardown
+#   sudo bash test/e2e/tap_test.sh all
 
 set -euo pipefail
 

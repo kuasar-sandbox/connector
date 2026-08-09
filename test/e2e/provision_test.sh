@@ -6,10 +6,10 @@
 #   - Group B: 16 ports (provision batch/partial/specific)
 #
 # Usage:
-#   sudo bash examples/provision_test.sh setup
-#   sudo bash examples/provision_test.sh test
-#   sudo bash examples/provision_test.sh teardown
-#   sudo bash examples/provision_test.sh all    # setup + test + teardown
+#   sudo bash test/e2e/provision_test.sh setup
+#   sudo bash test/e2e/provision_test.sh test
+#   sudo bash test/e2e/provision_test.sh teardown
+#   sudo bash test/e2e/provision_test.sh all    # setup + test + teardown
 
 set -euo pipefail
 
