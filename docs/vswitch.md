@@ -50,6 +50,8 @@ vswitch 把全部转发判定集中在一份 ~1K 行的 eBPF C 程序里,控制�
 - 不做数据面限速/QoS,委托给 VMM、TC qdisc 或 cgroup BPF。
 - 不做连接跟踪/NAT 状态表/L7 过滤,只做无状态二层/三层封装与代答。
 - 管理平面(`--mgmt-extract`/`--mgmt-service`)在 `start` 时固化,变更需重建交换机。
+- `--mgmt-extract` CIDR 只定义流量提取范围;管理接口地址、local route、服务监听与
+  相关 sysctl 由部署系统负责。
 - `MAX_PORTS = 4096` 在 BPF C 中编译期固定。
 - 单机控制面,不做跨宿主机同步;每台宿主一个独立实例。
 
@@ -104,6 +106,8 @@ connector-ctl vswitch start sw1 --netns=sw_ns --ports=128 \
     --mac-addr=02:00:00:00:00:01 --floating-ip-base=100.100.96.0 \
     --mgmt-extract=mgmt_ns:eth0:169.254.169.254/32 \
     --transit-dev=eth1 --transit-dev-addr=10.0.0.1/24:10.0.0.2
+# Configure the service-owned VIP explicitly.
+ip netns exec mgmt_ns ip addr replace 169.254.169.254/32 dev eth0
 
 # 分配端口,把 tap fd 交给等在 /tmp/recv.sock 的 VMM
 connector-ctl vswitch attach sw1 --inner-ip=169.254.1.1 \
@@ -128,7 +132,7 @@ connector-ctl vswitch stop sw1
 | `--floating-ip-base` | ✓ | floating IP 基地址(按 slot_id 递增) |
 | `--port-netns` | veth 模式 ✓ | 端口设备初始 netns;tap 模式或 `--reserved` 下可省 |
 | `--mode` | – | 自动 provision 的端口类型:`tap`(默认)或 `veth`;配合 `--reserved` 时仅作参数校验提示,不持久化 |
-| `--mgmt-extract` | – | 管理平面定义 `<netns>:<dev>:<route1>,<route2>,...`,可重复(每 slot 最多 3 条路由);`<netns>` 留空(`:<dev>:<routes>`)则 mgmt veth peer 留在调用方/主机 netns |
+| `--mgmt-extract` | – | 管理平面提取匹配 `<netns>:<dev>:<cidr1>,<cidr2>,...`,可重复(每 slot 最多 3 条路由);CIDR 不会被配置为接口地址;`<netns>` 留空(`:<dev>:<cidrs>`)则 mgmt veth peer 留在调用方/主机 netns |
 | `--mgmt-service` | – | 管理服务地址转换 `<VIP>:<vport>:<targetIP>:<targetPort>`,可重复;VIP 须落在某条 `--mgmt-extract` 路由内,`(targetIP,targetPort)` 须全局唯一,TCP/UDP 均转换(§4.3);loopback target 需 mgmt 设备 `route_localnet=1` |
 | `--transit-dev` | – | 外部上行设备,start 时从调用 netns 移入 switch netns;必须处于 **DOWN**(防止接管在用网卡) |
 | `--transit-dev-addr` | – | `<ip>/<prefix>:<nexthop>` 或 `auto`(DHCP,§6.9) |
@@ -181,7 +185,9 @@ connector-ctl vswitch stop sw1
 ```
 
 `mgmt_services` 仅在配置了 `--mgmt-service` 时出现;`status` 与 `show config` 同样
-回显 `mgmt_planes`/`mgmt_services`(取自 metadata map)。
+回显 `mgmt_planes`/`mgmt_services`(取自 metadata map)。输出字段
+`mgmt_planes[].service_routes` 保留现有名称,其值是 extraction match CIDR,不表示
+management 接口已持有这些地址。
 
 ### 2.3 `connector-ctl vswitch stop`
 
@@ -470,19 +476,32 @@ WatchdogSec=60
 EnvironmentFile=/etc/connector/switch.conf
 ExecStartPre=...   # 1) 创建 SWITCH/PORT/MGMT netns(幂等,跳过空值)
 ExecStartPre=...   # 2) 交换机尚未存在时等待 ${TRANSIT_DEV} 出现(最多 120 s)
-ExecStart=/usr/sbin/connector-ctl vswitch serve ${SWITCH_NAME} --netns=... --mode=... ...
-ExecStartPost=...  # 对 ${SWITCH_NAME}_m0 开 route_localnet(容许 loopback 的 mgmt-service target)
+ExecStart=/usr/sbin/connector-ctl vswitch serve ${SWITCH_NAME} ... --mgmt-extract=...:${MGMT_EXTRACT_CIDRS}
+ExecStartPost=...  # Apply MGMT_ADDRS with idempotent ip addr replace.
+ExecStartPost=...  # Enable route_localnet for a loopback mgmt-service target.
 Restart=on-failure
 LimitMEMLOCK=infinity
 ```
 
 两个 `ExecStartPre`:第一个幂等地创建命名空间;第二个在交换机尚未存在时等待
-`${TRANSIT_DEV}` 出现(例如等内核驱动加载完毕)。`ExecStartPost` 在 mgmt 设备上开启
+`${TRANSIT_DEV}` 出现(例如等内核驱动加载完毕)。management extraction 与接口地址在
+配置中显式分离:
+
+```ini
+MGMT_EXTRACT_CIDRS=169.254.169.254/32
+MGMT_ADDRS=169.254.169.254/32
+```
+
+`MGMT_EXTRACT_CIDRS` 只传给 `--mgmt-extract`;逗号分隔的 `MGMT_ADDRS` 由第一个
+`ExecStartPost` 使用 `ip addr replace` 幂等配置。`MGMT_ADDRS=` 可留空,此时 extraction
+peer 保持无 IPv4 地址。该逻辑按 `MGMT_NETNS` 自动在 host netns 或 named netns 执行。
+第二个 `ExecStartPost` 在 mgmt 设备上开启
 `net.ipv4.conf.<dev>.route_localnet`,使 `--mgmt-service` 可指向 loopback target。
 
 **Host-netns 管理平面**:把 `MGMT_NETNS=` 留空(mgmt/metadata 服务直接跑在 host 上)
-时,生成的 `--mgmt-extract=:<dev>:<routes>` 让 mgmt veth peer 留在调用方 netns,
-第一个 `ExecStartPre` 也会自动跳过空值,无需手动创建 mgmt netns。
+时,生成的 `--mgmt-extract=:<dev>:<cidrs>` 让 mgmt veth peer 留在调用方 netns,
+第一个 `ExecStartPre` 也会自动跳过空值,无需手动创建 mgmt netns。`MGMT_ADDRS` 非空时
+地址直接配置在 host 侧 peer;为空时该 peer 保持无地址。
 
 ### 3.4 首次启动
 
@@ -532,6 +551,13 @@ BPF 程序经 `skb->ingress_ifindex` 在程序内部分派 slot。
 
 ### 4.3 数据包流向
 
+`--mgmt-extract` 中的 CIDR 是写入每个 slot `mgmt_cidrs` 的目的流量分类条件,不是
+management-side peer 的地址声明。Connector 创建 veth pair,设置 MAC/MTU 并拉起接口,
+挂载 TC,写入 extraction CIDR,再安装 floating-IP 回程路由;它不配置 management 接口
+地址、local route、服务监听地址或相关 sysctl。部署系统必须独立保证目的地址在
+management namespace 内被本地持有或通过其它路由可达。随仓 systemd 示例通过
+`MGMT_ADDRS` 显式完成需要的接口配址(§3.3)。
+
 **沙箱 → 管理服务**(如 `169.254.169.254`):
 
 ```
@@ -567,7 +593,8 @@ ip route add <floating_ip_base>/20 dev <mgmt-dev> metric <100+index>
 即丢弃。
 
 **管理服务地址转换(`--mgmt-service`,可选)**:`--mgmt-extract` 只改写源/目的中的
-inner_ip↔floating_ip,目的 IP/端口保持不变——管理服务必须真的监听在 VIP 上。
+inner_ip↔floating_ip,目的 IP/端口保持不变——未配置 `--mgmt-service` 时,部署方必须
+让 VIP 在 management namespace 内可达,并让服务监听该地址。
 `--mgmt-service=<VIP>:<vport>:<targetIP>:<targetPort>` 在此之上叠加一层带端口的、
 确定性的、无状态 NAT,让后端监听在 `targetIP:targetPort` 即可,沙箱仍按 VIP 访问。
 两个方向对称改写,只对 TCP/UDP 生效(其它协议走原 mgmt 路径):

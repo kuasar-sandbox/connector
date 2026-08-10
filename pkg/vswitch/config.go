@@ -33,12 +33,13 @@ const (
 //     `ip netns add`); the mgmt veth peer is moved into that netns.
 //   - Empty — the mgmt veth peer stays in the caller netns (typically the
 //     host/root netns). Useful when the management service runs directly on
-//     the host without a dedicated netns. Written as `:<dev>:<routes>`.
+//     the host without a dedicated netns. Written as `:<dev>:<cidrs>`.
 //
-// Each service-route is either a single IP (implies /32) or a CIDR.
-// All service-routes serve dual purpose:
-//   - Bound as addresses on the management device (for the service to listen on)
-//   - Added to mgmt_cidrs in eBPF map (for traffic extraction from sandbox)
+// Each service-route is either a single IP (implies /32) or a CIDR. Despite the
+// retained field and CLI naming, these values only define destination matches
+// written to mgmt_cidrs for sandbox traffic extraction. Connector does not
+// assign them as addresses on the management device. Address ownership, local
+// routes, service listeners, and related sysctls belong to deployment tooling.
 //
 // A return route scoped to the floating-IP range is added on the management
 // device so management-service replies to a floating_ip route back through
@@ -52,7 +53,7 @@ const (
 type MgmtExtract struct {
 	NetNS         string       // Management namespace name; "" = caller netns
 	Dev           string       // Device name in management namespace
-	ServiceRoutes []*net.IPNet // Service addresses/CIDRs to bind and extract
+	ServiceRoutes []*net.IPNet // Extraction match CIDRs; not interface addresses
 }
 
 // IsCallerNetNS reports whether the management plane lives in the caller's
@@ -78,7 +79,7 @@ func ParseMgmtExtract(s string) (*MgmtExtract, error) {
 		Dev:   parts[1],
 	}
 
-	// Parse comma-separated service routes
+	// Parse comma-separated extraction CIDRs into the retained ServiceRoutes field.
 	for _, item := range strings.Split(parts[2], ",") {
 		item = strings.TrimSpace(item)
 		if item == "" {
@@ -119,7 +120,7 @@ func ParseMgmtExtract(s string) (*MgmtExtract, error) {
 // (in addition to the inner_ip->floating_ip SNAT), and replies from
 // targetIP:targetPort are rewritten back so the sandbox sees the VIP. The
 // translation matches BOTH TCP and UDP. The VIP MUST fall within one of the
-// --mgmt-extract service routes (so the mgmt CIDR match selects the right mgmt
+// --mgmt-extract extraction CIDRs (so the mgmt CIDR match selects the right mgmt
 // device), and each (targetIP, targetPort) must be unique across all services
 // (the reverse map keys on it). IPv4 only, consistent with the mgmt plane.
 //
@@ -214,7 +215,7 @@ type Config struct {
 	NumPorts          uint32           // Number of ports
 	MACAddr           net.HardwareAddr // Virtual MAC address
 	FloatingIPBase    net.IP           // Floating IP base address
-	MgmtExtracts      []*MgmtExtract   // Management plane extractions
+	MgmtExtracts      []*MgmtExtract   // Management plane extraction CIDR matches
 	MgmtServices      []*MgmtService   // Management service VIP<->target translations (require MgmtExtracts)
 	TransitDev        string           // Transit device name
 	TransitAddr       *net.IPNet       // Transit device address (nil if auto)
@@ -291,7 +292,7 @@ func (c *Config) validateBase() error {
 }
 
 // validateMgmtServices checks that every service VIP falls inside a configured
-// mgmt-extract route, and that each (targetIP, targetPort) is unique so the
+// mgmt-extract extraction CIDR, and that each (targetIP, targetPort) is unique so the
 // ingress reverse map can resolve a single VIP.
 func (c *Config) validateMgmtServices() error {
 	if len(c.MgmtServices) == 0 {
@@ -308,7 +309,7 @@ func (c *Config) validateMgmtServices() error {
 	seen := make(map[targetKey]string)
 
 	for _, svc := range c.MgmtServices {
-		// VIP must fall within some mgmt-extract service route.
+		// VIP must fall within some mgmt-extract extraction CIDR.
 		inRange := false
 		for _, me := range c.MgmtExtracts {
 			for _, sr := range me.ServiceRoutes {

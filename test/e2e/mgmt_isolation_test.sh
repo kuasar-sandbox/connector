@@ -4,6 +4,7 @@
 # Topology:
 #   sandbox1 (169.254.1.1) ──veth──> sw_ns (eBPF switch sw1) ──veth──> mgmt_ns (metadata svc)
 #   sandbox2 (169.254.1.1) ──veth──>                                   169.254.169.254
+#                                                                        (assigned by this test)
 #
 # Tests:
 #   1. sandbox1 → mgmt service (169.254.169.254): PASS (SNAT via floating IP)
@@ -85,6 +86,21 @@ setup() {
         --mgmt-extract=mgmt_ns:eth0:${MGMT_IP} \
         --mgmt-service=${SVC_VIP}:${SVC_VPORT}:${SVC_TARGET}:${SVC_TARGET_PORT}
 
+    echo "==> Verifying extraction setup before management address assignment..."
+    local ipv4_addrs
+    ipv4_addrs="$(ip netns exec mgmt_ns ip -4 -o addr show dev "${SVC_MGMT_DEV}")"
+    if [ -n "${ipv4_addrs}" ]; then
+        echo "ERROR: connector assigned an IPv4 address to ${SVC_MGMT_DEV}: ${ipv4_addrs}" >&2
+        return 1
+    fi
+
+    local return_route
+    return_route="$(ip netns exec mgmt_ns ip -4 -o route show "${FLOATING_IP_BASE}/20")"
+    if [[ "${return_route}" != *"dev ${SVC_MGMT_DEV}"* || "${return_route}" != *"metric 100"* ]]; then
+        echo "ERROR: floating-IP return route is missing: ${return_route:-<empty>}" >&2
+        return 1
+    fi
+
     echo "==> Attaching sandbox1..."
     ${SWITCH_BIN} attach ${SW_NAME} \
         --to-netns=sandbox1 \
@@ -107,6 +123,7 @@ setup() {
 
     echo "==> Configuring mgmt namespace..."
     ip netns exec mgmt_ns ip link set lo up
+    ip netns exec mgmt_ns ip addr replace "${MGMT_IP}/32" dev "${SVC_MGMT_DEV}"
 
     echo "==> Enabling route_localnet for loopback --mgmt-service backend..."
     # Required so the mgmt netns accepts the DNAT'd packet (dst=127.0.0.1) on a

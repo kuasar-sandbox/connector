@@ -204,7 +204,7 @@ type MgmtPlaneInfo struct {
 	Index             int      `json:"index"`
 	MgmtNetNS         string   `json:"mgmt_netns"`
 	MgmtDev           string   `json:"mgmt_dev"`
-	ServiceRoutes     []string `json:"service_routes"`
+	ServiceRoutes     []string `json:"service_routes"` // Extraction match CIDRs, not interface addresses
 	ReturnRouteMetric int      `json:"return_route_metric"`
 }
 

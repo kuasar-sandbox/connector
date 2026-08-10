@@ -2049,7 +2049,7 @@ func TestCreateMgmtPlanesBringUpError(t *testing.T) {
 	}
 }
 
-func TestCreateMgmtPlanesAddAddrError(t *testing.T) {
+func TestCreateMgmtPlanesDoesNotAssignExtractionCIDRs(t *testing.T) {
 	defer resetDeps()
 
 	netnsGetByName = func(name string) (*netns.NetNS, error) {
@@ -2067,28 +2067,56 @@ func TestCreateMgmtPlanesAddAddrError(t *testing.T) {
 	netlinkAttachTC = func(name string, prog *ebpf.Program, dir netlink.Direction) error {
 		return nil
 	}
+	linkUpCalls := 0
 	netlinkSetLinkUp = func(name string) error {
+		linkUpCalls++
+		if name != "mgmt-dev" {
+			t.Errorf("netlinkSetLinkUp name = %q, want mgmt-dev", name)
+		}
 		return nil
 	}
+	addrCalls := 0
 	netlinkAddAddr = func(name string, addr *net.IPNet) error {
+		addrCalls++
 		return errors.New("add addr failed")
 	}
+	returnRouteCalls := 0
+	netlinkAddDeviceRoute = func(name string, dst *net.IPNet, metric int) error {
+		returnRouteCalls++
+		if name != "mgmt-dev" || dst.String() != "100.100.96.0/20" || metric != 100 {
+			t.Errorf("return route = dev %q dst %s metric %d", name, dst, metric)
+		}
+		return nil
+	}
 
-	me, _ := ParseMgmtExtract("mgmt-ns:mgmt-dev:10.0.0.1/24")
+	me, _ := ParseMgmtExtract("mgmt-ns:mgmt-dev:10.0.0.1/24,169.254.169.254/32")
 	cfg := &Config{
-		Name:         "sw0",
-		MTU:          1500,
-		MACAddr:      net.HardwareAddr{0x02, 0x00, 0x00, 0x00, 0x00, 0x01},
-		MgmtExtracts: []*MgmtExtract{me},
+		Name:           "sw0",
+		MTU:            1500,
+		MACAddr:        net.HardwareAddr{0x02, 0x00, 0x00, 0x00, 0x00, 0x01},
+		FloatingIPBase: net.ParseIP("100.100.96.0"),
+		MgmtExtracts:   []*MgmtExtract{me},
 	}
 	cs := &cleanupState{}
 
-	_, err := createMgmtPlanes(cfg, &netns.NetNS{}, mockBPFObjects(), cs)
-	if err == nil {
-		t.Fatal("expected error for add addr failure")
+	mgmtPlanes, err := createMgmtPlanes(cfg, &netns.NetNS{}, mockBPFObjects(), cs)
+	if err != nil {
+		t.Fatalf("createMgmtPlanes: %v", err)
 	}
-	if !containsSubstring(err.Error(), "add addr") {
-		t.Errorf("unexpected error: %v", err)
+	if addrCalls != 0 {
+		t.Errorf("netlinkAddAddr calls = %d, want 0", addrCalls)
+	}
+	if linkUpCalls != 1 {
+		t.Errorf("netlinkSetLinkUp calls = %d, want 1", linkUpCalls)
+	}
+	if returnRouteCalls != 1 {
+		t.Errorf("netlinkAddDeviceRoute calls = %d, want 1", returnRouteCalls)
+	}
+	if len(mgmtPlanes) != 1 || len(mgmtPlanes[0].ServiceRoutes) != 2 {
+		t.Fatalf("management extraction metadata = %+v, want two CIDRs", mgmtPlanes)
+	}
+	if mgmtPlanes[0].ServiceRoutes[0] != "10.0.0.0/24" || mgmtPlanes[0].ServiceRoutes[1] != "169.254.169.254/32" {
+		t.Errorf("extraction CIDRs = %v, want [10.0.0.0/24 169.254.169.254/32]", mgmtPlanes[0].ServiceRoutes)
 	}
 }
 
