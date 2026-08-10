@@ -3,6 +3,7 @@ package vswitch
 import (
 	"errors"
 	"fmt"
+	"net"
 	"testing"
 
 	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
@@ -392,6 +393,14 @@ func TestProvisionPortsWithMgmtAndTransit(t *testing.T) {
 	}
 	if slot.MgmtCidrsExt[0].Ifindex != 100 {
 		t.Errorf("MgmtCidrsExt[0].Ifindex = %d, want 100", slot.MgmtCidrsExt[0].Ifindex)
+	}
+	if slot.MgmtCidrs0.Ip != bpf.IPToUint32(net.ParseIP("192.168.0.0")) ||
+		slot.MgmtCidrs0.Mask != bpf.MaskToUint32(net.CIDRMask(16, 32)) {
+		t.Errorf("MgmtCidrs0 match = ip %#x mask %#x, want 192.168.0.0/16", slot.MgmtCidrs0.Ip, slot.MgmtCidrs0.Mask)
+	}
+	if slot.MgmtCidrsExt[0].Ip != bpf.IPToUint32(net.ParseIP("172.16.0.0")) ||
+		slot.MgmtCidrsExt[0].Mask != bpf.MaskToUint32(net.CIDRMask(12, 32)) {
+		t.Errorf("MgmtCidrsExt[0] match = ip %#x mask %#x, want 172.16.0.0/12", slot.MgmtCidrsExt[0].Ip, slot.MgmtCidrsExt[0].Mask)
 	}
 
 	// Verify transit info written to slot

@@ -214,7 +214,8 @@ func floatingReturnNets(base net.IP) []*net.IPNet {
 	return nets
 }
 
-// createMgmtPlanes creates management veth pairs and configures them.
+// createMgmtPlanes creates management veth pairs and configures the extraction
+// data path. Extraction CIDRs are not assigned as management-side addresses.
 // Returns the mgmt plane info list. Does NOT write to slots (deferred to ProvisionPorts).
 func createMgmtPlanes(cfg *Config, switchNs *netns.NetNS, objects *bpf.Objects, cs *cleanupState) ([]MgmtPlaneInfo, error) {
 	mgmtPlanes := []MgmtPlaneInfo{}
@@ -281,18 +282,10 @@ func createMgmtPlanes(cfg *Config, switchNs *netns.NetNS, objects *bpf.Objects, 
 		// Configure device in mgmt namespace:
 		// MAC is already set by CreateVethPairs, only need:
 		// 1. Bring up
-		// 2. Bind all service routes as addresses
-		// 3. Add default return route for floating_ip traffic
+		// 2. Add return route(s) for floating_ip traffic
 		if err := netnsDoFn(mgmtNs, func() error {
 			if err := netlinkSetLinkUp(me.Dev); err != nil {
 				return fmt.Errorf("bring up: %w", err)
-			}
-
-			// Bind each service route as an address on the device
-			for _, sr := range me.ServiceRoutes {
-				if err := netlinkAddAddr(me.Dev, sr); err != nil {
-					return fmt.Errorf("add addr %s: %w", sr.String(), err)
-				}
 			}
 
 			// Add return route(s) (direct, no gateway) scoped to the floating-IP
