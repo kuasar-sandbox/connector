@@ -20,7 +20,8 @@ ExecStart=/usr/sbin/connector-ctl vswitch serve ${SWITCH_NAME} \
     --transit-dev=${TRANSIT_DEV} \
     --transit-dev-addr=${TRANSIT_DEV_ADDR} \
     --transit-dev-mtu=${TRANSIT_DEV_MTU} \
-    --mgmt-extract=${MGMT_NETNS}:${SWITCH_NAME}_m0:${MGMT_SERVICE_ROUTES}
+    --mgmt-extract=${MGMT_NETNS}:${SWITCH_NAME}_m0:${MGMT_EXTRACT_CIDRS}
+ExecStartPost=/bin/bash -c 'IFS=, read -ra addrs <<< "$${MGMT_ADDRS}"; for addr in "$${addrs[@]}"; do [ -z "$$addr" ] && continue; if [ -z "${MGMT_NETNS}" ]; then ip addr replace "$$addr" dev "${SWITCH_NAME}_m0"; else ip netns exec "${MGMT_NETNS}" ip addr replace "$$addr" dev "${SWITCH_NAME}_m0"; fi; done'
 ExecStartPost=/bin/bash -c 'if [ -z "${MGMT_NETNS}" ]; then sysctl "net.ipv4.conf.${SWITCH_NAME}_m0.route_localnet=1"; else  ip netns exec ${MGMT_NETNS} sysctl "net.ipv4.conf.${SWITCH_NAME}_m0.route_localnet=1"; fi'
 TimeoutStartSec=60
 TimeoutStopSec=30

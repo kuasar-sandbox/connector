@@ -51,6 +51,8 @@ connector-ctl vswitch start sw1 --netns=sw_ns --ports=128 \
     --mac-addr=02:00:00:00:00:01 --floating-ip-base=100.100.96.0 \
     --mgmt-extract=mgmt_ns:eth0:169.254.169.254/32 \
     --transit-dev=eth1 --transit-dev-addr=10.0.0.1/24:10.0.0.2
+# Deployment assigns service-owned addresses; --mgmt-extract only classifies traffic.
+ip netns exec mgmt_ns ip addr replace 169.254.169.254/32 dev eth0
 
 connector-ctl vswitch attach sw1 --inner-ip=169.254.1.1 \
     --transit-gateway-ip=10.0.0.2 --transit-geneve-vni=100

@@ -27,7 +27,7 @@ type SwitchMetadata struct {
 type MgmtExtractMeta struct {
 	NetNS         string   `json:"netns"`
 	Dev           string   `json:"dev"`
-	ServiceRoutes []string `json:"service_routes"`
+	ServiceRoutes []string `json:"service_routes"` // Extraction match CIDRs, not interface addresses
 }
 
 // Accessor methods for backward compatibility.
