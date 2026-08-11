@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 // sandbox-switch eBPF TC programs
 //
 // TC program attachment points:
