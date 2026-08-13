@@ -44,10 +44,20 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	if !hasGeneveOptsMap && (locator != GeneveLocatorPort || geneveOptsValue.Len != 0) {
 		return nil, fmt.Errorf("switch lacks the geneve_opts map required by geneve_locator=%s or non-empty transit_geneve_opts; rebuild the switch", locator)
 	}
-
 	innerIP := bpf.IPToUint32(opts.InnerIP)
 	if innerIP == 0 {
 		return nil, fmt.Errorf("inner-ip cannot be 0.0.0.0")
+	}
+	// The options map and the mmap'd slot are two separate kernel objects. New
+	// switches serialize slot ownership changes with the existing per-switch
+	// control flock so Detach/Reserve cannot release and reassign a slot between
+	// those writes. Old switches have no options map and keep their legacy path.
+	if hasGeneveOptsMap {
+		lock, err := acquireControlLockFn(s.name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to acquire control lock: %w", err)
+		}
+		defer lock.Release()
 	}
 
 	var slotID uint32
@@ -270,6 +280,14 @@ func (s *switchContext) Reserve(opts ReserveOptions) (*ReserveOutput, error) {
 	if slotID >= s.cfg.N_ports {
 		return nil, fmt.Errorf("port %d: %w (max %d)", opts.Port, ErrPortOutOfRange, s.cfg.N_ports)
 	}
+	hasGeneveOptsMap := s.maps != nil && s.maps.GeneveOpts != nil
+	if hasGeneveOptsMap {
+		lock, err := acquireControlLockFn(s.name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to acquire control lock: %w", err)
+		}
+		defer lock.Release()
+	}
 
 	status := "reserved"
 
@@ -328,6 +346,14 @@ func (s *switchContext) Detach(opts DetachOptions) error {
 	if slotID >= cfg.N_ports {
 		return fmt.Errorf("port %d: %w", opts.Port, ErrPortOutOfRange)
 	}
+	hasGeneveOptsMap := s.maps != nil && s.maps.GeneveOpts != nil
+	if hasGeneveOptsMap {
+		lock, err := acquireControlLockFn(s.name)
+		if err != nil {
+			return fmt.Errorf("failed to acquire control lock: %w", err)
+		}
+		defer lock.Release()
+	}
 
 	// Read current InnerIP atomically
 	currentIP := s.mmapSlots.GetInnerIP(slotID)
@@ -373,13 +399,12 @@ func (s *switchContext) Detach(opts DetachOptions) error {
 		// else: device already in port namespace, skip move (idempotent)
 	}
 
-	// Claim the current attachment as Reserved before changing the non-atomic
-	// hint. This prevents a concurrent Attach from acquiring the slot between
-	// clearing the hint and releasing ownership, and leaves rollback paths such
-	// as failed tap FD delivery with geneve_opts_len=0 as required.
-	if !s.mmapSlots.TryReserve(slotID, currentIP) {
-		// Another process may have detached or detached and reattached the slot
-		// while the device operation was in progress.
+	// Release ownership directly. Reserved is an explicit
+	// reserve/provision/stop state and is never a transient Detach state.
+	if !s.mmapSlots.TryRelease(slotID, currentIP) {
+		// A concurrent force-reserve must remain Reserved. A completed concurrent
+		// detach is also idempotent; a new allocated owner is reported without
+		// touching any of its state after the failed CAS.
 		newIP := s.mmapSlots.GetInnerIP(slotID)
 		if newIP == InnerIPFree || newIP == InnerIPReserved {
 			return nil
@@ -387,16 +412,15 @@ func (s *switchContext) Detach(opts DetachOptions) error {
 		return fmt.Errorf("port %d was reattached by another process", opts.Port)
 	}
 
-	// Suppress per-slot option lookup while the slot is exclusively Reserved.
-	// The fixed map value and other transit fields remain untouched; the next
-	// Attach atomically overwrites the full option value before publishing its
-	// new hint.
-	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
-		slot.GeneveOptsLen = 0
-	})
-
-	if !s.mmapSlots.TryUnreserve(slotID) {
-		return fmt.Errorf("port %d: failed to release reserved slot", opts.Port)
+	// Once inner_ip is Free, the data plane no longer reads this slot. New
+	// switches still hold the control lock, so clear only the fast-path hint
+	// without racing a new Attach. Keep the fixed map value and retained transit
+	// fields for the next Attach to overwrite in full. Old switches have no
+	// geneve_opts map or hint to manage and retain their legacy Detach path.
+	if hasGeneveOptsMap {
+		s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
+			slot.GeneveOptsLen = 0
+		})
 	}
 
 	return nil

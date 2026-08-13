@@ -37,8 +37,9 @@ vswitch 把全部转发判定集中在一份 ~1K 行的 eBPF C 程序里,控制�
 2. **无状态转发**:eBPF 程序不维护连接表,所有判定基于 slot 配置 + IP/UDP 端口算术。
 3. **进程生命周期与数据面解耦**:`start`/`attach`/`detach` 返回后用户态退出,转发由
    内核 eBPF 持续执行。
-4. **并发安全**:attach/detach 跨进程并发不需要全局互斥,依赖 mmap + 原子 CAS;复合
-   控制操作经 flock 串行化。
+4. **并发安全**:slot 所有权由 mmap + 原子 CAS 判定;含 `geneve_opts` map 的新 switch
+   还用 per-switch flock 串行化 Attach/Detach/Reserve 的复合更新。旧 switch 缺少该 map
+   时保持原有 CAS-only 路径。
 5. **可观测**:per-port、per-direction、per-class(mgmt/transit)流量计数;状态查询用
    Kubernetes Conditions 风格。
 6. **systemd-native**:`Type=notify` 集成,watchdog keepalive,崩溃重启后经 bpffs
@@ -89,7 +90,7 @@ L4+ 策略的多租户控制面、需要连接跟踪/L7 过滤的安全网关。
 | `serve [switch_name]` | systemd `Type=notify` 长驻:StartReserved → tapfd listen(可选) → READY=1 → 后台 ProvisionPorts → 健康检查循环 |
 | `stop <name>` | 卸载 eBPF、删除 pinned maps、删除 veth/tap、把 transit 设备还回原 netns |
 | `attach <name>` | 分配端口(CAS Free→IP);veth 模式可把端口设备移入沙箱 netns |
-| `detach <name> --port=N` | 释放端口(CAS IP→Reserved→Free) |
+| `detach <name> --port=N` | 释放端口(CAS Allocated→Free);不借用 Reserved 作为过渡态 |
 | `reserve <name> --port=N` | 把端口标记为 Reserved,阻止后续 attach(升级/排空) |
 | `provision <name>` | 为 Reserved slot 创建端口设备;支持批量与单点修复 |
 | `open-port <name> --port=N` | 打开 tap 端口的队列 fd,经 `TAPFD_SOCKET` 递交 consumer([tapfd.md](tapfd.md) §3 的 provider helper) |
@@ -253,11 +254,12 @@ netns。内部分两步 `ReleasePorts` + `StopReleased`。
 
 ### 2.5 `connector-ctl vswitch detach`
 
-释放端口:CAS IP→Reserved,清零 options fast-path hint,再 CAS Reserved→Free。固定长度
-options map value 和其它 transit fields 不在 Detach 中清理;Free slot 不会被数据面
-使用,下一次 Attach 在发布新 hint 前完整覆盖。tap slot 无设备操作;veth slot 给
-`--from-netns` 则把设备移回
-port netns,省略则校验设备已在 port netns。
+释放端口:在新 switch 的 per-switch control flock 内直接 CAS Allocated→Free,随后清零
+options fast-path hint。`Reserved` 只表示显式 reserve/provision/stop 状态,Detach 不把它
+用作过渡态。固定长度 options map value 和其它 transit fields 不在 Detach 中清理;
+Free slot 不会被数据面使用,下一次 Attach 在发布新 hint 前完整覆盖。缺少
+`geneve_opts` map 的旧 switch 保持 CAS-only 兼容路径。tap slot 无设备操作;veth slot
+给 `--from-netns` 则把设备移回 port netns,省略则校验设备已在 port netns。
 
 | 参数 | 说明 |
 | --- | --- |
@@ -894,8 +896,8 @@ inner_ip = <real IP>           → Allocated   attached
 
 StartReserved          ProvisionPorts            Attach              Detach
 [Free] ─CAS(0→0xFFFF)─▶ [Reserved] ─CAS(0xFFFF→0)─▶ [Free] ─CAS(0→IP)─▶ [Allocated]
-                                                                          │
-                         [Free] ◀─CAS(0xFFFF→0)─ [Reserved] ◀─CAS(IP→0xFFFF)─┘
+                                                    ▲                       │
+                                                    └────CAS(IP→0)──────────┘
 
 reserve --port=N [--force]:
    [Free]      ─CAS(0→0xFFFF)──▶ [Reserved]
@@ -905,7 +907,7 @@ reserve --port=N [--force]:
 | 操作 | 语义 | CAS |
 | --- | --- | --- |
 | Attach | Free → Allocated | `CAS(inner_ip, 0, innerIP)` |
-| Detach | Allocated → Reserved → Free | `CAS(inner_ip, currentIP, 0xFFFFFFFF)`,清零 hint,再 `CAS(inner_ip, 0xFFFFFFFF, 0)`;map value 留给下一次 Attach 覆盖 |
+| Detach | Allocated → Free | `CAS(inner_ip, currentIP, 0)`;新 switch 在持有 control flock 时清零 hint,map value 留给下一次 Attach 覆盖;不经过 Reserved |
 | Reserve | Free → Reserved | `CAS(inner_ip, 0, 0xFFFFFFFF)` |
 | Provision 完成 | Reserved → Free | `CAS(inner_ip, 0xFFFFFFFF, 0)` |
 
@@ -913,15 +915,17 @@ CAS 失败的进程回滚已做的中间状态(如设备移动),不留半分配 
 
 ### 6.4 控制操作互斥
 
-CAS 只保证单 slot 原子;多 slot/多资源的复合控制操作经 `flock(LOCK_EX)` 在 bpffs pin
-目录 `/sys/fs/bpf/<sw>/` 上互斥:
+CAS 只保证单 slot 所有权原子;多 slot/多资源的控制操作,以及新 switch 上跨 mmap slot
+与 `geneve_opts` map 的复合更新,经 `flock(LOCK_EX)` 在 bpffs pin 目录
+`/sys/fs/bpf/<sw>/` 上互斥:
 
 | 操作 | flock | CAS |
 | --- | --- | --- |
 | Start(StartReserved) | ✓ | ✓(所有 slot 置 Reserved) |
 | Stop / `stop --force` | ✓ | – |
 | ProvisionPorts | ✓ | ✓(逐槽 Reserved→Free) |
-| Attach / Detach / Reserve | – | ✓(轻量,无锁) |
+| Attach / Detach / Reserve(新 switch) | ✓ | ✓;锁覆盖 claim、map/MTU/device 更新与 hint 发布/回收 |
+| Attach / Detach / Reserve(旧 switch,无 `geneve_opts`) | – | ✓(兼容的 CAS-only 路径) |
 
 ### 6.5 两阶段启动
 

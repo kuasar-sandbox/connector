@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf"
+	vnetlink "github.com/vishvananda/netlink"
 
 	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
 	connectornetlink "github.com/kuasar-sandbox/connector/pkg/netlink"
@@ -25,6 +26,7 @@ func newGeneveAttachTestContext(cfg *SwitchConfig, withOptionsMap bool) (*switch
 	maps := &bpf.Maps{}
 	if withOptionsMap {
 		maps.GeneveOpts = &ebpf.Map{}
+		acquireControlLockFn = func(string) (*ControlLock, error) { return &ControlLock{}, nil }
 	}
 	return &switchContext{
 		name:      "sw0",
@@ -94,6 +96,21 @@ func TestAttachGeneveOptionsMapFailureRollsBack(t *testing.T) {
 	}
 	if slots.GetInnerIP(0) != 0 || slots.GetSlot(0).GeneveOptsLen != 0 {
 		t.Fatalf("rollback state: inner=%#x hint=%d", slots.GetInnerIP(0), slots.GetSlot(0).GeneveOptsLen)
+	}
+}
+
+func TestAttachGeneveControlLockFailureBeforeCAS(t *testing.T) {
+	defer resetDeps()
+	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
+	acquireControlLockFn = func(string) (*ControlLock, error) {
+		return nil, errors.New("injected lock failure")
+	}
+	_, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true})
+	if err == nil || !strings.Contains(err.Error(), "injected lock failure") {
+		t.Fatalf("error = %v", err)
+	}
+	if slots.GetInnerIP(0) != InnerIPFree {
+		t.Fatalf("lock failure allocated slot: inner=%#x", slots.GetInnerIP(0))
 	}
 }
 
@@ -402,7 +419,8 @@ func TestAttachVNIValidationBeforeCAS(t *testing.T) {
 	}
 }
 
-func TestDetachClearsHintBeforeRelease(t *testing.T) {
+func TestDetachReleasesDirectlyAndClearsHint(t *testing.T) {
+	defer resetDeps()
 	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
 	innerIP := bpf.IPToUint32(net.ParseIP("10.0.0.1"))
 	if !slots.TryAllocate(0, innerIP) {
@@ -415,5 +433,70 @@ func TestDetachClearsHintBeforeRelease(t *testing.T) {
 	}
 	if slots.GetInnerIP(0) != InnerIPFree || slots.GetSlot(0).GeneveOptsLen != 0 {
 		t.Fatalf("detach state: inner=%#x hint=%d", slots.GetInnerIP(0), slots.GetSlot(0).GeneveOptsLen)
+	}
+}
+
+func TestDetachGeneveControlLockFailurePreservesAttachment(t *testing.T) {
+	defer resetDeps()
+	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
+	innerIP := bpf.IPToUint32(net.ParseIP("10.0.0.1"))
+	if !slots.TryAllocate(0, innerIP) {
+		t.Fatal("allocate slot")
+	}
+	slots.GetSlot(0).GeneveOptsLen = 12
+	acquireControlLockFn = func(string) (*ControlLock, error) {
+		return nil, errors.New("injected lock failure")
+	}
+
+	err := s.Detach(DetachOptions{Port: 1, SkipDevice: true})
+	if err == nil || !strings.Contains(err.Error(), "injected lock failure") {
+		t.Fatalf("error = %v", err)
+	}
+	if slots.GetInnerIP(0) != innerIP || slots.GetSlot(0).GeneveOptsLen != 12 {
+		t.Fatalf("lock failure changed attachment: inner=%#x hint=%d", slots.GetInnerIP(0), slots.GetSlot(0).GeneveOptsLen)
+	}
+}
+
+func TestReserveGeneveControlLockFailurePreservesFreeSlot(t *testing.T) {
+	defer resetDeps()
+	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
+	acquireControlLockFn = func(string) (*ControlLock, error) {
+		return nil, errors.New("injected lock failure")
+	}
+
+	_, err := s.Reserve(ReserveOptions{Port: 1})
+	if err == nil || !strings.Contains(err.Error(), "injected lock failure") {
+		t.Fatalf("error = %v", err)
+	}
+	if slots.GetInnerIP(0) != InnerIPFree {
+		t.Fatalf("lock failure reserved slot: inner=%#x", slots.GetInnerIP(0))
+	}
+}
+
+func TestDetachDoesNotUndoConcurrentForceReserve(t *testing.T) {
+	defer resetDeps()
+	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
+	s.meta.PortNetNS = "port-ns"
+	innerIP := bpf.IPToUint32(net.ParseIP("10.0.0.1"))
+	if !slots.TryAllocate(0, innerIP) {
+		t.Fatal("allocate slot")
+	}
+	slots.GetSlot(0).GeneveOptsLen = 12
+
+	// Simulate force-reserve winning after Detach reads currentIP but before its
+	// release CAS. The second load in Detach must observe and preserve Reserved.
+	netnsGetByName = func(string) (*netns.NetNS, error) { return &netns.NetNS{}, nil }
+	netnsGetLinkInNs = func(*netns.NetNS, string) (vnetlink.Link, error) {
+		if !slots.TryReserve(0, innerIP) {
+			t.Fatal("simulate concurrent force-reserve")
+		}
+		return &vnetlink.Dummy{}, nil
+	}
+
+	if err := s.Detach(DetachOptions{Port: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if slots.GetInnerIP(0) != InnerIPReserved || slots.GetSlot(0).GeneveOptsLen != 12 {
+		t.Fatalf("detach/reserve state: inner=%#x hint=%d", slots.GetInnerIP(0), slots.GetSlot(0).GeneveOptsLen)
 	}
 }

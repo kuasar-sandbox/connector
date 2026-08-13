@@ -9,8 +9,10 @@ import (
 	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
 )
 
-// ControlLock provides process-level mutual exclusion for control operations
-// (Start, Stop, ProvisionPorts). It uses flock on the bpffs pin directory.
+// ControlLock provides process-level mutual exclusion for control operations.
+// In addition to switch lifecycle operations, ownership changes on switches
+// with a geneve_opts map use it to keep the mmap slot and options map coherent.
+// It uses flock on the bpffs pin directory.
 type ControlLock struct {
 	f *os.File
 }
