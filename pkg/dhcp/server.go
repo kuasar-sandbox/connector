@@ -27,10 +27,13 @@ type ServerConfig struct {
 
 // Server is a simple DHCP server for testing purposes.
 type Server struct {
-	cfg    ServerConfig
-	pool   *ipPool
-	server *server4.Server
-	done   chan struct{}
+	cfg  ServerConfig
+	pool *ipPool
+
+	lifecycleMu sync.Mutex // guards server, closed, and closing done
+	server      *server4.Server
+	closed      bool
+	done        chan struct{}
 }
 
 // ipPool manages IP address allocation.
@@ -134,6 +137,13 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 
 // Serve starts the DHCP server and blocks until the context is cancelled.
 func (s *Server) Serve(ctx context.Context) error {
+	s.lifecycleMu.Lock()
+	if s.closed {
+		s.lifecycleMu.Unlock()
+		return nil
+	}
+	s.lifecycleMu.Unlock()
+
 	laddr := &net.UDPAddr{
 		IP:   net.IPv4zero,
 		Port: s.cfg.Port,
@@ -143,7 +153,15 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
 	}
+
+	s.lifecycleMu.Lock()
+	if s.closed {
+		s.lifecycleMu.Unlock()
+		_ = srv.Close()
+		return nil
+	}
 	s.server = srv
+	s.lifecycleMu.Unlock()
 
 	// Handle context cancellation
 	go func() {
@@ -161,15 +179,18 @@ func (s *Server) Serve(ctx context.Context) error {
 
 // Close stops the DHCP server.
 func (s *Server) Close() error {
-	select {
-	case <-s.done:
-		// Already closed
+	s.lifecycleMu.Lock()
+	if s.closed {
+		s.lifecycleMu.Unlock()
 		return nil
-	default:
-		close(s.done)
 	}
-	if s.server != nil {
-		return s.server.Close()
+	s.closed = true
+	close(s.done)
+	srv := s.server
+	s.lifecycleMu.Unlock()
+
+	if srv != nil {
+		return srv.Close()
 	}
 	return nil
 }
