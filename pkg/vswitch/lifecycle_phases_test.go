@@ -195,8 +195,8 @@ func TestValidateTransitDeviceEarlyMTUAutoMode(t *testing.T) {
 	if err != nil {
 		t.Errorf("expected no error in auto mode, got: %v", err)
 	}
-	// Auto mode should calculate TransitDevMTU = MTU + overhead
-	expectedMTU := 1500 + GeneveIPOverhead
+	// Auto mode reserves the complete legal Geneve options budget.
+	expectedMTU := 1500 + GeneveIPOverhead + int(MaxGeneveOptsLen)
 	if cfg.TransitDevMTU != expectedMTU {
 		t.Errorf("expected TransitDevMTU=%d, got %d", expectedMTU, cfg.TransitDevMTU)
 	}
@@ -219,8 +219,8 @@ func TestValidateTransitDeviceEarlyMTUAutoModeEthEncap(t *testing.T) {
 	if err != nil {
 		t.Errorf("expected no error in auto mode, got: %v", err)
 	}
-	// Auto mode with Eth encap should use GeneveEthOverhead
-	expectedMTU := 1500 + GeneveEthOverhead
+	// Auto mode with Eth encap also reserves the complete options budget.
+	expectedMTU := 1500 + GeneveEthOverhead + int(MaxGeneveOptsLen)
 	if cfg.TransitDevMTU != expectedMTU {
 		t.Errorf("expected TransitDevMTU=%d, got %d", expectedMTU, cfg.TransitDevMTU)
 	}
@@ -474,6 +474,39 @@ func TestBuildStartOutputWithTransit(t *testing.T) {
 	}
 }
 
+func TestBuildStartOutputGeneveLocators(t *testing.T) {
+	tlv := &GeneveTLVLocator{Class: 0x0102, Type: 0x81}
+	for _, tt := range []struct {
+		name        string
+		locator     GeneveLocator
+		tlv         *GeneveTLVLocator
+		wantPort    uint16
+		wantBase    uint16
+		wantLocator string
+	}{
+		{name: "port", locator: GeneveLocatorPort, wantPort: 50000, wantBase: 50000},
+		{name: "vni", locator: GeneveLocatorVNI, wantPort: GeneveStandardPort},
+		{name: "tlv", locator: GeneveLocatorTLV, tlv: tlv, wantPort: GeneveStandardPort, wantLocator: "0102:81"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Name:             "sw0",
+				NumPorts:         4,
+				FloatingIPBase:   net.ParseIP("100.100.96.0"),
+				TransitDev:       "eth0",
+				GeneveLocator:    tt.locator,
+				GenevePortBase:   DefaultGenevePortBase,
+				GeneveTLVLocator: tt.tlv,
+			}
+			out := buildStartOutput(cfg, nil, "192.0.2.1", false)
+			if out.GeneveLocator != tt.locator.String() || out.GenevePort != tt.wantPort ||
+				out.GenevePortBase != tt.wantBase || out.GeneveTLVLocator != tt.wantLocator {
+				t.Fatalf("output = %#v", out)
+			}
+		})
+	}
+}
+
 func TestBuildStartOutputWithMgmtPlanes(t *testing.T) {
 	cfg := &Config{
 		Name:           "sw0",
@@ -517,7 +550,7 @@ func TestBuildStartOutputSwitchMaps(t *testing.T) {
 	output := buildStartOutput(cfg, []MgmtPlaneInfo{}, "", false)
 
 	// Every pinned map must be reported, so callers can locate all of them.
-	wantMaps := []string{"slots", "config", "stats", "ifindex_to_slot", "metadata", "mgmt_svc_fwd", "mgmt_svc_rev"}
+	wantMaps := []string{"slots", "config", "stats", "ifindex_to_slot", "metadata", "mgmt_svc_fwd", "mgmt_svc_rev", "geneve_opts"}
 	if len(output.SwitchMaps) != len(wantMaps) {
 		t.Errorf("switch_maps count: got %d, want %d (%v)", len(output.SwitchMaps), len(wantMaps), output.SwitchMaps)
 	}
@@ -867,14 +900,18 @@ func TestAttachTCToPortsLinkByNameError(t *testing.T) {
 
 // --- validateMTUSlowPath additional tests ---
 
-func TestValidateMTUSlowPathGetMTUError(t *testing.T) {
-	// Port veths that don't exist are skipped gracefully (StartReserved context).
-	// With no mgmt veths, portMTU stays 0 and validation is skipped.
+func TestValidateMTUSlowPathUsesDefaultMTUWhenPortsDoNotExist(t *testing.T) {
+	// StartReserved has no port devices yet, so validation uses the default MTU
+	// that later provisioning will assign.
 	defer resetDeps()
 
 	netlinkGetMTUInNs = func(ns netlink.NetNS, name string) (int, error) {
-		return 0, errors.New("get MTU failed")
+		if name == "eth0" {
+			return defaultPortMTU + GeneveIPOverhead, nil
+		}
+		return 0, errors.New("port does not exist")
 	}
+	netnsGetCurrent = func() (*netns.NetNS, error) { return &netns.NetNS{}, nil }
 
 	cfg := &Config{
 		Name:       "sw0",
@@ -885,7 +922,7 @@ func TestValidateMTUSlowPathGetMTUError(t *testing.T) {
 
 	err := validateMTUSlowPath(cfg, &netns.NetNS{})
 	if err != nil {
-		t.Fatalf("expected nil (port veth errors should be skipped), got: %v", err)
+		t.Fatalf("default port MTU validation: %v", err)
 	}
 }
 
@@ -940,7 +977,7 @@ func TestValidateMTUSlowPathGeneveEthOverhead(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expectedMTU := 1500 + GeneveEthOverhead
+	expectedMTU := 1500 + GeneveEthOverhead + int(MaxGeneveOptsLen)
 	if cfg.TransitDevMTU != expectedMTU {
 		t.Errorf("expected TransitDevMTU=%d, got %d", expectedMTU, cfg.TransitDevMTU)
 	}
@@ -1708,8 +1745,8 @@ func TestValidateMTUSlowPathAutoMode(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Auto mode should calculate TransitDevMTU = portMTU + overhead
-	expectedMTU := 1500 + GeneveIPOverhead
+	// Auto mode reserves the complete legal Geneve options budget.
+	expectedMTU := 1500 + GeneveIPOverhead + int(MaxGeneveOptsLen)
 	if cfg.TransitDevMTU != expectedMTU {
 		t.Errorf("expected TransitDevMTU=%d, got %d", expectedMTU, cfg.TransitDevMTU)
 	}
@@ -2209,7 +2246,7 @@ func TestResolveTransitMTUAuto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	expected := 1500 + GeneveIPOverhead
+	expected := 1500 + GeneveIPOverhead + int(MaxGeneveOptsLen)
 	if cfg.TransitDevMTU != expected {
 		t.Errorf("TransitDevMTU = %d, want %d", cfg.TransitDevMTU, expected)
 	}
@@ -2225,7 +2262,7 @@ func TestResolveTransitMTUAutoEthEncap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	expected := 1500 + GeneveEthOverhead
+	expected := 1500 + GeneveEthOverhead + int(MaxGeneveOptsLen)
 	if cfg.TransitDevMTU != expected {
 		t.Errorf("TransitDevMTU = %d, want %d", cfg.TransitDevMTU, expected)
 	}
@@ -2256,6 +2293,22 @@ func TestResolveTransitMTUExplicitTooSmall(t *testing.T) {
 	}
 	if !containsSubstring(err.Error(), "too small") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveTransitMTUTLVFixedLocatorOverhead(t *testing.T) {
+	cfg := &Config{
+		TransitDev:       "eth0",
+		TransitDevMTU:    1500 + GeneveIPOverhead + geneveTLVLocatorWireLen - 1,
+		GeneveLocator:    GeneveLocatorTLV,
+		GeneveTLVLocator: &GeneveTLVLocator{Class: 0x0102, Type: 0x81},
+	}
+	if err := resolveTransitMTU(cfg, 1500); err == nil || !containsSubstring(err.Error(), "fixed options overhead 8") {
+		t.Fatalf("TLV fixed-overhead error = %v", err)
+	}
+	cfg.TransitDevMTU++
+	if err := resolveTransitMTU(cfg, 1500); err != nil {
+		t.Fatalf("exact TLV fixed-overhead MTU: %v", err)
 	}
 }
 

@@ -16,13 +16,28 @@ import (
 type vswitchExportedU32 uint32
 
 const (
-	vswitchExportedU32MAX_PORTS              vswitchExportedU32 = 4096
-	vswitchExportedU32MAX_MGMT_CIDR_PER_SLOT vswitchExportedU32 = 3
-	vswitchExportedU32INNER_IP_FREE          vswitchExportedU32 = 0
-	vswitchExportedU32INNER_IP_RESERVED      vswitchExportedU32 = 4294967295
-	vswitchExportedU32PORT_KIND_VETH         vswitchExportedU32 = 0
-	vswitchExportedU32PORT_KIND_TAP          vswitchExportedU32 = 1
+	vswitchExportedU32MAX_PORTS               vswitchExportedU32 = 4096
+	vswitchExportedU32MAX_MGMT_CIDR_PER_SLOT  vswitchExportedU32 = 3
+	vswitchExportedU32INNER_IP_FREE           vswitchExportedU32 = 0
+	vswitchExportedU32INNER_IP_RESERVED       vswitchExportedU32 = 4294967295
+	vswitchExportedU32PORT_KIND_VETH          vswitchExportedU32 = 0
+	vswitchExportedU32PORT_KIND_TAP           vswitchExportedU32 = 1
+	vswitchExportedU32MAX_GENEVE_OPTS_LEN     vswitchExportedU32 = 64
+	vswitchExportedU32GENEVE_PORT             vswitchExportedU32 = 6081
+	vswitchExportedU32GENEVE_LOCATOR_PORT     vswitchExportedU32 = 0
+	vswitchExportedU32GENEVE_LOCATOR_VNI      vswitchExportedU32 = 1
+	vswitchExportedU32GENEVE_LOCATOR_TLV      vswitchExportedU32 = 2
+	vswitchExportedU32GENEVE_VNI_LOCATOR_BITS vswitchExportedU32 = 12
+	vswitchExportedU32GENEVE_VNI_VALUE_MASK   vswitchExportedU32 = 4095
 )
+
+type vswitchGeneveOptsValue struct {
+	_        structs.HostLayout
+	Len      uint8
+	Critical uint8
+	Reserved uint16
+	Data     [64]uint8
+}
 
 type vswitchMgmtCidr struct {
 	_       structs.HostLayout
@@ -43,7 +58,7 @@ type vswitchSlotItem struct {
 	TransitGeneveVni uint32
 	TransitMac       [6]uint8
 	Mode             uint8
-	PadMac           uint8
+	GeneveOptsLen    uint8
 	MgmtCidrCount    uint32
 	MgmtCidrs0       vswitchMgmtCidr
 	PadCl0           [8]uint8
@@ -90,7 +105,9 @@ type vswitchSwitchConfig struct {
 	TransitNexthop uint32
 	PortMac        [6]uint8
 	Pad4           [2]uint8
-	Pad5           [4]uint8
+	GeneveLocator  uint8
+	GeneveTlvType  uint8
+	GeneveTlvClass uint16
 }
 
 // loadVswitch returns the embedded CollectionSpec for vswitch.
@@ -145,6 +162,7 @@ type vswitchProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type vswitchMapSpecs struct {
 	Config        *ebpf.MapSpec `ebpf:"config"`
+	GeneveOpts    *ebpf.MapSpec `ebpf:"geneve_opts"`
 	IfindexToSlot *ebpf.MapSpec `ebpf:"ifindex_to_slot"`
 	Metadata      *ebpf.MapSpec `ebpf:"metadata"`
 	MgmtSvcFwd    *ebpf.MapSpec `ebpf:"mgmt_svc_fwd"`
@@ -180,6 +198,7 @@ func (o *vswitchObjects) Close() error {
 // It can be passed to loadVswitchObjects or ebpf.CollectionSpec.LoadAndAssign.
 type vswitchMaps struct {
 	Config        *ebpf.Map `ebpf:"config"`
+	GeneveOpts    *ebpf.Map `ebpf:"geneve_opts"`
 	IfindexToSlot *ebpf.Map `ebpf:"ifindex_to_slot"`
 	Metadata      *ebpf.Map `ebpf:"metadata"`
 	MgmtSvcFwd    *ebpf.Map `ebpf:"mgmt_svc_fwd"`
@@ -191,6 +210,7 @@ type vswitchMaps struct {
 func (m *vswitchMaps) Close() error {
 	return _VswitchClose(
 		m.Config,
+		m.GeneveOpts,
 		m.IfindexToSlot,
 		m.Metadata,
 		m.MgmtSvcFwd,

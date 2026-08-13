@@ -15,6 +15,8 @@ import (
 	"github.com/kuasar-sandbox/connector/pkg/netns"
 )
 
+const defaultPortMTU = 1500
+
 // getTransitDeviceMTU gets the MTU of transit device in caller's namespace.
 func getTransitDeviceMTU(transitDev string) (int, error) {
 	callerNs, err := netnsGetCurrent()
@@ -37,13 +39,22 @@ func getTransitDeviceMTU(transitDev string) (int, error) {
 //
 // portMTU is the discovered/configured port MTU (cfg.MTU or read from veths).
 func resolveTransitMTU(cfg *Config, portMTU int) error {
-	overhead := GeneveIPOverhead
+	baseOverhead := GeneveIPOverhead
 	overheadName := "IP-over-GENEVE"
 	if cfg.GeneveEncapEth {
-		overhead = GeneveEthOverhead
+		baseOverhead = GeneveEthOverhead
 		overheadName = "Ether-over-GENEVE"
 	}
-	requiredMTU := portMTU + overhead
+	optionsOverhead := 0
+	if cfg.GeneveLocator == GeneveLocatorTLV {
+		optionsOverhead = geneveTLVLocatorWireLen
+	}
+	// Auto mode reserves the full protocol maximum so every later valid Attach
+	// fits without resizing an active transit device.
+	if cfg.TransitDevMTUAuto {
+		optionsOverhead = int(MaxGeneveOptsLen)
+	}
+	requiredMTU := portMTU + baseOverhead + optionsOverhead
 
 	if cfg.TransitDevMTUAuto {
 		cfg.TransitDevMTU = requiredMTU
@@ -51,8 +62,8 @@ func resolveTransitMTU(cfg *Config, portMTU int) error {
 	}
 	if cfg.TransitDevMTU > 0 {
 		if cfg.TransitDevMTU < requiredMTU {
-			return fmt.Errorf("transit-dev-mtu %d is too small: requires at least %d (port MTU %d + %s overhead %d)",
-				cfg.TransitDevMTU, requiredMTU, portMTU, overheadName, overhead)
+			return fmt.Errorf("transit-dev-mtu %d is too small: requires at least %d (port MTU %d + %s overhead %d + fixed options overhead %d)",
+				cfg.TransitDevMTU, requiredMTU, portMTU, overheadName, baseOverhead, optionsOverhead)
 		}
 		return nil
 	}
@@ -62,8 +73,8 @@ func resolveTransitMTU(cfg *Config, portMTU int) error {
 		return err
 	}
 	if transitMTU < requiredMTU {
-		return fmt.Errorf("transit device %s MTU %d is too small: requires at least %d (port MTU %d + %s overhead %d)",
-			cfg.TransitDev, transitMTU, requiredMTU, portMTU, overheadName, overhead)
+		return fmt.Errorf("transit device %s MTU %d is too small: requires at least %d (port MTU %d + %s overhead %d + fixed options overhead %d)",
+			cfg.TransitDev, transitMTU, requiredMTU, portMTU, overheadName, baseOverhead, optionsOverhead)
 	}
 	return nil
 }
@@ -323,7 +334,8 @@ func createMgmtPlanes(cfg *Config, switchNs *netns.NetNS, objects *bpf.Objects, 
 
 // validateMTUSlowPath validates MTU when --mtu was not specified.
 // Reads actual MTU from created veths and validates/calculates transit dev MTU.
-// Port veths that don't exist yet (e.g., in StartReserved) are skipped.
+// Port veths that don't exist yet (e.g., in StartReserved) use the kernel
+// default MTU that ProvisionPorts will assign.
 func validateMTUSlowPath(cfg *Config, switchNs *netns.NetNS) error {
 	if cfg.MTU != 0 || cfg.TransitDev == "" {
 		return nil
@@ -354,11 +366,10 @@ func validateMTUSlowPath(cfg *Config, switchNs *netns.NetNS) error {
 		}
 	}
 
-	if portMTU > 0 {
-		return resolveTransitMTU(cfg, portMTU)
+	if portMTU == 0 {
+		portMTU = defaultPortMTU
 	}
-
-	return nil
+	return resolveTransitMTU(cfg, portMTU)
 }
 
 // configureTransitDevice moves and configures the transit device.
@@ -465,8 +476,11 @@ func configureTransitDevice(cfg *Config, switchNs *netns.NetNS, objects *bpf.Obj
 // switchMapPaths returns the bpffs pin path of every map a switch pins, keyed
 // by map name. Kept in one place so command output stays in sync with
 // Objects.PinMaps / LoadPinnedMaps.
-func switchMapPaths(name string) map[string]string {
+func switchMapPaths(name string, includeGeneveOpts bool) map[string]string {
 	maps := []string{"slots", "config", "stats", "ifindex_to_slot", "metadata", "mgmt_svc_fwd", "mgmt_svc_rev"}
+	if includeGeneveOpts {
+		maps = append(maps, "geneve_opts")
+	}
 	out := make(map[string]string, len(maps))
 	for _, m := range maps {
 		out[m] = fmt.Sprintf("%s/%s/%s", bpf.BPFPath, name, m)
@@ -485,7 +499,7 @@ func buildStartOutput(cfg *Config, mgmtPlanes []MgmtPlaneInfo, transitDevIP stri
 	output := &StartOutput{
 		Switch:         cfg.Name,
 		SwitchNetNS:    cfg.SwitchNetNS,
-		SwitchMaps:     switchMapPaths(cfg.Name),
+		SwitchMaps:     switchMapPaths(cfg.Name, true),
 		PortNetNS:      cfg.PortNetNS,
 		Ports:          cfg.NumPorts,
 		PortsUsed:      0,
@@ -500,7 +514,14 @@ func buildStartOutput(cfg *Config, mgmtPlanes []MgmtPlaneInfo, transitDevIP stri
 		output.TransitType = "overlay-geneve"
 		output.TransitDev = cfg.TransitDev
 		output.TransitDevIP = transitDevIP
-		output.GenevePortBase = cfg.GenevePortBase
+		output.GeneveLocator = cfg.GeneveLocator.String()
+		output.GenevePort = geneveWirePort(cfg.GeneveLocator, uint32(cfg.GenevePortBase), 0)
+		if cfg.GeneveLocator == GeneveLocatorPort {
+			output.GenevePortBase = cfg.GenevePortBase
+		}
+		if cfg.GeneveLocator == GeneveLocatorTLV && cfg.GeneveTLVLocator != nil {
+			output.GeneveTLVLocator = cfg.GeneveTLVLocator.String()
+		}
 	} else {
 		output.TransitType = "none"
 	}
@@ -698,7 +719,7 @@ func getExistingSwitch(switchName string, requestedCfg *Config) (*StartOutput, e
 	out := &StartOutput{
 		Switch:         switchName,
 		SwitchNetNS:    meta.SwitchNetnsName(),
-		SwitchMaps:     switchMapPaths(switchName),
+		SwitchMaps:     switchMapPaths(switchName, sw.Maps().GeneveOpts != nil),
 		PortNetNS:      meta.PortNetnsName(),
 		Ports:          cfg.N_ports,
 		PortsUsed:      used,
@@ -712,7 +733,15 @@ func getExistingSwitch(switchName string, requestedCfg *Config) (*StartOutput, e
 	}
 	if meta.TransitDevName() != "" {
 		out.TransitType = "overlay-geneve"
-		out.GenevePortBase = uint16(cfg.GenevePortBase)
+		locator := geneveLocatorFromConfig(cfg)
+		out.GeneveLocator = locator.String()
+		out.GenevePort = geneveWirePort(locator, cfg.GenevePortBase, 0)
+		if locator == GeneveLocatorPort {
+			out.GenevePortBase = uint16(cfg.GenevePortBase)
+		}
+		if locator == GeneveLocatorTLV {
+			out.GeneveTLVLocator = geneveTLVLocatorFromConfig(cfg).String()
+		}
 	} else {
 		out.TransitType = "none"
 	}
@@ -721,6 +750,7 @@ func getExistingSwitch(switchName string, requestedCfg *Config) (*StartOutput, e
 
 // validateConfigMatch checks that critical config fields match between requested and existing.
 func validateConfigMatch(requested *Config, existing *SwitchConfig, existingMeta *SwitchMetadata) error {
+	requested.applyGeneveDefaults()
 	var mismatches []string
 
 	// Core fields (from config)
@@ -742,14 +772,36 @@ func validateConfigMatch(requested *Config, existing *SwitchConfig, existingMeta
 		mismatches = append(mismatches, fmt.Sprintf("port_netns: requested %s, existing %s", requested.PortNetNS, existingMeta.PortNetnsName()))
 	}
 
-	// Transit/Geneve fields (transit_dev from metadata, geneve_port_base from config)
+	// Transit/Geneve fields (transit_dev from metadata, wire contract from config)
 	existingTransitDev := existingMeta.TransitDevName()
 	if requested.TransitDev != existingTransitDev {
 		mismatches = append(mismatches, fmt.Sprintf("transit_dev: requested %s, existing %s", requested.TransitDev, existingTransitDev))
 	}
 
-	if uint32(requested.GenevePortBase) != existing.GenevePortBase {
-		mismatches = append(mismatches, fmt.Sprintf("geneve_port_base: requested %d, existing %d", requested.GenevePortBase, existing.GenevePortBase))
+	existingLocator := geneveLocatorFromConfig(existing)
+	if requested.GeneveLocator != existingLocator {
+		mismatches = append(mismatches, fmt.Sprintf("geneve_locator: requested %s, existing %s", requested.GeneveLocator, existingLocator))
+	} else {
+		switch requested.GeneveLocator {
+		case GeneveLocatorPort:
+			// Before the default was applied consistently, an omitted JSON or
+			// directly-constructed port base was persisted as zero. An omitted
+			// request may reopen that exact historical switch without changing
+			// its active wire config. An explicit 50000 request still mismatches.
+			legacyOmittedBase := requested.genevePortBaseDefaulted && existing.GenevePortBase == 0
+			if !legacyOmittedBase && uint32(requested.GenevePortBase) != existing.GenevePortBase {
+				mismatches = append(mismatches, fmt.Sprintf("geneve_port_base: requested %d, existing %d", requested.GenevePortBase, existing.GenevePortBase))
+			}
+		case GeneveLocatorTLV:
+			existingTLV := geneveTLVLocatorFromConfig(existing)
+			if requested.GeneveTLVLocator == nil || *requested.GeneveTLVLocator != existingTLV {
+				requestedTLV := "<missing>"
+				if requested.GeneveTLVLocator != nil {
+					requestedTLV = requested.GeneveTLVLocator.String()
+				}
+				mismatches = append(mismatches, fmt.Sprintf("geneve_tlv_locator: requested %s, existing %s", requestedTLV, existingTLV.String()))
+			}
+		}
 	}
 
 	if len(mismatches) > 0 {
@@ -865,19 +917,22 @@ func (cs *cleanupState) cleanup(cfg *Config, switchNs *netns.NetNS, objects *bpf
 
 // StartOutput represents the JSON output of the start command.
 type StartOutput struct {
-	Switch         string            `json:"switch"`
-	SwitchNetNS    string            `json:"switch_netns"`
-	SwitchMaps     map[string]string `json:"switch_maps"`
-	PortNetNS      string            `json:"port_netns"`
-	Ports          uint32            `json:"ports"`
-	PortsUsed      uint32            `json:"ports_used"`
-	PortsAvailable uint32            `json:"ports_available"`
-	PortsReserved  uint32            `json:"ports_reserved"`
-	FloatingIPBase string            `json:"floating_ip_base"`
-	MgmtPlanes     []MgmtPlaneInfo   `json:"mgmt_planes,omitempty"`
-	MgmtServices   []MgmtServiceInfo `json:"mgmt_services,omitempty"`
-	TransitType    string            `json:"transit_type"`
-	TransitDev     string            `json:"transit_dev,omitempty"`
-	TransitDevIP   string            `json:"transit_dev_ip,omitempty"`
-	GenevePortBase uint16            `json:"geneve_port_base,omitempty"`
+	Switch           string            `json:"switch"`
+	SwitchNetNS      string            `json:"switch_netns"`
+	SwitchMaps       map[string]string `json:"switch_maps"`
+	PortNetNS        string            `json:"port_netns"`
+	Ports            uint32            `json:"ports"`
+	PortsUsed        uint32            `json:"ports_used"`
+	PortsAvailable   uint32            `json:"ports_available"`
+	PortsReserved    uint32            `json:"ports_reserved"`
+	FloatingIPBase   string            `json:"floating_ip_base"`
+	MgmtPlanes       []MgmtPlaneInfo   `json:"mgmt_planes,omitempty"`
+	MgmtServices     []MgmtServiceInfo `json:"mgmt_services,omitempty"`
+	TransitType      string            `json:"transit_type"`
+	TransitDev       string            `json:"transit_dev,omitempty"`
+	TransitDevIP     string            `json:"transit_dev_ip,omitempty"`
+	GeneveLocator    string            `json:"geneve_locator,omitempty"`
+	GenevePort       uint16            `json:"geneve_port,omitempty"`
+	GenevePortBase   uint16            `json:"geneve_port_base,omitempty"`
+	GeneveTLVLocator string            `json:"geneve_tlv_locator,omitempty"`
 }

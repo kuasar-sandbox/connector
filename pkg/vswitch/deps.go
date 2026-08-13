@@ -48,6 +48,8 @@ var (
 	updateSwitchConfigFn         = UpdateSwitchConfig
 	updateSwitchMetadataFn       = UpdateSwitchMetadata
 	writeMgmtServicesFn          = WriteMgmtServices
+	writeGeneveOptsFn            = writeGeneveOpts
+	validateAttachMTUFn          = validateAttachMTU
 	updateSwitchConfigFieldsFn   = updateSwitchConfigFields
 	updateSwitchMetadataFieldsFn = updateSwitchMetadataFields
 	openSwitchFn                 = openSwitch
@@ -56,7 +58,8 @@ var (
 	osMkdir = os.Mkdir
 
 	// flock operations (for testing)
-	acquireControlLockFn = AcquireControlLock
+	acquireControlLockFn  = AcquireControlLock
+	verifyCurrentSwitchFn = verifyCurrentSwitch
 
 	// bpf.Objects method wrappers (for testing)
 	bpfObjectsPinMaps = func(objects *bpf.Objects, name string) error { return objects.PinMaps(name) }

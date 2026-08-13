@@ -31,14 +31,15 @@ Example:
 }
 
 var (
-	attachPort             int
-	attachToNetNS          string
-	attachInnerIP          string
-	attachTransitGatewayIP string
-	attachTransitGeneveVNI uint32
-	attachTransitMACAddr   string
-	attachSkipDevice       bool
-	attachOpenPort         bool
+	attachPort              int
+	attachToNetNS           string
+	attachInnerIP           string
+	attachTransitGatewayIP  string
+	attachTransitGeneveVNI  uint32
+	attachTransitGeneveOpts []string
+	attachTransitMACAddr    string
+	attachSkipDevice        bool
+	attachOpenPort          bool
 )
 
 func init() {
@@ -47,6 +48,7 @@ func init() {
 	attachCmd.Flags().StringVar(&attachInnerIP, "inner-ip", "", "Sandbox internal IP (required)")
 	attachCmd.Flags().StringVar(&attachTransitGatewayIP, "transit-gateway-ip", "", "GENEVE gateway IP")
 	attachCmd.Flags().Uint32Var(&attachTransitGeneveVNI, "transit-geneve-vni", 0, "GENEVE VNI")
+	attachCmd.Flags().StringArrayVar(&attachTransitGeneveOpts, "transit-geneve-opt", nil, "Opaque outbound GENEVE option CLASS:TYPE:DATA (repeatable; DATA length must be a multiple of 4 bytes)")
 	attachCmd.Flags().StringVar(&attachTransitMACAddr, "transit-mac-addr", "", "Transit destination MAC address (default: broadcast)")
 	attachCmd.Flags().BoolVar(&attachSkipDevice, "skip-device", false, "Skip port device movement (pure BPF slot operation, veth only)")
 	attachCmd.Flags().BoolVar(&attachOpenPort, "open-port", false, "Tap mode only: after slot allocation, send the tap fd via SCM_RIGHTS to $TAPFD_SOCKET (combines attach + open-port)")
@@ -81,6 +83,13 @@ func runAttach(cmd *cobra.Command, args []string) error {
 		InnerIP:          innerIP,
 		TransitGeneveVNI: attachTransitGeneveVNI,
 		SkipDevice:       attachSkipDevice,
+	}
+	for i, value := range attachTransitGeneveOpts {
+		option, err := vswitch.ParseGeneveOption(value)
+		if err != nil {
+			return fmt.Errorf("invalid --transit-geneve-opt #%d: %w", i+1, err)
+		}
+		opts.TransitGeneveOpts = append(opts.TransitGeneveOpts, option)
 	}
 
 	// Parse transit gateway IP if provided

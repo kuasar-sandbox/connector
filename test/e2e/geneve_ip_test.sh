@@ -10,25 +10,25 @@
 #
 # Data flow (sandbox1 → sandbox2):
 #   1. sandbox1 sends to 10.1.0.2
-#      → eBPF on sw-a/sw-n1: IP-over-GENEVE encap
-#        outer: src=10.0.0.1 dst=10.0.0.2, UDP src=50000 dst=50000, VNI=100
+#      → eBPF on sw-a/sw-n1: IP-over-GENEVE encap; the configured locator
+#        carries slot_id in UDP dst, VNI high bits, or the first option
 #      → sw-transit-a → veth → sw-transit-b
-#   2. eBPF on sw-b/sw-transit-b: udp->dest=50000 → slot_id=0
-#      → GENEVE decap (proto_type=ETH_P_IP), VNI=100 matches slot 0
+#   2. eBPF on sw-b/sw-transit-b restores slot_id from the configured locator
+#      → GENEVE decap (proto_type=ETH_P_IP), configured VNI matches slot 0
 #      → redirect to sw-n1 → sandbox2 receives
 #
 # Return path (sandbox2 → sandbox1):
-#   Same logic, sw-b encaps to 10.0.0.1:50000, sw-a decaps.
+#   Same locator contract, with sw-b encapsulating and sw-a decapsulating.
 #
 # Tests:
 #   1. sandbox1 → sandbox2 (10.1.0.2): PASS (IP-over-GENEVE)
 #   2. sandbox2 → sandbox1 (10.1.0.1): PASS (IP-over-GENEVE)
 #
 # Usage:
-#   sudo bash tests/geneve_ip_test_env.sh setup
-#   sudo bash tests/geneve_ip_test_env.sh test
-#   sudo bash tests/geneve_ip_test_env.sh teardown
-#   sudo bash tests/geneve_ip_test_env.sh all    # setup + test + teardown
+#   sudo bash test/e2e/geneve_ip_test.sh setup [port|vni|tlv]
+#   sudo bash test/e2e/geneve_ip_test.sh test [port|vni|tlv]
+#   sudo bash test/e2e/geneve_ip_test.sh teardown [port|vni|tlv]
+#   sudo bash test/e2e/geneve_ip_test.sh all [port|vni|tlv]
 
 set -euo pipefail
 
@@ -58,6 +58,27 @@ fail() {
 TRANSIT_IP_A="10.0.0.1"
 TRANSIT_IP_B="10.0.0.2"
 GENEVE_PORT_BASE=50000
+GENEVE_LOCATOR="${2:-${GENEVE_LOCATOR:-port}}"
+GENEVE_TLV_LOCATOR="0102:81"
+
+case "$GENEVE_LOCATOR" in
+    port)
+        GENEVE_ARGS=(--geneve-locator=port --geneve-port-base=${GENEVE_PORT_BASE})
+        EXPECTED_GENEVE_PORT=${GENEVE_PORT_BASE}
+        ;;
+    vni)
+        GENEVE_ARGS=(--geneve-locator=vni)
+        EXPECTED_GENEVE_PORT=6081
+        ;;
+    tlv)
+        GENEVE_ARGS=(--geneve-locator=tlv --geneve-tlv-locator=${GENEVE_TLV_LOCATOR})
+        EXPECTED_GENEVE_PORT=6081
+        ;;
+    *)
+        echo "unsupported GENEVE_LOCATOR=$GENEVE_LOCATOR (want port, vni, or tlv)" >&2
+        exit 1
+        ;;
+esac
 
 setup() {
     echo "==> Creating network namespaces..."
@@ -83,7 +104,7 @@ setup() {
         --floating-ip-base=100.100.96.0 \
         --transit-dev=sw-transit-a \
         --transit-dev-addr=${TRANSIT_IP_A}/24:${TRANSIT_IP_B} \
-        --geneve-port-base=${GENEVE_PORT_BASE}
+        "${GENEVE_ARGS[@]}"
 
     echo "==> Starting switch sw-b..."
     ${SWITCH_BIN} start sw-b \
@@ -95,7 +116,7 @@ setup() {
         --floating-ip-base=100.100.97.0 \
         --transit-dev=sw-transit-b \
         --transit-dev-addr=${TRANSIT_IP_B}/24:${TRANSIT_IP_A} \
-        --geneve-port-base=${GENEVE_PORT_BASE}
+        "${GENEVE_ARGS[@]}"
 
     echo "==> Attaching sandbox1 to sw-a..."
     ${SWITCH_BIN} attach sw-a \
@@ -127,24 +148,64 @@ setup() {
 run_tests() {
     echo ""
     echo "========================================="
-    echo "  Running tests (IP-over-GENEVE)"
+    echo "  Running tests (IP-over-GENEVE, locator=${GENEVE_LOCATOR})"
     echo "========================================="
     echo ""
 
-    # --- Test 1: sandbox1 → sandbox2 ---
-    echo "[1/2] sandbox1 → sandbox2 (10.1.0.2) via IP-over-GENEVE"
+    # --- Test 1: observable locator configuration ---
+    echo "[1/4] show config reports locator=${GENEVE_LOCATOR} and UDP ${EXPECTED_GENEVE_PORT}"
+    config_json="$(${SWITCH_BIN} show config sw-a)"
+    if CONFIG_JSON="$config_json" EXPECTED_LOCATOR="$GENEVE_LOCATOR" \
+        EXPECTED_PORT="$EXPECTED_GENEVE_PORT" EXPECTED_TLV="$GENEVE_TLV_LOCATOR" \
+        python3 - <<'PY'
+import json
+import os
+
+cfg = json.loads(os.environ["CONFIG_JSON"])
+assert cfg["geneve_locator"] == os.environ["EXPECTED_LOCATOR"]
+assert cfg["geneve_port"] == int(os.environ["EXPECTED_PORT"])
+if os.environ["EXPECTED_LOCATOR"] == "tlv":
+    assert cfg["geneve_tlv_locator"] == os.environ["EXPECTED_TLV"]
+PY
+    then
+        pass "show config reports the selected locator wire port"
+    else
+        fail "show config does not report the selected locator wire port"
+    fi
+
+    # --- Test 2: sandbox1 → sandbox2 ---
+    echo "[2/4] sandbox1 → sandbox2 (10.1.0.2) via IP-over-GENEVE"
     if ip netns exec sandbox1 ping -c 2 -W 2 10.1.0.2 &>/dev/null; then
         pass "sandbox1 can reach sandbox2 via IP-over-GENEVE"
     else
         fail "sandbox1 cannot reach sandbox2 via IP-over-GENEVE"
     fi
 
-    # --- Test 2: sandbox2 → sandbox1 ---
-    echo "[2/2] sandbox2 → sandbox1 (10.1.0.1) via IP-over-GENEVE"
+    # --- Test 3: sandbox2 → sandbox1 ---
+    echo "[3/4] sandbox2 → sandbox1 (10.1.0.1) via IP-over-GENEVE"
     if ip netns exec sandbox2 ping -c 2 -W 2 10.1.0.1 &>/dev/null; then
         pass "sandbox2 can reach sandbox1 via IP-over-GENEVE"
     else
         fail "sandbox2 cannot reach sandbox1 via IP-over-GENEVE"
+    fi
+
+    # --- Test 4: transit stats ---
+    echo "[4/4] transit packet counters grow on both switches"
+    stats_a="$(${SWITCH_BIN} stats sw-a)"
+    stats_b="$(${SWITCH_BIN} stats sw-b)"
+    if STATS_A="$stats_a" STATS_B="$stats_b" python3 - <<'PY'
+import json
+import os
+
+for name in ("STATS_A", "STATS_B"):
+    port = json.loads(os.environ[name])["ports"][0]
+    assert port["transit_tx_packets"] > 0
+    assert port["transit_rx_packets"] > 0
+PY
+    then
+        pass "transit TX/RX counters increased on both switches"
+    else
+        fail "transit TX/RX counters did not increase on both switches"
     fi
 
     # --- Port stats ---
@@ -152,13 +213,13 @@ run_tests() {
     echo "========================================="
     echo "  Port Stats (sw-a)"
     echo "========================================="
-    ${SWITCH_BIN} stats sw-a
+    printf '%s\n' "$stats_a"
 
     echo ""
     echo "========================================="
     echo "  Port Stats (sw-b)"
     echo "========================================="
-    ${SWITCH_BIN} stats sw-b
+    printf '%s\n' "$stats_b"
 
     # --- Summary ---
     echo ""

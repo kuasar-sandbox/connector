@@ -11,6 +11,7 @@ import (
 type MgmtCIDR = vswitchMgmtCidr
 type SlotItem = vswitchSlotItem
 type SwitchConfig = vswitchSwitchConfig
+type GeneveOptsValue = vswitchGeneveOptsValue
 type SlotStats = vswitchSlotStats
 type SvcKey = vswitchSvcKey
 type SvcVal = vswitchSvcVal
@@ -22,6 +23,7 @@ const MetadataMaxSize = 4096
 var (
 	_ [108]byte = [unsafe.Sizeof(SlotItem{})]byte{}
 	_ [40]byte  = [unsafe.Sizeof(SwitchConfig{})]byte{}
+	_ [68]byte  = [unsafe.Sizeof(GeneveOptsValue{})]byte{}
 	_ [64]byte  = [unsafe.Sizeof(SlotStats{})]byte{}
 	_ [20]byte  = [unsafe.Sizeof(MgmtCIDR{})]byte{}
 	_ [8]byte   = [unsafe.Sizeof(SvcKey{})]byte{}
@@ -30,14 +32,21 @@ var (
 
 // Re-exported constants from bpf2go generated enum values
 const (
-	MaxPorts           = uint32(vswitchExportedU32MAX_PORTS)
-	MaxMgmtCIDRPerSlot = uint32(vswitchExportedU32MAX_MGMT_CIDR_PER_SLOT)
-	InnerIPFree        = uint32(vswitchExportedU32INNER_IP_FREE)
-	InnerIPReserved    = uint32(vswitchExportedU32INNER_IP_RESERVED)
+	MaxPorts             = uint32(vswitchExportedU32MAX_PORTS)
+	MaxMgmtCIDRPerSlot   = uint32(vswitchExportedU32MAX_MGMT_CIDR_PER_SLOT)
+	InnerIPFree          = uint32(vswitchExportedU32INNER_IP_FREE)
+	InnerIPReserved      = uint32(vswitchExportedU32INNER_IP_RESERVED)
+	MaxGeneveOptsLen     = uint32(vswitchExportedU32MAX_GENEVE_OPTS_LEN)
+	GenevePort           = uint16(vswitchExportedU32GENEVE_PORT)
+	GeneveLocatorPort    = uint8(vswitchExportedU32GENEVE_LOCATOR_PORT)
+	GeneveLocatorVNI     = uint8(vswitchExportedU32GENEVE_LOCATOR_VNI)
+	GeneveLocatorTLV     = uint8(vswitchExportedU32GENEVE_LOCATOR_TLV)
+	GeneveVNILocatorBits = uint32(vswitchExportedU32GENEVE_VNI_LOCATOR_BITS)
+	GeneveVNIValueMask   = uint32(vswitchExportedU32GENEVE_VNI_VALUE_MASK)
 )
 
 // PortKind identifies the underlying netdev type backing a port slot.
-// Stored in SlotItem.Mode (offset 30, formerly _pad_mac[0]).
+// Stored in SlotItem.Mode (offset 30).
 // Existing pre-mode-bit slots have Mode==0 → treated as Veth (backward compatible).
 type PortKind uint8
 

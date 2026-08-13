@@ -5,7 +5,7 @@
 
 数据面纯内核:配置完成后用户态进程即退出,所有转发由 TC ingress 上的 eBPF 程序承载,
 数据路径上没有任何用户态守护进程。转发判定自始至终基于 slot_id(从入口 ifindex、
-floating IP 或 GENEVE UDP 端口算术推导),永不信任沙箱报文里的源 IP/源 MAC;eBPF
+floating IP 或 configured GENEVE locator 恢复),永不信任沙箱报文里的源 IP/源 MAC;eBPF
 程序中不存在 port→port 转发分支,ARP 全部代答,源 MAC 在出口强制改写——沙箱间隔离是
 程序的结构性质,可静态审计。
 
@@ -37,8 +37,9 @@ vswitch 把全部转发判定集中在一份 ~1K 行的 eBPF C 程序里,控制�
 2. **无状态转发**:eBPF 程序不维护连接表,所有判定基于 slot 配置 + IP/UDP 端口算术。
 3. **进程生命周期与数据面解耦**:`start`/`attach`/`detach` 返回后用户态退出,转发由
    内核 eBPF 持续执行。
-4. **并发安全**:attach/detach 跨进程并发不需要全局互斥,依赖 mmap + 原子 CAS;复合
-   控制操作经 flock 串行化。
+4. **并发安全**:slot 所有权由 mmap + 原子 CAS 判定;含 `geneve_opts` map 的新 switch
+   还用 per-switch flock 串行化 Attach/Detach/Reserve 的复合更新。旧 switch 缺少该 map
+   时保持原有 CAS-only 路径。
 5. **可观测**:per-port、per-direction、per-class(mgmt/transit)流量计数;状态查询用
    Kubernetes Conditions 风格。
 6. **systemd-native**:`Type=notify` 集成,watchdog keepalive,崩溃重启后经 bpffs
@@ -89,7 +90,7 @@ L4+ 策略的多租户控制面、需要连接跟踪/L7 过滤的安全网关。
 | `serve [switch_name]` | systemd `Type=notify` 长驻:StartReserved → tapfd listen(可选) → READY=1 → 后台 ProvisionPorts → 健康检查循环 |
 | `stop <name>` | 卸载 eBPF、删除 pinned maps、删除 veth/tap、把 transit 设备还回原 netns |
 | `attach <name>` | 分配端口(CAS Free→IP);veth 模式可把端口设备移入沙箱 netns |
-| `detach <name> --port=N` | 释放端口(CAS IP→Free) |
+| `detach <name> --port=N` | 释放端口(CAS Allocated→Free);不借用 Reserved 作为过渡态 |
 | `reserve <name> --port=N` | 把端口标记为 Reserved,阻止后续 attach(升级/排空) |
 | `provision <name>` | 为 Reserved slot 创建端口设备;支持批量与单点修复 |
 | `open-port <name> --port=N` | 打开 tap 端口的队列 fd,经 `TAPFD_SOCKET` 递交 consumer([tapfd.md](tapfd.md) §3 的 provider helper) |
@@ -137,7 +138,9 @@ connector-ctl vswitch stop sw1
 | `--transit-dev` | – | 外部上行设备,start 时从调用 netns 移入 switch netns;必须处于 **DOWN**(防止接管在用网卡) |
 | `--transit-dev-addr` | – | `<ip>/<prefix>:<nexthop>` 或 `auto`(DHCP,§6.9) |
 | `--transit-dev-mtu` | – | `auto` 或具体数值;默认不修改,仅校验(§6.8) |
-| `--geneve-port-base` | – | GENEVE UDP 端口基值(默认 50000) |
+| `--geneve-locator` | – | `port`(默认)、`vni` 或 `tlv`,定义外部网关如何定位零基 `slot_id`(§6.2) |
+| `--geneve-port-base` | – | 仅 `port` locator 使用的 GENEVE UDP 端口基值(默认 50000) |
+| `--geneve-tlv-locator` | `tlv` locator ✓ | 精确 wire `CLASS:TYPE`,例如 `0102:81`(§6.2) |
 | `--geneve-encap-eth` | – | 启用 Ether-over-GENEVE(默认 IP-over-GENEVE) |
 | `--mtu` | – | 所有 port/mgmt veth 的 MTU;默认保留内核默认值 |
 | `--port-mac-addr` | – | `fixed`(默认)/`per-port`/具体 MAC(§6.1) |
@@ -162,6 +165,7 @@ connector-ctl vswitch stop sw1
     "config":          "/sys/fs/bpf/sw1/config",
     "stats":           "/sys/fs/bpf/sw1/stats",
     "ifindex_to_slot": "/sys/fs/bpf/sw1/ifindex_to_slot",
+    "geneve_opts":     "/sys/fs/bpf/sw1/geneve_opts",
     "metadata":        "/sys/fs/bpf/sw1/metadata",
     "mgmt_svc_fwd":    "/sys/fs/bpf/sw1/mgmt_svc_fwd",
     "mgmt_svc_rev":    "/sys/fs/bpf/sw1/mgmt_svc_rev"
@@ -180,6 +184,8 @@ connector-ctl vswitch stop sw1
   "transit_type": "overlay-geneve",
   "transit_dev": "eth1",
   "transit_dev_ip": "10.200.12.3",
+  "geneve_locator": "port",
+  "geneve_port": 50000,
   "geneve_port_base": 50000
 }
 ```
@@ -211,6 +217,7 @@ netns。内部分两步 `ReleasePorts` + `StopReleased`。
 | `--to-netns=NS` | 把端口设备移入目标 netns(仅 veth 模式) |
 | `--transit-gateway-ip=IP` | GENEVE 外层目标 IP |
 | `--transit-geneve-vni=N` | GENEVE VNI |
+| `--transit-geneve-opt=CLASS:TYPE:DATA` | 单向出站 opaque GENEVE option,可重复;十六进制 data 长度须为 4 字节整数倍,空 data 写作 `CLASS:TYPE:`(§6.2) |
 | `--transit-mac-addr=MAC` | Ether-over-GENEVE 内层目标 MAC(省略则广播) |
 | `--skip-device` | 跳过设备 netns 移动,仅做 CAS;仅 veth 模式可用,tap slot 拒绝 |
 | `--open-port` | tap 模式:CAS 成功后立即经 `TAPFD_SOCKET` 递交 fd(合并 attach + open-port);`SCM_RIGHTS` 失败时回滚 CAS 分配 |
@@ -225,10 +232,14 @@ netns。内部分两步 `ReleasePorts` + `StopReleased`。
   "floating_ip": "100.100.96.3",
   "transit_type": "overlay-geneve",
   "geneve_port": 50003,
+  "geneve_locator": "port",
   "transit_gateway_ip": "10.200.12.1",
-  "transit_geneve_vni": 1004
+  "transit_geneve_vni": 1004,
+  "wire_geneve_vni": 1004
 }
 ```
+
+`geneve_opts_len` 为 locator 加 opaque options 的 wire 字节数,0 时在 JSON 中省略。
 
 `attach --open-port` 输出(合并形式):
 
@@ -243,8 +254,12 @@ netns。内部分两步 `ReleasePorts` + `StopReleased`。
 
 ### 2.5 `connector-ctl vswitch detach`
 
-释放端口:CAS IP→Free。tap slot 无设备操作;veth slot 给 `--from-netns` 则把设备移回
-port netns,省略则校验设备已在 port netns。
+释放端口:在新 switch 的 per-switch control flock 内直接 CAS Allocated→Free,随后清零
+options fast-path hint。`Reserved` 只表示显式 reserve/provision/stop 状态,Detach 不把它
+用作过渡态。固定长度 options map value 和其它 transit fields 不在 Detach 中清理;
+Free slot 不会被数据面使用,下一次 Attach 在发布新 hint 前完整覆盖。缺少
+`geneve_opts` map 的旧 switch 保持 CAS-only 兼容路径。tap slot 无设备操作;veth slot
+给 `--from-netns` 则把设备移回 port netns,省略则校验设备已在 port netns。
 
 | 参数 | 说明 |
 | --- | --- |
@@ -368,6 +383,18 @@ per-port 流量计数,从沙箱视角:mgmt/transit × rx/tx × packets/bytes。
 - `show config <name>` — dump in-kernel `switch_config`,并附 metadata 中的
   `transit_dev`/`mgmt_planes`/`mgmt_services`。
 
+`show slots` 回显已分配槽的 configured `transit_geneve_vni` 与 `geneve_opts_len`,后者是 locator
+加 opaque options 的总 wire 字节数;默认不打印 opaque data。`show config` 在 TLV 模式
+例如输出:
+
+```json
+{
+  "geneve_locator": "tlv",
+  "geneve_port": 6081,
+  "geneve_tlv_locator": "0102:81"
+}
+```
+
 ### 2.12 `connector-ctl vswitch dhcp`
 
 内嵌 DHCP 客户端与服务器,服务于 transit `auto` 寻址的调试与 e2e 测试拓扑。
@@ -414,7 +441,7 @@ connector-ctl tapfd get --new [<tap>]    # 不存在则创建;省略名时内核
 | `mgmt_extracts` (数组) | `--mgmt-extract` |
 | `mgmt_services` (数组) | `--mgmt-service` |
 | `transit_dev` / `transit_dev_addr` / `transit_dev_mtu` | `--transit-dev*` |
-| `geneve_port_base` / `geneve_encap_eth` | `--geneve-*` |
+| `geneve_locator` / `geneve_port_base` / `geneve_tlv_locator` / `geneve_encap_eth` | `--geneve-*` |
 | `mtu` | `--mtu` |
 | `port_mac_addr` | `--port-mac-addr` |
 
@@ -429,7 +456,9 @@ connector-ctl tapfd get --new [<tap>]    # 不存在则创建;省略名时内核
   "mgmt_services": ["169.254.169.254:80:127.0.0.1:19254"],
   "transit_dev": "eth1",
   "transit_dev_addr": "auto",
-  "transit_dev_mtu": "auto"
+  "transit_dev_mtu": "auto",
+  "geneve_locator": "tlv",
+  "geneve_tlv_locator": "0102:81"
 }
 ```
 
@@ -628,23 +657,24 @@ sandbox(dst=8.8.8.8)
   → [TC: no mgmt_cidrs match; GENEVE encap; inner src=port MAC, dst=transit MAC;
          stats.transit_tx++]
   → transit dev
-  → outer src=transit_ip, dst=gateway_ip; UDP src=hash(5-tuple), dst=base+slot_id; VNI
+  → outer src=transit_ip, dst=gateway_ip; UDP src=hash(5-tuple);
+    locator 按配置编码零基 slot_id;opaque options 仅随此方向发送
   → gateway
 ```
 
 **外部网络 → 沙箱**(GENEVE 解封装):
 
 ```
-gateway → GENEVE packet (UDP dst = geneve_port_base + slot_id)
+gateway → 满足 configured locator 严格返程契约的 GENEVE packet
   → transit dev
-  → [TC: slot_id = UDP_dst − geneve_port_base; verify outer src == transit_gateway_ip;
+  → [TC: 按 configured locator 恢复 slot_id;verify outer src == transit_gateway_ip;
          verify VNI; decap; h_dest = derived port MAC; stats.transit_rx++]
   → sw-nX → sw-pX → sandbox
 ```
 
 **关键不变量**:
 
-- 转发判定 key 自始至终是 `slot_id`,从入口 ifindex / floating_ip / geneve_port 三者
+- 转发判定 key 自始至终是 `slot_id`,从入口 ifindex / floating_ip / configured Geneve locator 三者
   之一推导;永不信任沙箱报文里的源 IP/源 MAC。
 - `h_dest` 在解封装/转发回沙箱时被重写为派生的 port MAC,与端口设备 MAC 精确一致,
   保证内核接收。
@@ -665,16 +695,18 @@ GENEVE 内层同时识别 IPv4 与 IPv6(管理平面与 `slot.inner_ip` 为 IPv4
 
 | map | 类型 | 规格 | nx | mx | transit | 内容 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `slots` | ARRAY + MMAPABLE | 4096 × 112 B | R | R | R | per-slot 配置;用户态 mmap 后对 `inner_ip` 做原子 CAS 完成分配/释放(§6.3) |
-| `config` | ARRAY | 1 × 40 B | R | R | R | `switch_mac`/`n_ports`/`floating_ip_base`/`geneve_port_base`/`geneve_encap_eth`/`transit_nexthop`/`port_mac` |
+| `slots` | ARRAY + MMAPABLE | 4096 × 108 B value(112 B mmap stride) | R | R | R | per-slot 配置;用户态 mmap 后对 `inner_ip` 做原子 CAS 完成分配/释放(§6.3) |
+| `config` | ARRAY | 1 × 40 B | R | R | R | `switch_mac`/`n_ports`/`floating_ip_base`/Geneve locator/`geneve_encap_eth`/`transit_nexthop`/`port_mac` |
 | `metadata` | ARRAY | 1 × 4096 B | – | – | – | JSON 编码的 `SwitchMetadata`,仅用户态读写;新增字段无需重编译 BPF |
 | `stats` | PERCPU_ARRAY | 4096 | W | W | W | per-slot `mgmt_{rx,tx}` + `transit_{rx,tx}` 包/字节计数,沙箱视角;attach 时清零,detach 保留 |
 | `ifindex_to_slot` | HASH | – | R | – | – | 入口 ifindex → slot_id 反查,仅出方向无法用 IP/UDP 推导时使用 |
+| `geneve_opts` | ARRAY | 4096 × 68 B | R | – | – | per-slot 完整序列化 opaque options;TLV locator 不存入此 map |
 | `mgmt_svc_fwd` | HASH | 可选 | R | – | – | `{VIP,vport,proto}→{targetIP,targetPort}`,每条 service 按 TCP/UDP 各一条 |
 | `mgmt_svc_rev` | HASH | 可选 | – | R | – | `{targetIP,targetPort,proto}→{VIP,vport}` |
 
-索引计算原则:`slot_id` 由算术得到(`dst_ip − floating_ip_base` 或
-`udp_dst − geneve_port_base`),避免 hash map 查找。
+索引计算原则:`slot_id` 由算术得到(`dst_ip − floating_ip_base`)或按 configured
+Geneve locator 从 UDP port、VNI 高位、唯一 TLV 恢复,不为入站实现 hash lookup 或
+通用 TLV 搜索。
 
 ### 5.3 数据面 ABI
 
@@ -692,7 +724,7 @@ struct slot_item {                          // 108 字节,cache-line 优化
     __u32 transit_geneve_vni;               // offset 20
     __u8  transit_mac[6];                   // offset 24
     __u8  mode;                             // offset 30 — 0=veth, 1=tap(用户态元数据,BPF 不读)
-    __u8  _pad_mac;                         // offset 31
+    __u8  geneve_opts_len;                  // offset 31 — 0 跳过 geneve_opts lookup
     __u32 mgmt_cidr_count;                  // offset 32
     struct mgmt_cidr mgmt_cidrs_0;          // offset 36 (20B) — 内联第一条(热路径)
     __u8  _pad_cl0[8];                      // offset 56
@@ -712,7 +744,16 @@ struct switch_config {                      // 40 字节
     __u32 transit_nexthop;
     __u8  port_mac[6];                      // 全零 → 派生;非零 → 固定
     __u8  _pad4[2];
-    __u8  _pad5[4];
+    __u8  geneve_locator;                   // 0=port,1=vni,2=tlv
+    __u8  geneve_tlv_type;                  // 精确 8-bit wire type
+    __u16 geneve_tlv_class;
+};
+
+struct geneve_opts_value {                  // 68 字节
+    __u8  len;                              // opaque wire bytes
+    __u8  critical;                         // opaque type 中是否存在 0x80
+    __u16 reserved;
+    __u8  data[64];                         // option header + opaque data
 };
 
 struct slot_stats {                         // per-CPU
@@ -726,6 +767,13 @@ struct slot_stats {                         // per-CPU
 每个程序入口都有显式边界检查(verifier-friendly):ETH header 长度;IPv4 `ihl == 5`
 或 IPv6 fixed header;decap 长度 `< skb->len`;slot 有效性(`inner_ip != 0`、
 `ifindex != 0`);`slot_id < n_ports`;transit decap 校验外层源 IP 与 VNI。
+
+新 switch 总会创建并 pin `geneve_opts`。为兼容旧 pinned switch,仅当该 pin path 为
+ENOENT 时 `Open` 将其视为可选 map(`Maps.GeneveOpts=nil`);其它加载错误仍表示 switch
+损坏。旧 config 末尾四字节 padding 全零,自然解释为 `geneve_locator=port`。因此旧
+switch 可继续 Open/status/show、空 options Attach、Detach 与 Stop;非空 options 或
+vni/tlv locator 必须先 stop 并以新版本重建。本实现不为活动 switch 临时创建 map,
+也不替换已挂载 TC program。
 
 ## 6. 关键机制
 
@@ -753,6 +801,11 @@ struct slot_stats {                         // per-CPU
 
 ### 6.2 GENEVE 隧道
 
+Connector 部署在沙箱 host,外部 Geneve gateway 负责与外部网络互通。两者只约定
+Geneve framing、slot locator 与返程验证;locator 标识零基 `slot_id=0..4095`,不是用户
+可见的一基 `port=slot_id+1`。opaque options 的业务含义完全属于调用方与 gateway,
+Connector 不定义 policy、sandbox 或 tenant schema,也不解析其 data。
+
 封装模式(解封装按 `geneve->proto_type` 自动识别,无须配置):
 
 | 模式 | `proto_type` | 内层 | 用途 |
@@ -760,16 +813,74 @@ struct slot_stats {                         // per-CPU
 | **IP-over-GENEVE**(默认) | `ETH_P_IP`/`ETH_P_IPV6` | 裸 IP 报文 | 省 14 字节;适合 vswitch-to-vswitch |
 | **Ether-over-GENEVE** | `ETH_P_TEB`(0x6558) | 完整以太网帧 | 兼容标准 Linux GENEVE 设备/网关桥接 |
 
-端口方案——不使用标准 GENEVE 端口 6081,每个沙箱独享一个 UDP 端口:
+`geneve_locator` 的 wire contract:
 
-- 出方向:`UDP src = hash(inner 5-tuple)`,`UDP dst = geneve_port_base + slot_id`;
-- 入方向:`slot_id = UDP_dst − geneve_port_base`,O(1) 算术,无 hash map 查找;
-- UDP 源端口用 Jenkins one-at-a-time 哈希内层 5-tuple 映射到 49152–65535,让底层网络
-  能在外层 UDP 源端口上做 ECMP/RSS。
+| locator | 出站 UDP dst | 出站 VNI | 自动 locator | configured VNI 范围 | 严格返程 |
+| --- | --- | --- | --- | --- | --- |
+| `port`(默认) | `geneve_port_base + slot_id` | 完整 `transit_geneve_vni` | 无 | `0..0xffffff` | `OptLen=0,C=0`,由 UDP dst 恢复 slot |
+| `vni` | `6081` | `(slot_id << 12) \| transit_geneve_vni` | VNI 高 12 bits | `0..0x0fff` | UDP dst=6081,`OptLen=0,C=0`;高 12 bits 恢复 slot,低 12 bits 校验 VNI |
+| `tlv` | `6081` | 完整 `transit_geneve_vni` | 首个 8-byte option | `0..0xffffff` | UDP dst=6081,options 恰为唯一 8-byte locator |
+
+VNI locator 固定采用 12/12 layout:
+
+```text
+ 23                    12 11                     0
++------------------------+------------------------+
+|        slot_id         |  transit_geneve_vni    |
++------------------------+------------------------+
+          12 bits                  12 bits
+```
+
+TLV locator 的 `--geneve-tlv-locator=CLASS:TYPE` 是精确 wire class/type。例如
+`0102:81` 中 type 是原始 8-bit `0x81`,包含 critical bit;Connector 不自动设置或
+清除 `0x80`。locator wire option 固定为 `Class=configured class`,`Type=configured
+type`,`Length=1`,`Data=be32(slot_id)`,总长 8 bytes,且始终排在 options 首位。新定义
+可优先选用 critical type,但是否设置 critical bit 由协议双方决定。
+
+Attach 可重复提供 `--transit-geneve-opt=CLASS:TYPE:DATA`:
+
+```bash
+connector-ctl vswitch attach sw0 --inner-ip=169.254.1.1 \
+    --transit-gateway-ip=10.0.0.2 --transit-geneve-vni=42 \
+    --transit-geneve-opt=0102:02:0000002a \
+    --transit-geneve-opt=0102:83:1122334455667788
+```
+
+class/type/data 均为十六进制;type 同样是精确 8-bit wire value;data 长度必须是 4
+字节整数倍,协议合法的零长度写作 `0102:02:`。Connector 保持 option 输入顺序、data
+字节序和重复项,不排序、不去重。TLV 模式禁止 opaque option 与 locator 使用相同 class
+及相同低 7-bit type,避免 critical bit 不同但逻辑 type 重复。Geneve base `C` 在 locator
+或任一 opaque option 的 `type & 0x80 != 0` 时置 1,否则置 0。
+
+全部 wire options 的固定上限是 64 bytes,包含每个 4-byte option header、opaque data
+以及 TLV locator 的 8 bytes。因此 port/vni 可使用 64 bytes opaque options;TLV 模式
+最多使用 56 bytes opaque options。opaque options 只用于 Connector→gateway 出站;
+首期仅能在 Attach 时设置,不支持在线更新,也不回传给 sandbox。
+
+返程采用严格而非通用 TLV parser:port/vni 拒绝任何 option 或 `C=1`;TLV 要求 locator
+是第一个且唯一 option,class/type 精确匹配,length=1,data 是范围内 `be32(slot_id)`,
+reserved bits 为 0,且 base `C` 与 locator type critical bit 一致。gateway 不得在返程
+镜像 opaque options。恢复 slot 后统一校验 slot 已分配、ifindex、gateway source IP 与
+configured VNI。
+
+所有模式继续保留 UDP source port 的 inner 5-tuple Jenkins hash,映射到
+49152–65535,供底层网络做 ECMP/RSS。未配置 locator 等价 `port`;未配置 opaque options
+时,默认 port 模式的 wire packet 与旧版本逐字节相同。
 
 L2 寻址:外层以太网由 `bpf_redirect_neigh` 经内核邻居子系统解析,eBPF 程序不维护
 ARP 缓存;内层(仅 Ether-over-GENEVE)目标 MAC 取 `--transit-mac-addr`(未指定则
 广播),源 MAC 为派生端口 MAC,与端口设备一致,便于网关侧网桥 L2 学习。
+
+抓包调试可在 switch netns 的 transit 设备执行:
+
+```bash
+ip netns exec sw0_vswitch tcpdump -ni eth1 -vv -XX 'udp port 6081 or udp portrange 50000-54095'
+connector-ctl vswitch show config sw0
+connector-ctl vswitch show slots sw0
+```
+
+在 pcap 中核对 UDP dst、24-bit VNI、`OptLen`、base `C`、option class/type/length/data
+及 inner payload 起始偏移。TLV locator data 应是零基 slot_id 的 big-endian 32-bit 值。
 
 ### 6.3 slot 分配与状态机
 
@@ -785,8 +896,8 @@ inner_ip = <real IP>           → Allocated   attached
 
 StartReserved          ProvisionPorts            Attach              Detach
 [Free] ─CAS(0→0xFFFF)─▶ [Reserved] ─CAS(0xFFFF→0)─▶ [Free] ─CAS(0→IP)─▶ [Allocated]
-                                                                          │
-                                                  [Free] ◀─CAS(IP→0)──────┘
+                                                    ▲                       │
+                                                    └────CAS(IP→0)──────────┘
 
 reserve --port=N [--force]:
    [Free]      ─CAS(0→0xFFFF)──▶ [Reserved]
@@ -796,7 +907,7 @@ reserve --port=N [--force]:
 | 操作 | 语义 | CAS |
 | --- | --- | --- |
 | Attach | Free → Allocated | `CAS(inner_ip, 0, innerIP)` |
-| Detach | Allocated → Free | `CAS(inner_ip, currentIP, 0)` |
+| Detach | Allocated → Free | `CAS(inner_ip, currentIP, 0)`;新 switch 在持有 control flock 时清零 hint,map value 留给下一次 Attach 覆盖;不经过 Reserved |
 | Reserve | Free → Reserved | `CAS(inner_ip, 0, 0xFFFFFFFF)` |
 | Provision 完成 | Reserved → Free | `CAS(inner_ip, 0xFFFFFFFF, 0)` |
 
@@ -804,15 +915,21 @@ CAS 失败的进程回滚已做的中间状态(如设备移动),不留半分配 
 
 ### 6.4 控制操作互斥
 
-CAS 只保证单 slot 原子;多 slot/多资源的复合控制操作经 `flock(LOCK_EX)` 在 bpffs pin
-目录 `/sys/fs/bpf/<sw>/` 上互斥:
+CAS 只保证单 slot 所有权原子;多 slot/多资源的控制操作,以及新 switch 上跨 mmap slot
+与 `geneve_opts` map 的复合更新,经 `flock(LOCK_EX)` 在 bpffs pin 目录
+`/sys/fs/bpf/<sw>/` 上互斥:
 
 | 操作 | flock | CAS |
 | --- | --- | --- |
 | Start(StartReserved) | ✓ | ✓(所有 slot 置 Reserved) |
 | Stop / `stop --force` | ✓ | – |
 | ProvisionPorts | ✓ | ✓(逐槽 Reserved→Free) |
-| Attach / Detach / Reserve | – | ✓(轻量,无锁) |
+| Attach / Detach / Reserve(新 switch) | ✓ | ✓;锁覆盖 claim、map/MTU/device 更新与 hint 发布/回收 |
+| Attach / Detach / Reserve(旧 switch,无 `geneve_opts`) | – | ✓(兼容的 CAS-only 路径) |
+
+新 switch 的 Attach、Detach、Reserve 在取得 flock 后、执行任何 CAS 前,会把已打开
+`slots` map 的 kernel map ID 与当前 pin path 中的 map ID 比较。同名 switch 若在等待锁时
+已被 `StopReleased` 并重建,旧 context 会失败并要求重新 Open,不会修改已 unpin 的旧 map。
 
 ### 6.5 两阶段启动
 
@@ -902,21 +1019,30 @@ provision(`ifindex != 0`)、已 attach(inner IP 为真实 IP,故 `ip` 字段总�
 
 ### 6.8 MTU 校验
 
-GENEVE 封装增加报文长度,必须保证 `transit_mtu >= port_mtu + encap_overhead`:
+GENEVE 封装增加报文长度,必须保证
+`transit_mtu >= port_mtu + base_overhead + wire_options_len`:
 
 | 模式 | overhead |
 | --- | --- |
 | IP-over-GENEVE | ETH(14) + IP(20) + UDP(8) + GENEVE(8) = **50** |
 | Ether-over-GENEVE | 上述 + 内层 ETH(14) = **64** |
 
-`--mtu` 设置所有 port/mgmt veth 的 MTU,默认保留内核默认值。`--transit-dev-mtu`:
-未指定——不改 transit MTU,仅校验现值;`auto`——自动设为 `port_mtu + overhead`;
-数字——设为该值并验证够用。校验时机:给了 `--mtu` 则在任何资源创建之前(快路径);
-未给则等所有 veth 创建后取实际 MTU 最大值再校验(慢路径)。校验失败示例:
+`wire_options_len` 在 TLV 模式即使没有 opaque options 也至少为 8。`--mtu` 设置所有
+port/mgmt veth 的 MTU,默认保留内核默认值。`--transit-dev-mtu`:未指定——不改 transit
+MTU,启动时至少校验 fixed locator overhead;`auto`——自动设为
+`port_mtu + base_overhead + 64`,保证之后任意合法 Attach 不需调整活动设备;数字——设为
+该值并验证 fixed overhead。给了 `--mtu` 时可在资源创建前完成固定部分校验;未给则在
+端口创建后读取实际 MTU。
+
+Attach 的 total wire options 非零时,在移动 veth 或交付 tap fd 前再次读取所选端口与
+transit 设备的实际 MTU,按本次总长校验;TLV 模式的固定 8-byte locator 也包含在内。
+失败会清零 options hint 并
+回滚 CAS claim,不会留下半初始化 attachment。错误同时给出 port MTU、transit MTU、
+base overhead、options overhead 与 required MTU,例如:
 
 ```
-transit device eth1 MTU 1500 is too small:
-  requires at least 1564 (port MTU 1500 + Ether-over-GENEVE overhead 64)
+transit device eth1 MTU 1570 is too small for port sw0-n1:
+  port MTU 1500 + base GENEVE overhead 64 + options overhead 12 = required MTU 1576
 ```
 
 ### 6.9 DHCP 网关推算
@@ -935,7 +1061,7 @@ connector 是 microVM 之外的**纵深防御**层,hypervisor 仍是首要安全
 
 | # | 威胁 | 缓解 |
 | --- | --- | --- |
-| T1 | 沙箱伪造源 IP/MAC 绕过隔离 | 路由判定仅基于 `slot_id`(从 ifindex/floating_ip/geneve_port 推导);MAC 在出口改写 |
+| T1 | 沙箱伪造源 IP/MAC 绕过隔离 | 路由判定仅基于 `slot_id`(从 ifindex/floating_ip/已配置 Geneve locator 推导);MAC 在出口改写 |
 | T2 | 沙箱直接访问其他沙箱 | eBPF 程序无 port→port 分支,仅 port→mgmt 与 port→transit |
 | T3 | 沙箱伪造 GENEVE 流量 | transit decap 验证外层源 IP == `transit_gateway_ip` 并校验 VNI,其它来源丢弃 |
 | T4 | ARP 广播泄漏 | 所有 ARP 由交换机代答;广播帧在 ingress 即被消费,从不出端口 |
@@ -977,6 +1103,7 @@ Linux 5.8+ 上 `CAP_BPF` 可替代部分 `CAP_SYS_ADMIN`;TC 与 netns 操作仍�
 | L4 | `MAX_PORTS = 4096` | 编译期常量,提升需重编 BPF |
 | L5 | mgmt CIDR 掩码过宽会把非预期流量引入管理平面 | 建议每路由 /32;每 slot 最多 3 条 |
 | L6 | `--mgmt-service` target 不可达(尤其 loopback) | `start` 校验 VIP∈mgmt-extract 路由、target 唯一;loopback target 需 mgmt 设备 `route_localnet=1`(§3.3) |
+| L7 | 旧 switch 缺少 `geneve_opts` pinned map | 仍可 Open/status/show/attach(no opts)/detach/stop;使用 vni/tlv 或 opaque options 前须 stop 并重建,不做在线 map/TC program 迁移 |
 
 ## 8. 可靠性
 
@@ -1067,8 +1194,8 @@ t=8700 ms   all 128 ports Free
 | 脚本 | 覆盖场景 |
 | --- | --- |
 | `mgmt_isolation_test.sh` | 管理平面连通 + 沙箱间隔离不变量 |
-| `geneve_eth_test.sh` | Ether-over-GENEVE 经网关桥接 |
-| `geneve_ip_test.sh` | IP-over-GENEVE 交换机对交换机 |
+| `geneve_eth_test.sh` | legacy port locator 的 Ether-over-GENEVE 经 Linux gateway bridge |
+| `geneve_ip_test.sh` | IP-over-GENEVE 双 switch,由 `run_all.sh` 分别覆盖 port/vni/tlv locator、双向连通与 transit stats |
 | `provision_test.sh` | 两阶段启动 + Reserved 修复 + show |
 | `tap_test.sh` | tap 模式、open-port、`attach --open-port`、模式切换 |
 

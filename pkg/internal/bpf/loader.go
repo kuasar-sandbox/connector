@@ -30,6 +30,7 @@ type Maps struct {
 	Config        *ebpf.Map
 	Stats         *ebpf.Map
 	IfindexToSlot *ebpf.Map
+	GeneveOpts    *ebpf.Map // optional when opening a legacy pinned switch
 	Metadata      *ebpf.Map // Userspace-only metadata (new)
 	MgmtSvcFwd    *ebpf.Map // mgmt service NAT, egress: {VIP,vport,proto}->{target_ip,target_port}
 	MgmtSvcRev    *ebpf.Map // mgmt service NAT, ingress: {target_ip,tport,proto}->{VIP,vport}
@@ -91,6 +92,7 @@ func LoadObjects() (*Objects, error) {
 			Config:        objs.Config,
 			Stats:         objs.Stats,
 			IfindexToSlot: objs.IfindexToSlot,
+			GeneveOpts:    objs.GeneveOpts,
 			Metadata:      objs.Metadata,
 			MgmtSvcFwd:    objs.MgmtSvcFwd,
 			MgmtSvcRev:    objs.MgmtSvcRev,
@@ -139,6 +141,9 @@ func (o *Objects) PinMaps(switchName string) error {
 	}
 	if err := o.Maps.IfindexToSlot.Pin(filepath.Join(pinPath, "ifindex_to_slot")); err != nil {
 		return fmt.Errorf("failed to pin ifindex_to_slot map: %w", err)
+	}
+	if err := o.Maps.GeneveOpts.Pin(filepath.Join(pinPath, "geneve_opts")); err != nil {
+		return fmt.Errorf("failed to pin geneve_opts map: %w", err)
 	}
 	if err := o.Maps.Metadata.Pin(filepath.Join(pinPath, "metadata")); err != nil {
 		return fmt.Errorf("failed to pin metadata map: %w", err)
@@ -239,11 +244,27 @@ func LoadPinnedMaps(switchName string) (*Maps, error) {
 		return nil, fmt.Errorf("failed to load mgmt_svc_rev map: %w", err)
 	}
 
+	// geneve_opts was added after the initial pinned-map ABI. ENOENT alone
+	// identifies a legacy switch and is compatible with port mode plus empty
+	// options; every other error still indicates corrupted state.
+	geneveOpts, err := ebpf.LoadPinnedMap(filepath.Join(pinPath, "geneve_opts"), nil)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		slots.Close()
+		config.Close()
+		stats.Close()
+		ifindexToSlot.Close()
+		metadata.Close()
+		mgmtSvcFwd.Close()
+		mgmtSvcRev.Close()
+		return nil, fmt.Errorf("failed to load geneve_opts map: %w", err)
+	}
+
 	return &Maps{
 		Slots:         slots,
 		Config:        config,
 		Stats:         stats,
 		IfindexToSlot: ifindexToSlot,
+		GeneveOpts:    geneveOpts,
 		Metadata:      metadata,
 		MgmtSvcFwd:    mgmtSvcFwd,
 		MgmtSvcRev:    mgmtSvcRev,
@@ -264,6 +285,9 @@ func (m *Maps) Close() error {
 	}
 	if m.IfindexToSlot != nil {
 		errs = append(errs, m.IfindexToSlot.Close())
+	}
+	if m.GeneveOpts != nil {
+		errs = append(errs, m.GeneveOpts.Close())
 	}
 	if m.Metadata != nil {
 		errs = append(errs, m.Metadata.Close())

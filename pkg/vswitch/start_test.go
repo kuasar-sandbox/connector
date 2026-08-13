@@ -142,7 +142,11 @@ func TestStartPortNetNSNotFound(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 256, FloatingIpBase: 0x64646000}, nil
+		return &SwitchConfig{
+			N_ports:        256,
+			FloatingIpBase: 0x64646000,
+			GenevePortBase: uint32(DefaultGenevePortBase),
+		}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{
@@ -502,7 +506,11 @@ func TestGetExistingSwitchConfigMismatch(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 256, FloatingIpBase: 0x64646000}, nil
+		return &SwitchConfig{
+			N_ports:        256,
+			FloatingIpBase: 0x64646000,
+			GenevePortBase: uint32(DefaultGenevePortBase),
+		}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{}, nil
@@ -539,7 +547,11 @@ func TestGetExistingSwitchSuccess(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 256, FloatingIpBase: 0x64646000}, nil
+		return &SwitchConfig{
+			N_ports:        256,
+			FloatingIpBase: 0x64646000,
+			GenevePortBase: uint32(DefaultGenevePortBase),
+		}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{
@@ -573,6 +585,44 @@ func TestGetExistingSwitchSuccess(t *testing.T) {
 	}
 	if output.SwitchNetNS != "switch_ns" {
 		t.Errorf("expected switch_ns, got %s", output.SwitchNetNS)
+	}
+}
+
+func TestGetExistingSwitchLegacyOmittedGenevePortBase(t *testing.T) {
+	defer resetDeps()
+
+	bpfPinPathExists = func(string) (bool, error) { return true, nil }
+	bpfLoadPinnedMaps = func(string) (*bpf.Maps, error) { return &bpf.Maps{}, nil }
+	getSwitchConfigFn = func(BPFMap) (*SwitchConfig, error) {
+		return &SwitchConfig{
+			N_ports:        4,
+			FloatingIpBase: 0x64646000,
+			GenevePortBase: 0,
+		}, nil
+	}
+	getSwitchMetadataFn = func(BPFMap) (*SwitchMetadata, error) {
+		return &SwitchMetadata{SwitchNetNS: "switch_ns", PortNetNS: "port_ns", TransitDev: "eth0"}, nil
+	}
+	newMmappedSlotsFn = func(BPFArrayMap, uint32) (*MmappedSlots, error) {
+		return newMmappedSlotsForTest(4), nil
+	}
+	newStatsManagerFn = func(BPFMap, uint32) *StatsManager { return &StatsManager{} }
+
+	cfg := &Config{
+		Name:           "sw0",
+		SwitchNetNS:    "switch_ns",
+		PortNetNS:      "port_ns",
+		NumPorts:       4,
+		FloatingIPBase: net.ParseIP("100.100.96.0"),
+		TransitDev:     "eth0",
+		// GenevePortBase intentionally omitted, matching the historical start.
+	}
+	out, err := getExistingSwitch("sw0", cfg)
+	if err != nil {
+		t.Fatalf("get existing legacy switch: %v", err)
+	}
+	if out.GenevePort != 0 || out.GenevePortBase != 0 {
+		t.Fatalf("legacy wire port output = port %d base %d, want zero", out.GenevePort, out.GenevePortBase)
 	}
 }
 
@@ -1370,7 +1420,7 @@ func TestStartReservedTransitDevMTUAutoResolved(t *testing.T) {
 		t.Fatalf("StartReserved: %v", err)
 	}
 
-	expectedMTU := 1500 + GeneveEthOverhead
+	expectedMTU := 1500 + GeneveEthOverhead + int(MaxGeneveOptsLen)
 	if cfg.TransitDevMTU != expectedMTU {
 		t.Errorf("TransitDevMTU = %d, want %d (auto resolved)", cfg.TransitDevMTU, expectedMTU)
 	}

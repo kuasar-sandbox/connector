@@ -1,7 +1,9 @@
 # connector
 
 基于 eBPF/TC 的虚拟交换机:为单节点最多 4096 个沙箱(microVM)提供隔离网络通道——
-沙箱间无转发路径,管理平面经无状态 SNAT/DNAT,外部网络经 GENEVE 隧道;配置完成后
+沙箱间无转发路径,管理平面经无状态 SNAT/DNAT,外部网络经 GENEVE 隧道;支持按 UDP
+port、VNI 高 12 bits 或精确 TLV 定位 slot,并可在单向出站携带 per-port opaque Geneve
+options;配置完成后
 用户态进程退出,转发全部由内核 eBPF 承载。是
 [kuasar-sandbox](https://github.com/kuasar-sandbox/kuasar-sandbox) 平台的网络组件,
 独立演进。

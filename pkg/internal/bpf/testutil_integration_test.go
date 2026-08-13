@@ -169,17 +169,28 @@ func buildIPv4UDPPacket(srcMAC, dstMAC [6]byte, srcIP, dstIP net.IP, srcPort, ds
 	return buildEthernetFrame(dstMAC, srcMAC, EthTypeIP, ip)
 }
 
-// buildGeneveHeader constructs a GENEVE header.
+// buildGeneveHeader constructs a GENEVE header without options.
 func buildGeneveHeader(vni uint32, protoType uint16) []byte {
-	geneve := make([]byte, GeneveHdrLen)
-	// Version(2b) + OptLen(6b) = 0, OAM(1b) + Critical(1b) + Rsvd1(6b) = 0
-	geneve[0] = 0
-	geneve[1] = 0
+	return buildGeneveHeaderWithOptions(vni, protoType, false, nil)
+}
+
+// buildGeneveHeaderWithOptions constructs a GENEVE header with the exact wire
+// options supplied by the caller. Options must already include their headers.
+func buildGeneveHeaderWithOptions(vni uint32, protoType uint16, critical bool, options []byte) []byte {
+	if len(options)%4 != 0 || len(options) > 0xfc {
+		panic("GENEVE test options must be 4-byte aligned and fit opt_len")
+	}
+	geneve := make([]byte, GeneveHdrLen+len(options))
+	geneve[0] = byte(len(options) / 4)
+	if critical {
+		geneve[1] = 0x40
+	}
 	binary.BigEndian.PutUint16(geneve[2:4], protoType)
 	geneve[4] = byte((vni >> 16) & 0xff)
 	geneve[5] = byte((vni >> 8) & 0xff)
 	geneve[6] = byte(vni & 0xff)
 	geneve[7] = 0 // Reserved
+	copy(geneve[GeneveHdrLen:], options)
 	return geneve
 }
 
@@ -194,10 +205,32 @@ func buildGenevePacket(
 	protoType uint16,
 	innerPayload []byte,
 ) []byte {
-	geneve := buildGeneveHeader(vni, protoType)
+	return buildGenevePacketWithOptions(
+		outerSrcMAC, outerDstMAC,
+		outerSrcIP, outerDstIP,
+		srcPort, dstPort,
+		vni, protoType, false, nil, innerPayload,
+	)
+}
+
+// buildGenevePacketWithOptions constructs a GENEVE packet with exact option
+// bytes and base-header C bit.
+func buildGenevePacketWithOptions(
+	outerSrcMAC, outerDstMAC [6]byte,
+	outerSrcIP, outerDstIP net.IP,
+	srcPort, dstPort uint16,
+	vni uint32,
+	protoType uint16,
+	critical bool,
+	options []byte,
+	innerPayload []byte,
+) []byte {
+	geneve := buildGeneveHeaderWithOptions(vni, protoType, critical, options)
 
 	// UDP payload = GENEVE header + inner payload
-	udpPayload := append(geneve, innerPayload...)
+	udpPayload := make([]byte, 0, len(geneve)+len(innerPayload))
+	udpPayload = append(udpPayload, geneve...)
+	udpPayload = append(udpPayload, innerPayload...)
 	udp := buildUDPPacket(srcPort, dstPort, udpPayload)
 	ip := buildIPPacket(outerSrcIP, outerDstIP, IPProtoUDP, udp)
 	return buildEthernetFrame(outerDstMAC, outerSrcMAC, EthTypeIP, ip)
@@ -336,6 +369,7 @@ type GeneveHeader struct {
 	Critical  bool
 	ProtoType uint16
 	VNI       uint32
+	Options   []byte
 }
 
 // parseGeneveHeader parses a GENEVE header from raw bytes (after Ethernet+IP+UDP).
@@ -346,6 +380,10 @@ func parseGeneveHeader(data []byte) (*GeneveHeader, error) {
 	}
 
 	g := data[offset:]
+	optionsLen := int(g[0]&0x3f) * 4
+	if len(g) < GeneveHdrLen+optionsLen {
+		return nil, fmt.Errorf("packet too short for %d GENEVE option bytes: %d bytes", optionsLen, len(g))
+	}
 	return &GeneveHeader{
 		Version:   (g[0] >> 6) & 0x3,
 		OptLen:    g[0] & 0x3f,
@@ -353,7 +391,42 @@ func parseGeneveHeader(data []byte) (*GeneveHeader, error) {
 		Critical:  (g[1] & 0x40) != 0,
 		ProtoType: binary.BigEndian.Uint16(g[2:4]),
 		VNI:       uint32(g[4])<<16 | uint32(g[5])<<8 | uint32(g[6]),
+		Options:   g[GeneveHdrLen : GeneveHdrLen+optionsLen],
 	}, nil
+}
+
+// GeneveOptionHeader represents one parsed wire option.
+type GeneveOptionHeader struct {
+	Class    uint16
+	Type     uint8
+	Reserved uint8
+	Length   uint8
+	Data     []byte
+}
+
+// parseGeneveOptions parses a bounded flat option sequence for test
+// assertions. Production ingress deliberately does not use a general parser.
+func parseGeneveOptions(options []byte) ([]GeneveOptionHeader, error) {
+	var parsed []GeneveOptionHeader
+	for len(options) > 0 {
+		if len(options) < 4 {
+			return nil, fmt.Errorf("truncated GENEVE option header: %d bytes", len(options))
+		}
+		dataLen := int(options[3]&0x1f) * 4
+		wireLen := 4 + dataLen
+		if len(options) < wireLen {
+			return nil, fmt.Errorf("truncated GENEVE option data: have %d, want %d", len(options), wireLen)
+		}
+		parsed = append(parsed, GeneveOptionHeader{
+			Class:    binary.BigEndian.Uint16(options[0:2]),
+			Type:     options[2],
+			Reserved: options[3] >> 5,
+			Length:   options[3] & 0x1f,
+			Data:     options[4:wireLen],
+		})
+		options = options[wireLen:]
+	}
+	return parsed, nil
 }
 
 // macToArray converts net.HardwareAddr to [6]byte.
