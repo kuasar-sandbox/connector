@@ -3,10 +3,12 @@ package dhcp
 import (
 	"context"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
+	"github.com/insomniacslk/dhcp/dhcpv4/server4"
 )
 
 func TestNewIPPool(t *testing.T) {
@@ -416,7 +418,7 @@ func TestServerConfigDefaultValues(t *testing.T) {
 
 func TestServerCloseBeforeServe(t *testing.T) {
 	cfg := ServerConfig{
-		Interface: "eth0",
+		Interface: "no-such-iface",
 		ServerIP:  net.ParseIP("10.0.0.1"),
 		PoolStart: net.ParseIP("10.0.0.100"),
 		PoolEnd:   net.ParseIP("10.0.0.200"),
@@ -437,6 +439,12 @@ func TestServerCloseBeforeServe(t *testing.T) {
 	err = server.Close()
 	if err != nil {
 		t.Errorf("Double Close: %v", err)
+	}
+
+	// Serve after Close must return without opening a socket. The deliberately
+	// invalid interface makes an attempted start fail the test.
+	if err := server.Serve(context.Background()); err != nil {
+		t.Errorf("Serve after Close: %v", err)
 	}
 }
 
@@ -805,6 +813,32 @@ func TestHandlerDestinationRouting(t *testing.T) {
 
 // --- Serve tests (with non-privileged port) ---
 
+func waitForServerStarted(t *testing.T, srv *Server, errCh <-chan error) {
+	t.Helper()
+
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.NewTimer(2 * time.Second)
+	defer timeout.Stop()
+
+	for {
+		srv.lifecycleMu.Lock()
+		started := srv.server != nil
+		srv.lifecycleMu.Unlock()
+		if started {
+			return
+		}
+
+		select {
+		case err := <-errCh:
+			t.Fatalf("Serve returned before the server started: %v", err)
+		case <-ticker.C:
+		case <-timeout.C:
+			t.Fatal("timed out waiting for server to start")
+		}
+	}
+}
+
 func TestServeContextCancellation(t *testing.T) {
 	srv, err := NewServer(ServerConfig{
 		Interface: "lo",
@@ -818,14 +852,14 @@ func TestServeContextCancellation(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- srv.Serve(ctx)
 	}()
 
-	// Wait for server to start
-	time.Sleep(100 * time.Millisecond)
+	waitForServerStarted(t, srv, errCh)
 
 	// Cancel context
 	cancel()
@@ -891,8 +925,7 @@ func TestServerCloseAfterServe(t *testing.T) {
 		errCh <- srv.Serve(ctx)
 	}()
 
-	// Wait for server to start
-	time.Sleep(100 * time.Millisecond)
+	waitForServerStarted(t, srv, errCh)
 
 	// Close the server directly
 	err = srv.Close()
@@ -912,5 +945,111 @@ func TestServerCloseAfterServe(t *testing.T) {
 	err = srv.Close()
 	if err != nil {
 		t.Errorf("Double Close returned error: %v", err)
+	}
+}
+
+func TestServerCloseWaitsForStartup(t *testing.T) {
+	srv, err := NewServer(ServerConfig{
+		Interface: "lo",
+		ServerIP:  net.ParseIP("127.0.0.1"),
+		PoolStart: net.ParseIP("127.0.0.100"),
+		PoolEnd:   net.ParseIP("127.0.0.200"),
+		Port:      16770,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	startupEntered := make(chan struct{})
+	allowStartup := make(chan struct{})
+	srv.newServer4 = func(ifname string, laddr *net.UDPAddr, handler server4.Handler) (*server4.Server, error) {
+		close(startupEntered)
+		<-allowStartup
+		return server4.NewServer(ifname, laddr, handler)
+	}
+
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- srv.Serve(context.Background())
+	}()
+	<-startupEntered
+
+	closeErr := make(chan error, 1)
+	closeStarted := make(chan struct{})
+	go func() {
+		close(closeStarted)
+		closeErr <- srv.Close()
+	}()
+	<-closeStarted
+
+	select {
+	case err := <-closeErr:
+		t.Fatalf("Close returned before startup completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(allowStartup)
+	select {
+	case err := <-closeErr:
+		if err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return after startup completed")
+	}
+
+	select {
+	case <-serveErr:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not stop after Close")
+	}
+}
+
+func TestServerConcurrentClose(t *testing.T) {
+	srv, err := NewServer(ServerConfig{
+		Interface: "lo",
+		ServerIP:  net.ParseIP("127.0.0.1"),
+		PoolStart: net.ParseIP("127.0.0.100"),
+		PoolEnd:   net.ParseIP("127.0.0.200"),
+		Port:      16771,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.Serve(context.Background())
+	}()
+	waitForServerStarted(t, srv, errCh)
+
+	const closeCalls = 16
+	closeErrs := make(chan error, closeCalls)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(closeCalls)
+	for range closeCalls {
+		go func() {
+			defer wg.Done()
+			<-start
+			closeErrs <- srv.Close()
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(closeErrs)
+
+	for err := range closeErrs {
+		if err != nil {
+			t.Errorf("concurrent Close returned error: %v", err)
+		}
+	}
+
+	select {
+	case <-errCh:
+	case <-time.After(2 * time.Second):
+		t.Error("Serve did not stop after concurrent Close calls")
 	}
 }
