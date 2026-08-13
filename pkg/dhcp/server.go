@@ -25,12 +25,15 @@ type ServerConfig struct {
 	Port      int           // Server port (default: 67)
 }
 
+type server4Factory func(string, *net.UDPAddr, server4.Handler) (*server4.Server, error)
+
 // Server is a simple DHCP server for testing purposes.
 type Server struct {
-	cfg  ServerConfig
-	pool *ipPool
+	cfg        ServerConfig
+	pool       *ipPool
+	newServer4 server4Factory
 
-	lifecycleMu sync.Mutex // guards server, closed, and closing done
+	lifecycleMu sync.Mutex // serializes listener construction, publication, and shutdown
 	server      *server4.Server
 	closed      bool
 	done        chan struct{}
@@ -131,6 +134,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	return &Server{
 		cfg:  cfg,
 		pool: pool,
+		newServer4: func(ifname string, laddr *net.UDPAddr, handler server4.Handler) (*server4.Server, error) {
+			return server4.NewServer(ifname, laddr, handler)
+		},
 		done: make(chan struct{}),
 	}, nil
 }
@@ -142,23 +148,16 @@ func (s *Server) Serve(ctx context.Context) error {
 		s.lifecycleMu.Unlock()
 		return nil
 	}
-	s.lifecycleMu.Unlock()
 
 	laddr := &net.UDPAddr{
 		IP:   net.IPv4zero,
 		Port: s.cfg.Port,
 	}
 
-	srv, err := server4.NewServer(s.cfg.Interface, laddr, s.handler)
+	srv, err := s.newServer4(s.cfg.Interface, laddr, s.handler)
 	if err != nil {
-		return fmt.Errorf("failed to create server: %w", err)
-	}
-
-	s.lifecycleMu.Lock()
-	if s.closed {
 		s.lifecycleMu.Unlock()
-		_ = srv.Close()
-		return nil
+		return fmt.Errorf("failed to create server: %w", err)
 	}
 	s.server = srv
 	s.lifecycleMu.Unlock()
