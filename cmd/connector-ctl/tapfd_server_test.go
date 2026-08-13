@@ -142,7 +142,7 @@ func TestTapFDServerPrepare(t *testing.T) {
 	}
 	go handleTapFDConn(server, "sw0", fake, nil)
 
-	if _, err := client.Write([]byte("TAPFD/1 PREPARE VSWITCH=sw0 INNER_IP=169.254.0.21 TRANSIT_GATEWAY_IP=192.0.2.1 TRANSIT_GENEVE_VNI=4242 TRANSIT_MAC=02:00:00:00:00:09\n")); err != nil {
+	if _, err := client.Write([]byte("TAPFD/1 PREPARE VSWITCH=sw0 INNER_IP=169.254.0.21 TRANSIT_GATEWAY_IP=192.0.2.1 TRANSIT_GENEVE_VNI=4242 transit_geneve_opts=0102:02:0000002a,0102:83: TRANSIT_MAC=02:00:00:00:00:09\n")); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 	resp := readAllString(t, client)
@@ -152,8 +152,47 @@ func TestTapFDServerPrepare(t *testing.T) {
 	if fake.attachOpts.InnerIP.String() != "169.254.0.21" ||
 		fake.attachOpts.TransitGatewayIP.String() != "192.0.2.1" ||
 		fake.attachOpts.TransitGeneveVNI != 4242 ||
+		len(fake.attachOpts.TransitGeneveOpts) != 2 ||
+		fake.attachOpts.TransitGeneveOpts[0].String() != "0102:02:0000002a" ||
+		fake.attachOpts.TransitGeneveOpts[1].String() != "0102:83:" ||
 		fake.attachOpts.TransitMAC.String() != "02:00:00:00:00:09" {
 		t.Fatalf("attach opts = %+v", fake.attachOpts)
+	}
+}
+
+func TestPrepareAttachOptionsEmptyAndInvalidGeneveOptions(t *testing.T) {
+	empty := &tapfd.Request{Fields: map[string]string{
+		"inner_ip":            "169.254.0.21",
+		"transit_geneve_opts": "",
+	}}
+	opts, err := prepareAttachOptions(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(opts.TransitGeneveOpts) != 0 {
+		t.Fatalf("empty options = %#v", opts.TransitGeneveOpts)
+	}
+
+	invalid := &tapfd.Request{Fields: map[string]string{
+		"inner_ip":            "169.254.0.21",
+		"transit_geneve_opts": "0102:02:0000",
+	}}
+	if _, err := prepareAttachOptions(invalid); err == nil {
+		t.Fatal("expected invalid TAPFD GENEVE options error")
+	}
+}
+
+func TestTapFDPrepareMaximumGeneveOptionsFitsRequestLine(t *testing.T) {
+	// One option with 60 data bytes occupies the full 64-byte port/vni wire
+	// budget. Its canonical text plus the required PREPARE fields must remain
+	// below the TAPFD/1 512-byte request-line limit.
+	extra := "VSWITCH=sw0 INNER_IP=169.254.0.21 transit_geneve_opts=0102:02:" + strings.Repeat("00", 60)
+	request, err := tapfd.BuildRequest(tapfd.RequestOpPrepare, extra, false)
+	if err != nil {
+		t.Fatalf("maximum options request: %v", err)
+	}
+	if len(request) > tapfd.RequestMaxLineSize {
+		t.Fatalf("request length = %d", len(request))
 	}
 }
 

@@ -1355,6 +1355,7 @@ func TestDetachCASFailSlotReattached(t *testing.T) {
 		// Simulate slot being freed and reattached by another process
 		testSlots.TryRelease(0, 0x0A000001)
 		testSlots.TryAllocate(0, 0x0A000002) // Different IP
+		testSlots.GetSlot(0).GeneveOptsLen = 12
 		return &vnetlink.Dummy{}, nil
 	}
 
@@ -1364,6 +1365,9 @@ func TestDetachCASFailSlotReattached(t *testing.T) {
 	}
 	if !containsSubstring(err.Error(), "was reattached by another process") {
 		t.Errorf("unexpected error: %v", err)
+	}
+	if got := testSlots.GetSlot(0).GeneveOptsLen; got != 12 {
+		t.Errorf("concurrent owner's GENEVE options hint = %d, want 12", got)
 	}
 }
 

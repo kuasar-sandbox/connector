@@ -1,6 +1,7 @@
 package vswitch
 
 import (
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -324,6 +325,97 @@ func TestValidateMTUMaxValid(t *testing.T) {
 	c.MTU = 65535
 	if err := c.Validate(); err != nil {
 		t.Fatalf("MTU=65535 should be valid: %v", err)
+	}
+}
+
+func TestValidateGeneveDefaults(t *testing.T) {
+	c := validConfig()
+	if c.GeneveLocator != GeneveLocatorPort || c.GenevePortBase != 0 {
+		t.Fatalf("unexpected pre-validation defaults: locator=%s base=%d", c.GeneveLocator, c.GenevePortBase)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if c.GeneveLocator != GeneveLocatorPort || c.GenevePortBase != DefaultGenevePortBase {
+		t.Fatalf("defaults: locator=%s base=%d", c.GeneveLocator, c.GenevePortBase)
+	}
+}
+
+func TestValidateGenevePortOverflow(t *testing.T) {
+	c := validConfig()
+	c.NumPorts = 2
+	c.GenevePortBase = 65535
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected GENEVE port range overflow")
+	}
+}
+
+func TestValidateGeneveLocatorRules(t *testing.T) {
+	tlv := &GeneveTLVLocator{Class: 0x0102, Type: 0x81}
+	tests := []struct {
+		name    string
+		locator GeneveLocator
+		tlv     *GeneveTLVLocator
+		base    uint16
+		wantErr bool
+	}{
+		{name: "vni", locator: GeneveLocatorVNI},
+		{name: "tlv", locator: GeneveLocatorTLV, tlv: tlv},
+		{name: "unknown", locator: GeneveLocator(99), wantErr: true},
+		{name: "tlv missing locator", locator: GeneveLocatorTLV, wantErr: true},
+		{name: "port with tlv locator", locator: GeneveLocatorPort, tlv: tlv, wantErr: true},
+		{name: "vni with tlv locator", locator: GeneveLocatorVNI, tlv: tlv, wantErr: true},
+		{name: "vni with custom base", locator: GeneveLocatorVNI, base: 50001, wantErr: true},
+		{name: "tlv with custom base", locator: GeneveLocatorTLV, tlv: tlv, base: 50001, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := validConfig()
+			c.GeneveLocator = tt.locator
+			c.GeneveTLVLocator = tt.tlv
+			c.GenevePortBase = tt.base
+			err := c.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestFileConfigGeneveDefaultsAndTLVJSON(t *testing.T) {
+	base := FileConfig{
+		SwitchName:     "sw0",
+		SwitchNetNS:    "ns1",
+		PortNetNS:      "ns2",
+		NumPorts:       1,
+		MACAddr:        "02:00:00:00:00:01",
+		FloatingIPBase: "10.0.0.0",
+	}
+	cfg, err := base.ToConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GeneveLocator != GeneveLocatorPort || cfg.GenevePortBase != DefaultGenevePortBase {
+		t.Fatalf("file defaults: locator=%s base=%d", cfg.GeneveLocator, cfg.GenevePortBase)
+	}
+
+	var fc FileConfig
+	if err := json.Unmarshal([]byte(`{
+		"switch_name":"sw0","switch_netns":"ns1","port_netns":"ns2",
+		"num_ports":1,"mac_addr":"02:00:00:00:00:01","floating_ip_base":"10.0.0.0",
+		"geneve_locator":"tlv","geneve_tlv_locator":"0102:81"
+	}`), &fc); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = fc.ToConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GeneveLocator != GeneveLocatorTLV || cfg.GeneveTLVLocator == nil || cfg.GeneveTLVLocator.String() != "0102:81" {
+		t.Fatalf("TLV JSON config = %#v", cfg)
 	}
 }
 

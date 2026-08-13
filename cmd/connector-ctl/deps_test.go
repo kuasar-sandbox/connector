@@ -32,6 +32,10 @@ func resetDeps() {
 	serveTapFDListen = ""
 	startMgmtExtracts = nil
 	startMgmtServices = nil
+	startGeneveLocator = "port"
+	startGenevePortBase = vswitch.DefaultGenevePortBase
+	startGeneveTLVLocator = ""
+	attachTransitGeneveOpts = nil
 	stopForce = false
 	stopForceClean = false
 	reservePort = 0

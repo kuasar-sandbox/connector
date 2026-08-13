@@ -85,6 +85,7 @@ func TestSlotsMapRoundTrip(t *testing.T) {
 		TransitGatewayIp: 0xc0a80101, // 192.168.1.1
 		TransitGeneveVni: 12345,
 		TransitMac:       [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01},
+		GeneveOptsLen:    12,
 	}
 	original.MgmtCidrs0 = vswitch.MgmtCIDR{
 		Ip:      0x0a000000, // 10.0.0.0
@@ -139,6 +140,9 @@ func TestSlotsMapRoundTrip(t *testing.T) {
 	if readBack.TransitGeneveVni != original.TransitGeneveVni {
 		t.Errorf("TransitGeneveVni: got %d, want %d", readBack.TransitGeneveVni, original.TransitGeneveVni)
 	}
+	if readBack.GeneveOptsLen != original.GeneveOptsLen {
+		t.Errorf("GeneveOptsLen: got %d, want %d", readBack.GeneveOptsLen, original.GeneveOptsLen)
+	}
 	if readBack.TransitMac != original.TransitMac {
 		t.Errorf("TransitMac: got %v, want %v", readBack.TransitMac, original.TransitMac)
 	}
@@ -162,6 +166,9 @@ func TestConfigMapRoundTrip(t *testing.T) {
 		FloatingIpBase: 0x64640001, // 100.100.0.1
 		GenevePortBase: 6081,
 		GeneveEncapEth: 1,
+		GeneveLocator:  uint8(vswitch.GeneveLocatorTLV),
+		GeneveTlvType:  0x81,
+		GeneveTlvClass: 0x0102,
 	}
 
 	// Write to map
@@ -191,6 +198,13 @@ func TestConfigMapRoundTrip(t *testing.T) {
 	}
 	if readBack.GeneveEncapEth != original.GeneveEncapEth {
 		t.Errorf("GeneveEncapEth: got %d, want %d", readBack.GeneveEncapEth, original.GeneveEncapEth)
+	}
+	if readBack.GeneveLocator != original.GeneveLocator ||
+		readBack.GeneveTlvType != original.GeneveTlvType ||
+		readBack.GeneveTlvClass != original.GeneveTlvClass {
+		t.Errorf("GENEVE locator fields: got %d/%04x:%02x, want %d/%04x:%02x",
+			readBack.GeneveLocator, readBack.GeneveTlvClass, readBack.GeneveTlvType,
+			original.GeneveLocator, original.GeneveTlvClass, original.GeneveTlvType)
 	}
 
 	// Test SwitchMetadata separately (JSON-based)
@@ -224,5 +238,37 @@ func TestConfigMapRoundTrip(t *testing.T) {
 	}
 	if readBackMeta.TransitDevName() != "eth0" {
 		t.Errorf("TransitDevName: got %q, want %q", readBackMeta.TransitDevName(), "eth0")
+	}
+}
+
+// TestGeneveOptsMapRoundTrip verifies the fixed-size per-slot option ABI.
+func TestGeneveOptsMapRoundTrip(t *testing.T) {
+	ensureBPFEnv(t)
+
+	objs, err := bpf.LoadObjects()
+	if err != nil {
+		t.Fatalf("LoadObjects: %v", err)
+	}
+	defer objs.Close()
+
+	original := vswitch.GeneveOptsValue{
+		Len:      12,
+		Critical: 1,
+	}
+	copy(original.Data[:], []byte{
+		0x01, 0x02, 0x83, 0x02,
+		0x11, 0x22, 0x33, 0x44,
+		0x55, 0x66, 0x77, 0x88,
+	})
+	key := uint32(7)
+	if err := objs.Maps.GeneveOpts.Update(key, &original, ebpf.UpdateAny); err != nil {
+		t.Fatalf("Update geneve_opts map: %v", err)
+	}
+	var readBack vswitch.GeneveOptsValue
+	if err := objs.Maps.GeneveOpts.Lookup(key, &readBack); err != nil {
+		t.Fatalf("Lookup geneve_opts map: %v", err)
+	}
+	if readBack != original {
+		t.Fatalf("geneve_opts round trip: got %#v, want %#v", readBack, original)
 	}
 }

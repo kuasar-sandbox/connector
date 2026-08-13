@@ -964,6 +964,7 @@ func TestStructSize(t *testing.T) {
 	}{
 		{"SwitchConfig", unsafe.Sizeof(SwitchConfig{}), 40},
 		{"SlotItem", unsafe.Sizeof(SlotItem{}), 108},
+		{"GeneveOptsValue", unsafe.Sizeof(GeneveOptsValue{}), 68},
 		{"MgmtCIDR", unsafe.Sizeof(MgmtCIDR{}), 20},
 	}
 	for _, tt := range tests {
@@ -1194,6 +1195,27 @@ func TestUpdateSwitchConfigFieldsSuccess(t *testing.T) {
 	}
 	if stored.FloatingIpBase != 0xc0a80100 {
 		t.Errorf("FloatingIpBase = 0x%x, want 0xc0a80100", stored.FloatingIpBase)
+	}
+}
+
+func TestUpdateSwitchConfigGeneveLocatorFields(t *testing.T) {
+	mockMap := newMockBPFMapForMetadata()
+	tlv := &GeneveTLVLocator{Class: 0x0102, Type: 0x81}
+	cfg := &Config{
+		NumPorts:         16,
+		MACAddr:          net.HardwareAddr{0x02, 0, 0, 0, 0, 1},
+		FloatingIPBase:   net.ParseIP("100.100.96.0"),
+		GeneveLocator:    GeneveLocatorTLV,
+		GeneveTLVLocator: tlv,
+	}
+	if err := UpdateSwitchConfig(mockMap, cfg); err != nil {
+		t.Fatal(err)
+	}
+	stored := mockMap.data[uint32(0)].(SwitchConfig)
+	if stored.GenevePortBase != uint32(DefaultGenevePortBase) ||
+		stored.GeneveLocator != uint8(GeneveLocatorTLV) ||
+		stored.GeneveTlvClass != 0x0102 || stored.GeneveTlvType != 0x81 {
+		t.Fatalf("stored GENEVE config = %#v", stored)
 	}
 }
 

@@ -34,6 +34,8 @@ func resetDeps() {
 	newStatsManagerFn = NewStatsManager
 	updateSwitchConfigFn = UpdateSwitchConfig
 	updateSwitchMetadataFn = UpdateSwitchMetadata
+	writeGeneveOptsFn = writeGeneveOpts
+	validateAttachMTUFn = validateAttachMTU
 	updateSwitchConfigFieldsFn = updateSwitchConfigFields
 	updateSwitchMetadataFieldsFn = updateSwitchMetadataFields
 	openSwitchFn = openSwitch

@@ -677,6 +677,9 @@ func setStartFlags(portMACAddr string) func() {
 	startPortNetNS = "port_ns"
 	startPorts = 4
 	startPortMACAddr = portMACAddr
+	startGeneveLocator = "port"
+	startGenevePortBase = vswitch.DefaultGenevePortBase
+	startGeneveTLVLocator = ""
 	return func() {
 		startMACAddr = ""
 		startFloatingIPBase = ""
@@ -687,6 +690,9 @@ func setStartFlags(portMACAddr string) func() {
 		startTransitDev = ""
 		startTransitDevAddr = ""
 		startTransitDevMTU = ""
+		startGeneveLocator = "port"
+		startGenevePortBase = vswitch.DefaultGenevePortBase
+		startGeneveTLVLocator = ""
 		startMgmtExtracts = nil
 	}
 }

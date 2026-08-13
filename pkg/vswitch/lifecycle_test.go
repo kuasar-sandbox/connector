@@ -176,3 +176,41 @@ func TestValidateConfigMatchNoTransitDev(t *testing.T) {
 		t.Fatalf("validateConfigMatch: %v", err)
 	}
 }
+
+func TestValidateConfigMatchGeneveLocatorMismatch(t *testing.T) {
+	requested := testRequestedConfig()
+	requested.GeneveLocator = GeneveLocatorVNI
+	existing := testSwitchConfig() // zero-value port locator
+	err := validateConfigMatch(requested, existing, testSwitchMetadata())
+	if err == nil || !strings.Contains(err.Error(), "geneve_locator") {
+		t.Fatalf("locator mismatch error = %v", err)
+	}
+}
+
+func TestValidateConfigMatchVNIUsesFixedPort(t *testing.T) {
+	requested := testRequestedConfig()
+	requested.GeneveLocator = GeneveLocatorVNI
+	existing := testSwitchConfig()
+	existing.GeneveLocator = uint8(GeneveLocatorVNI)
+	existing.GenevePortBase = 12345 // ignored in fixed-port modes
+	if err := validateConfigMatch(requested, existing, testSwitchMetadata()); err != nil {
+		t.Fatalf("VNI config match: %v", err)
+	}
+}
+
+func TestValidateConfigMatchTLVLocator(t *testing.T) {
+	requested := testRequestedConfig()
+	requested.GeneveLocator = GeneveLocatorTLV
+	requested.GeneveTLVLocator = &GeneveTLVLocator{Class: 0x0102, Type: 0x81}
+	existing := testSwitchConfig()
+	existing.GeneveLocator = uint8(GeneveLocatorTLV)
+	existing.GeneveTlvClass = 0x0102
+	existing.GeneveTlvType = 0x81
+	if err := validateConfigMatch(requested, existing, testSwitchMetadata()); err != nil {
+		t.Fatalf("TLV config match: %v", err)
+	}
+	existing.GeneveTlvType = 0x01
+	if err := validateConfigMatch(requested, existing, testSwitchMetadata()); err == nil || !strings.Contains(err.Error(), "geneve_tlv_locator") {
+		t.Fatalf("TLV mismatch error = %v", err)
+	}
+}

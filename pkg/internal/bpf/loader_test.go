@@ -154,6 +154,66 @@ func TestLoadPinnedMaps(t *testing.T) {
 	if maps.IfindexToSlot == nil {
 		t.Error("IfindexToSlot map is nil")
 	}
+	if maps.GeneveOpts == nil {
+		t.Error("GeneveOpts map is nil")
+	}
+}
+
+func TestLoadPinnedMapsAllowsMissingLegacyGeneveOpts(t *testing.T) {
+	ensureBPFEnv(t)
+
+	switchName := "test-loadpinned-legacy-geneve"
+	objs, err := bpf.LoadObjects()
+	if err != nil {
+		t.Fatalf("LoadObjects: %v", err)
+	}
+	createPinDir(t, switchName)
+	if err := objs.PinMaps(switchName); err != nil {
+		objs.Close()
+		t.Fatalf("PinMaps: %v", err)
+	}
+	objs.Close()
+	defer bpf.UnpinMaps(switchName)
+
+	if err := os.Remove(filepath.Join(bpf.BPFPath, switchName, "geneve_opts")); err != nil {
+		t.Fatalf("remove geneve_opts pin: %v", err)
+	}
+	maps, err := bpf.LoadPinnedMaps(switchName)
+	if err != nil {
+		t.Fatalf("LoadPinnedMaps legacy switch: %v", err)
+	}
+	defer maps.Close()
+	if maps.GeneveOpts != nil {
+		t.Fatal("legacy GeneveOpts map should be nil")
+	}
+}
+
+func TestLoadPinnedMapsRejectsInvalidGeneveOptsPin(t *testing.T) {
+	ensureBPFEnv(t)
+
+	switchName := "test-loadpinned-bad-geneve"
+	objs, err := bpf.LoadObjects()
+	if err != nil {
+		t.Fatalf("LoadObjects: %v", err)
+	}
+	createPinDir(t, switchName)
+	if err := objs.PinMaps(switchName); err != nil {
+		objs.Close()
+		t.Fatalf("PinMaps: %v", err)
+	}
+	objs.Close()
+	defer bpf.UnpinMaps(switchName)
+
+	path := filepath.Join(bpf.BPFPath, switchName, "geneve_opts")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bpf.LoadPinnedMaps(switchName); err == nil {
+		t.Fatal("expected invalid geneve_opts pin error")
+	}
 }
 
 // TestLoadPinnedMapsNonExistent verifies LoadPinnedMaps fails for non-existent switch.

@@ -1,8 +1,47 @@
 package vswitch
 
 import (
+	"net"
 	"testing"
+
+	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
 )
+
+func TestLegacySwitchWithoutGeneveOptsMapManagementPaths(t *testing.T) {
+	defer resetDeps()
+	bpfPinPathExists = func(string) (bool, error) { return true, nil }
+	bpfLoadPinnedMaps = func(string) (*bpf.Maps, error) { return &bpf.Maps{}, nil }
+	getSwitchConfigFn = func(BPFMap) (*SwitchConfig, error) {
+		return &SwitchConfig{N_ports: 2, GenevePortBase: uint32(DefaultGenevePortBase)}, nil
+	}
+	getSwitchMetadataFn = func(BPFMap) (*SwitchMetadata, error) { return &SwitchMetadata{}, nil }
+	slots := newMmappedSlotsForTest(2)
+	newMmappedSlotsFn = func(BPFArrayMap, uint32) (*MmappedSlots, error) { return slots, nil }
+	newStatsManagerFn = func(BPFMap, uint32) *StatsManager {
+		return NewStatsManager(&mockBPFMapWithSlot{}, 2)
+	}
+
+	opened, err := openSwitch("legacy")
+	if err != nil {
+		t.Fatalf("Open legacy switch: %v", err)
+	}
+	sw := opened.(*switchContext)
+	if sw.Maps().GeneveOpts != nil {
+		t.Fatal("legacy switch unexpectedly has geneve_opts map")
+	}
+	if _, err := sw.Status(); err != nil {
+		t.Fatalf("Status legacy switch: %v", err)
+	}
+	if got := len(sw.Ports(false)); got != 2 {
+		t.Fatalf("show slots source has %d ports, want 2", got)
+	}
+	if _, err := sw.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true}); err != nil {
+		t.Fatalf("Attach legacy switch: %v", err)
+	}
+	if err := sw.Detach(DetachOptions{Port: 1, SkipDevice: true}); err != nil {
+		t.Fatalf("Detach legacy switch: %v", err)
+	}
+}
 
 func TestPortsAllocatedOnly(t *testing.T) {
 	// Setup mmapSlots with some allocated slots
