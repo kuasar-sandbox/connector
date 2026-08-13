@@ -78,6 +78,9 @@ JSON config structure:
             "ip": "10.0.0.1",        Inner IP address for the sandbox
             "netns": "...",           (optional) Use existing netns; omit to auto-create
             "vni": 100,              (optional) GENEVE VNI
+            "geneve_opts": [          (optional) ordered outbound opaque options
+              "0102:02:0000002a"
+            ],
             "gateway_ip": "10.0.0.254" (optional) Transit gateway IP
           }
         ]
@@ -118,6 +121,7 @@ example = {
                 "mgmt_extracts": ["sw_test_mgmt:mgmt0:169.254.169.254"],
                 "transit_dev": "eth0sub10",
                 "transit_dev_addr": "10.100.0.2/24:10.100.0.1",
+                "geneve_locator": "port",
                 "geneve_port_base": 50000,
                 "geneve_encap_eth": True
             },
@@ -126,7 +130,8 @@ example = {
                 { "dev": "eth0sub10", "type": "ipvlan", "ipvlan_parent": "eth0", "mtu": 1564 }
             ],
             "sandboxes": [
-                { "ip": "10.100.0.1", "vni": 100, "gateway_ip": "10.100.0.254" },
+                { "ip": "10.100.0.1", "vni": 100, "gateway_ip": "10.100.0.254",
+                  "geneve_opts": ["0102:02:0000002a"] },
                 { "ip": "10.100.0.2" }
             ]
         }
@@ -356,7 +361,7 @@ print(json.dumps(data['instances'][$idx]['switch_config'], indent=2))
 
     # 5. Attach sandboxes
     for ((s=0; s<sb_count; s++)); do
-        local sb_ns sb_ip vni gateway_ip
+        local sb_ns sb_ip vni gateway_ip geneve_opts_count geneve_opt o
         sb_ns=$(json_query "$cfg" "
 ns = data['instances'][$idx]['sandboxes'][$s].get('netns', '')
 print(ns if ns else '${sw_name}_sb${s}')
@@ -364,6 +369,7 @@ print(ns if ns else '${sw_name}_sb${s}')
         sb_ip=$(json_query "$cfg" "print(data['instances'][$idx]['sandboxes'][$s]['ip'])")
         vni=$(json_query "$cfg" "print(data['instances'][$idx]['sandboxes'][$s].get('vni', ''))")
         gateway_ip=$(json_query "$cfg" "print(data['instances'][$idx]['sandboxes'][$s].get('gateway_ip', ''))")
+        geneve_opts_count=$(json_query "$cfg" "print(len(data['instances'][$idx]['sandboxes'][$s].get('geneve_opts', [])))")
 
         local attach_args=()
         attach_args+=(attach "$sw_name")
@@ -375,6 +381,10 @@ print(ns if ns else '${sw_name}_sb${s}')
         if [[ -n "$gateway_ip" ]]; then
             attach_args+=(--transit-gateway-ip="$gateway_ip")
         fi
+        for ((o=0; o<geneve_opts_count; o++)); do
+            geneve_opt=$(json_query "$cfg" "print(data['instances'][$idx]['sandboxes'][$s]['geneve_opts'][$o])")
+            attach_args+=(--transit-geneve-opt="$geneve_opt")
+        done
 
         echo "    Attaching sandbox ${sb_ns} (ip=${sb_ip})..."
         ${SWITCH_BIN} "${attach_args[@]}"
