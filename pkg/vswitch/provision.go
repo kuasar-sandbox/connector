@@ -116,7 +116,8 @@ func provisionTapSlot(switchNs *netns.NetNS, switchName string, slotID uint32, c
 		Name:    tapName,
 		MACAddr: portMAC,
 		// MTU intentionally not set here: SwitchConfig (BPF map) does not carry
-		// the user-facing MTU. The tap inherits the kernel default (1500),
+		// the user-facing MTU. The tap inherits the kernel default
+		// (defaultPortMTU),
 		// matching how veth provision behaves when --mtu is unspecified.
 		// MTU is reported in open-port metadata by reading it back from the
 		// netdev, which is the single source of truth.

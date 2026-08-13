@@ -51,6 +51,15 @@ struct {
     __type(value, __u32);
 } ifindex_to_slot SEC(".maps");
 
+// Per-slot opaque GENEVE options. slot_item.geneve_opts_len is the hot-path
+// hint: len==0 avoids this map lookup for legacy traffic.
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, MAX_PORTS);
+    __type(key, __u32);
+    __type(value, struct geneve_opts_value);
+} geneve_opts SEC(".maps");
+
 // Management service NAT (switch-global, see struct svc_key/svc_val in common.h).
 // fwd: egress {VIP,vport,proto} -> {target_ip,target_port} (tc_ingress_nx)
 // rev: ingress {target_ip,tport,proto} -> {VIP,vport}      (tc_ingress_mx)
@@ -271,6 +280,9 @@ int tc_ingress_nx(struct __sk_buff *skb)
     __u32 floating_ip_base = cfg->floating_ip_base;
     __u32 geneve_port_base = cfg->geneve_port_base;
     __u8  geneve_encap_eth = cfg->geneve_encap_eth;
+    __u8  geneve_locator = cfg->geneve_locator;
+    __u8  geneve_tlv_type = cfg->geneve_tlv_type;
+    __u16 geneve_tlv_class = cfg->geneve_tlv_class;
 
     // Get slot_id from ifindex
     __u32 ifindex = skb->ingress_ifindex;
@@ -289,6 +301,7 @@ int tc_ingress_nx(struct __sk_buff *skb)
     __u32 transit_ip = slot->transit_ip;
     __u32 transit_gateway_ip = slot->transit_gateway_ip;
     __u32 transit_geneve_vni = slot->transit_geneve_vni;
+    __u8 geneve_opts_len = slot->geneve_opts_len;
 
     __be16 proto = eth->h_proto;
 
@@ -446,8 +459,60 @@ int tc_ingress_nx(struct __sk_buff *skb)
     if (transit_ifindex == 0 || transit_gateway_ip == 0)
         return TC_ACT_OK;  // No transit configured
 
-    // Calculate GENEVE dest port for this slot (used for slot identification)
-    __u16 geneve_port = geneve_port_base + slot_id;
+    // Select the configured slot locator and derive the wire port/VNI.
+    __u16 geneve_port = 0;
+    __u32 wire_geneve_vni = 0;
+    __u32 locator_len = 0;
+    switch (geneve_locator) {
+    case GENEVE_LOCATOR_PORT:
+        geneve_port = geneve_port_base + slot_id;
+        wire_geneve_vni = transit_geneve_vni;
+        break;
+    case GENEVE_LOCATOR_VNI:
+        geneve_port = GENEVE_PORT;
+        wire_geneve_vni = (slot_id << GENEVE_VNI_LOCATOR_BITS) |
+                          transit_geneve_vni;
+        break;
+    case GENEVE_LOCATOR_TLV:
+        geneve_port = GENEVE_PORT;
+        wire_geneve_vni = transit_geneve_vni;
+        locator_len = GENEVE_TLV_LOCATOR_LEN;
+        break;
+    default:
+        return TC_ACT_OK;
+    }
+
+    // Validate the fast-path hint before using it. A non-zero hint requires a
+    // matching full value; mismatches fail closed instead of sending partial
+    // options or reading beyond the fixed map value.
+    struct geneve_opts_value *user_opts = 0;
+    __u32 user_opts_words[MAX_GENEVE_OPTS_LEN / 4] = {};
+    __u8 user_opts_critical = 0;
+    if (geneve_opts_len > 0) {
+        if (geneve_opts_len > MAX_GENEVE_OPTS_LEN ||
+            (geneve_opts_len & 3) != 0)
+            return TC_ACT_OK;
+        user_opts = bpf_map_lookup_elem(&geneve_opts, &slot_id);
+        if (!user_opts || user_opts->len != geneve_opts_len ||
+            user_opts->len > MAX_GENEVE_OPTS_LEN ||
+            (user_opts->len & 3) != 0 || user_opts->critical > 1)
+            return TC_ACT_OK;
+        user_opts_critical = user_opts->critical;
+
+        // Map-value pointers cannot be carried across bpf_skb_adjust_room.
+        // Snapshot the bounded fixed-size value first, then write the packet
+        // only from verifier-tracked stack memory after the helper call.
+#pragma unroll
+        for (int i = 0; i < MAX_GENEVE_OPTS_LEN / 4; i++) {
+            if ((__u32)(i * 4) >= geneve_opts_len)
+                break;
+            __bpf_memcpy(&user_opts_words[i], &user_opts->data[i * 4], 4);
+        }
+    }
+
+    __u32 total_opts_len = locator_len + geneve_opts_len;
+    if (total_opts_len > MAX_GENEVE_OPTS_LEN)
+        return TC_ACT_OK;
 
     // Compute outer UDP source port from inner packet tuple hash.
     // This enables ECMP/RSS load balancing on the underlay network.
@@ -491,7 +556,8 @@ int tc_ingress_nx(struct __sk_buff *skb)
     // Encapsulation: outer IP + UDP + GENEVE headers.
     // For Ether-over-GENEVE, also include inner ETH in encap_len
     // so bpf_skb_adjust_room creates space for it.
-    __u32 tunnel_len = sizeof(struct iphdr) + sizeof(struct udphdr) + sizeof(struct genevehdr);
+    __u32 tunnel_len = sizeof(struct iphdr) + sizeof(struct udphdr) +
+                       sizeof(struct genevehdr) + total_opts_len;
     __u32 encap_len = tunnel_len;
     __u64 adj_flags = BPF_F_ADJ_ROOM_ENCAP_L4_UDP | BPF_F_ADJ_ROOM_ENCAP_L3_IPV4;
     if (geneve_encap_eth) {
@@ -522,14 +588,19 @@ int tc_ingress_nx(struct __sk_buff *skb)
     if ((void *)(geneve + 1) > data_end)
         return TC_ACT_OK;
 
+    void *geneve_opts_start = (void *)(geneve + 1);
+    if ((void *)((char *)geneve_opts_start + total_opts_len) > data_end)
+        return TC_ACT_OK;
+
     // Fill outer Ethernet header
     __bpf_memcpy(eth->h_dest, switch_mac, 6);
     __bpf_memcpy(eth->h_source, switch_mac, 6);
     eth->h_proto = bpf_htons(ETH_P_IP);
 
-    // For Ether-over-GENEVE: fill inner Ethernet header after GENEVE
+    // For Ether-over-GENEVE: fill the inner Ethernet header after all options.
     if (geneve_encap_eth) {
-        struct ethhdr *inner_eth = (void *)(geneve + 1);
+        struct ethhdr *inner_eth = (void *)((char *)geneve_opts_start +
+                                            total_opts_len);
         if ((void *)(inner_eth + 1) > data_end)
             return TC_ACT_OK;
         // Destination: transit_mac (broadcast if all-zero)
@@ -563,23 +634,57 @@ int tc_ingress_nx(struct __sk_buff *skb)
 
     // Fill UDP header.
     // src: hash of inner tuple (for ECMP/RSS on underlay)
-    // dst: slot-specific geneve_port (for slot identification at receiver)
+    // dst: selected by the configured locator; port mode uses a slot-specific
+    // destination for receiver-side slot identification.
     udp->source = bpf_htons(src_port);
     udp->dest = bpf_htons(geneve_port);
     udp->len = bpf_htons(skb->len - sizeof(struct ethhdr) - sizeof(struct iphdr));
     udp->check = 0;  // Optional for IPv4
 
-    // Fill GENEVE header
-    geneve->ver = 0;
-    geneve->opt_len = 0;
-    geneve->oam = 0;
-    geneve->critical = 0;
-    geneve->rsvd1 = 0;
+    // Fill GENEVE base flags as wire bytes. Avoid C bitfields here: their C
+    // layout depends on userspace header macros which are not part of the BPF
+    // target ABI. Version, OAM, and reserved bits are all zero.
+    __u8 geneve_critical = user_opts_critical ||
+                           (geneve_locator == GENEVE_LOCATOR_TLV &&
+                            (geneve_tlv_type & 0x80));
+    ((__u8 *)geneve)[0] = total_opts_len / 4;
+    ((__u8 *)geneve)[1] = geneve_critical ? 0x40 : 0;
     geneve->proto_type = geneve_encap_eth ? bpf_htons(ETH_P_TEB) : proto;
-    geneve->vni[0] = (transit_geneve_vni >> 16) & 0xff;
-    geneve->vni[1] = (transit_geneve_vni >> 8) & 0xff;
-    geneve->vni[2] = transit_geneve_vni & 0xff;
+    geneve->vni[0] = (wire_geneve_vni >> 16) & 0xff;
+    geneve->vni[1] = (wire_geneve_vni >> 8) & 0xff;
+    geneve->vni[2] = wire_geneve_vni & 0xff;
     geneve->rsvd2 = 0;
+
+    // The generated locator is always first and exactly 8 bytes.
+    void *opaque_opts_start = geneve_opts_start;
+    if (geneve_locator == GENEVE_LOCATOR_TLV) {
+        struct geneve_opt_hdr *locator = geneve_opts_start;
+        if ((void *)(locator + 1) > data_end ||
+            (void *)((char *)locator + GENEVE_TLV_LOCATOR_LEN) > data_end)
+            return TC_ACT_OK;
+        locator->opt_class = bpf_htons(geneve_tlv_class);
+        locator->type = geneve_tlv_type;
+        locator->rsvd_len = 1;
+        __be32 locator_data = bpf_htonl(slot_id);
+        __bpf_memcpy((void *)(locator + 1), &locator_data,
+                     sizeof(locator_data));
+        opaque_opts_start = (void *)((char *)geneve_opts_start +
+                                     GENEVE_TLV_LOCATOR_LEN);
+    }
+
+    // Copy at most 16 fixed words. The loop is fully unrolled so the verifier
+    // sees constant map-value offsets and a hard 64-byte packet bound.
+    if (geneve_opts_len > 0) {
+#pragma unroll
+        for (int i = 0; i < MAX_GENEVE_OPTS_LEN / 4; i++) {
+            if ((__u32)(i * 4) >= geneve_opts_len)
+                break;
+            void *dst = (void *)((char *)opaque_opts_start + i * 4);
+            if ((void *)((char *)dst + 4) > data_end)
+                return TC_ACT_OK;
+            __bpf_memcpy(dst, &user_opts_words[i], 4);
+        }
+    }
 
     update_stats_transit_tx(slot_id, pkt_len);
 
@@ -818,18 +923,78 @@ int tc_ingress_transit(struct __sk_buff *skb)
     __u32 geneve_port_base = cfg->geneve_port_base;
     __u32 n_ports = cfg->n_ports;
 
-    // Calculate slot_id from destination UDP port
-    // Inbound GENEVE packets are sent by the gateway with
-    // dst_port = geneve_port_base + slot_id
-    __u16 dst_port = bpf_ntohs(udp->dest);
-    if (dst_port < geneve_port_base)
+    struct genevehdr *geneve = (void *)(udp + 1);
+    if ((void *)(geneve + 1) > data_end)
         return TC_ACT_OK;
 
-    __u32 slot_id = dst_port - geneve_port_base;
+    // Parse the RFC wire bits directly rather than relying on target-specific
+    // C bitfield layout.
+    __u8 geneve_flags0 = ((__u8 *)geneve)[0];
+    __u8 geneve_flags1 = ((__u8 *)geneve)[1];
+    if ((geneve_flags0 >> 6) != 0)
+        return TC_ACT_OK;
+
+    __u32 geneve_opt_len = (geneve_flags0 & 0x3f) * 4;
+    __u8 geneve_critical = !!(geneve_flags1 & 0x40);
+    if (geneve_opt_len > MAX_GENEVE_OPTS_LEN)
+        return TC_ACT_OK;
+
+    __u16 dst_port = bpf_ntohs(udp->dest);
+    __u32 wire_vni = (((__u32)geneve->vni[0]) << 16) |
+                     (((__u32)geneve->vni[1]) << 8) |
+                     ((__u32)geneve->vni[2]);
+    __u32 slot_id = 0;
+    __u32 received_vni = 0;
+
+    // Return traffic has a deliberately strict framing contract. port/vni
+    // accept no options; tlv accepts exactly the generated locator and never
+    // scans for it or skips unknown options.
+    switch (cfg->geneve_locator) {
+    case GENEVE_LOCATOR_PORT:
+        if (geneve_opt_len != 0 || geneve_critical)
+            return TC_ACT_OK;
+        if (dst_port < geneve_port_base)
+            return TC_ACT_OK;
+        slot_id = dst_port - geneve_port_base;
+        received_vni = wire_vni;
+        break;
+    case GENEVE_LOCATOR_VNI:
+        if (dst_port != GENEVE_PORT || geneve_opt_len != 0 ||
+            geneve_critical)
+            return TC_ACT_OK;
+        slot_id = wire_vni >> GENEVE_VNI_LOCATOR_BITS;
+        received_vni = wire_vni & GENEVE_VNI_VALUE_MASK;
+        break;
+    case GENEVE_LOCATOR_TLV: {
+        if (dst_port != GENEVE_PORT ||
+            geneve_opt_len != GENEVE_TLV_LOCATOR_LEN)
+            return TC_ACT_OK;
+        struct geneve_opt_hdr *locator = (void *)(geneve + 1);
+        if ((void *)(locator + 1) > data_end ||
+            (void *)((char *)locator + GENEVE_TLV_LOCATOR_LEN) > data_end)
+            return TC_ACT_OK;
+        if (locator->opt_class != bpf_htons(cfg->geneve_tlv_class) ||
+            locator->type != cfg->geneve_tlv_type ||
+            (locator->rsvd_len & 0xe0) != 0 ||
+            (locator->rsvd_len & 0x1f) != 1)
+            return TC_ACT_OK;
+        if (geneve_critical != !!(locator->type & 0x80))
+            return TC_ACT_OK;
+        __be32 locator_data = 0;
+        __bpf_memcpy(&locator_data, (void *)(locator + 1),
+                     sizeof(locator_data));
+        slot_id = bpf_ntohl(locator_data);
+        received_vni = wire_vni;
+        break;
+    }
+    default:
+        return TC_ACT_OK;
+    }
+
     if (slot_id >= n_ports)
         return TC_ACT_OK;
 
-    // Get slot config and cache values
+    // Get slot config and perform the common authenticated return checks.
     struct slot_item *slot = bpf_map_lookup_elem(&slots, &slot_id);
     if (!slot || is_slot_free(slot->inner_ip) || slot->ifindex == 0)
         return TC_ACT_OK;
@@ -837,19 +1002,11 @@ int tc_ingress_transit(struct __sk_buff *skb)
     __u32 target_ifindex = slot->ifindex;
     __u32 expected_vni = slot->transit_geneve_vni;
 
-    // Verify outer source IP matches expected gateway
     if (ip->saddr != bpf_htonl(slot->transit_gateway_ip))
         return TC_ACT_OK;
 
-    struct genevehdr *geneve = (void *)(udp + 1);
-    if ((void *)(geneve + 1) > data_end)
-        return TC_ACT_OK;
-
     // Verify VNI matches
-    __u32 vni = (((__u32)geneve->vni[0]) << 16) |
-                (((__u32)geneve->vni[1]) << 8) |
-                ((__u32)geneve->vni[2]);
-    if (vni != expected_vni)
+    if (received_vni != expected_vni)
         return TC_ACT_OK;
 
     // Detect encap mode from proto_type
@@ -857,7 +1014,6 @@ int tc_ingress_transit(struct __sk_buff *skb)
     int is_eth = (inner_proto == bpf_htons(ETH_P_TEB));
 
     // Calculate decapsulation length (outer IP + UDP + GENEVE + options)
-    __u32 geneve_opt_len = geneve->opt_len * 4;
     __u32 decap_len = sizeof(struct iphdr) + sizeof(struct udphdr) +
                       sizeof(struct genevehdr) + geneve_opt_len;
 

@@ -209,6 +209,7 @@ netns fd。
 
 ```text
 TAPFD/1 PREPARE VSWITCH=sw0 INNER_IP=169.254.0.21\n
+TAPFD/1 PREPARE VSWITCH=sw0 INNER_IP=169.254.0.21 TRANSIT_GATEWAY_IP=10.0.0.2 TRANSIT_GENEVE_VNI=42 TRANSIT_GENEVE_OPTS=0102:02:0000002a,0102:83:1122334455667788\n
 TAPFD/1 OPEN want_netns=1 VSWITCH=sw0 PORT=3\n
 TAPFD/1 RELEASE VSWITCH=sw0 PORT=3\n
 ```
@@ -216,13 +217,18 @@ TAPFD/1 RELEASE VSWITCH=sw0 PORT=3\n
 - `TAPFD/1` 是协议版本。操作包括 `PREPARE`、`OPEN`、`RELEASE`。
 - `PREPARE` 分配并配置一个后续可 `OPEN` 的 port slot。`connector-ctl vswitch serve`
   接受 `INNER_IP` 以及可选 `TRANSIT_GATEWAY_IP`、`TRANSIT_GENEVE_VNI`、
-  `TRANSIT_MAC`。
+  `TRANSIT_GENEVE_OPTS`、`TRANSIT_MAC`。`transit_geneve_opts` 是逗号分隔的
+  `CLASS:TYPE:DATA` 序列,与 CLI `--transit-geneve-opt` 复用同一个 parser;class/type/data
+  为十六进制,data 长度须为 4 字节整数倍,空值表示无 options。调用方顺序被原样保留,
+  options 仅用于 connector→gateway 的 Geneve 出站封装,不会在返程或 tap fd payload
+  中出现。
 - `OPEN` 打开已分配 port 的 tap queue fd 并经 `SCM_RIGHTS` 返回。`want_netns=1`
   与 §3.4 语义相同:consumer 请求 provider 追加 tap 所在 netns fd。
 - `RELEASE` 释放已分配 port slot。
 - 其余 `key=value` token 是 provider 私有字段。`connector-ctl vswitch serve` 接受
   `switch`/`vswitch`/`VSWITCH` 与 `port`/`PORT`。
-- 行最大 512 字节,不得包含 NUL 或内嵌换行。
+- 行最大 512 字节,不得包含 NUL 或内嵌换行。包括 option header 在内最多 64-byte 的
+  opaque Geneve options 规范字符串可放入该上限;超长请求明确返回 `BAD_REQUEST`。
 
 `OPEN` 成功响应在 §2 metadata 前加版本化状态前缀,并与 fd 一起通过 `SCM_RIGHTS` 返回:
 

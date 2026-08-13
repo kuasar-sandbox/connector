@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"syscall"
 	"testing"
 )
 
@@ -91,6 +92,33 @@ func TestControlLockReleaseWithFile(t *testing.T) {
 	}
 	if lock.f != nil {
 		t.Error("f should be nil after Release")
+	}
+}
+
+func TestAcquireCurrentSwitchControlLockReleasesOnVerificationFailure(t *testing.T) {
+	defer resetDeps()
+
+	f, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock := &ControlLock{f: f}
+	acquireControlLockFn = func(string) (*ControlLock, error) { return lock, nil }
+	verifyCurrentSwitchFn = func(*switchContext) error { return errors.New("stale switch") }
+	unlocked := false
+	syscallFlock = func(_ int, how int) error {
+		if how == syscall.LOCK_UN {
+			unlocked = true
+		}
+		return nil
+	}
+
+	_, err = acquireCurrentSwitchControlLock(&switchContext{name: "sw0"})
+	if err == nil || !contains(err.Error(), "stale switch") {
+		t.Fatalf("error = %v", err)
+	}
+	if !unlocked || lock.f != nil {
+		t.Fatalf("verification failure did not release lock: unlocked=%t file=%v", unlocked, lock.f)
 	}
 }
 

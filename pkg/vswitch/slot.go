@@ -12,13 +12,14 @@ import (
 // Type aliases re-exporting the BPF and bpfmap types so vswitch callers
 // (and the CLI via exports.go) can use them without importing pkg/internal/*.
 type (
-	MgmtCIDR     = bpf.MgmtCIDR
-	SlotItem     = bpf.SlotItem
-	SwitchConfig = bpf.SwitchConfig
-	SlotStats    = bpf.SlotStats
-	PortKind     = bpf.PortKind
-	MmappedSlots = bpfmap.MmappedSlots
-	StatsManager = bpfmap.StatsManager
+	MgmtCIDR        = bpf.MgmtCIDR
+	SlotItem        = bpf.SlotItem
+	SwitchConfig    = bpf.SwitchConfig
+	GeneveOptsValue = bpf.GeneveOptsValue
+	SlotStats       = bpf.SlotStats
+	PortKind        = bpf.PortKind
+	MmappedSlots    = bpfmap.MmappedSlots
+	StatsManager    = bpfmap.StatsManager
 )
 
 // Re-export constants from the BPF binding for vswitch-package callers.
@@ -69,11 +70,17 @@ func TapDeviceName(switchName string, slotID uint32) string {
 // Performs the Config → SwitchConfig type conversion (including IP encoding)
 // then issues a single map update.
 func UpdateSwitchConfig(configMap BPFMap, cfg *Config) error {
+	cfg.applyGeneveDefaults()
 	var bpfCfg SwitchConfig
 	bpfCfg.SetSwitchMacAddr(cfg.MACAddr)
 	bpfCfg.N_ports = cfg.NumPorts
 	bpfCfg.FloatingIpBase = bpf.IPToUint32(cfg.FloatingIPBase)
 	bpfCfg.GenevePortBase = uint32(cfg.GenevePortBase)
+	bpfCfg.GeneveLocator = uint8(cfg.GeneveLocator)
+	if cfg.GeneveTLVLocator != nil {
+		bpfCfg.GeneveTlvClass = cfg.GeneveTLVLocator.Class
+		bpfCfg.GeneveTlvType = cfg.GeneveTLVLocator.Type
+	}
 	if cfg.GeneveEncapEth {
 		bpfCfg.GeneveEncapEth = 1
 	}

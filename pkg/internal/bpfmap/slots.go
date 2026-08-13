@@ -165,6 +165,7 @@ func InitSlotReserved(m *MmappedSlots, slotID uint32) bool {
 		slot.Ifindex = 0
 		slot.TransitGatewayIp = 0
 		slot.TransitGeneveVni = 0
+		slot.GeneveOptsLen = 0
 		slot.ClearTransitMac()
 	})
 	return true

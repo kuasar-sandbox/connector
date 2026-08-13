@@ -522,7 +522,7 @@ func TestStopSafeWithUsedPorts(t *testing.T) {
 	}
 }
 
-func TestStopSafeNoUsedPorts(t *testing.T) {
+func TestStopLegacySwitchWithoutGeneveOptsMap(t *testing.T) {
 	defer resetDeps()
 	mockStartControlDeps()
 

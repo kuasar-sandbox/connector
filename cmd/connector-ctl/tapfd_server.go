@@ -293,6 +293,13 @@ func prepareAttachOptions(req *tapfd.Request) (vswitch.AttachOptions, error) {
 		}
 		opts.TransitGeneveVNI = uint32(vni)
 	}
+	if optionsText := requestField(req, "transit_geneve_opts", "transit-geneve-opts", "TRANSIT_GENEVE_OPTS"); optionsText != "" {
+		options, err := vswitch.ParseGeneveOptions(optionsText)
+		if err != nil {
+			return vswitch.AttachOptions{}, fmt.Errorf("invalid transit_geneve_opts %q: %w", optionsText, err)
+		}
+		opts.TransitGeneveOpts = options
+	}
 	if macText := requestField(req, "transit_mac", "transit-mac", "transit-mac-addr", "TRANSIT_MAC"); macText != "" {
 		mac, err := net.ParseMAC(macText)
 		if err != nil {

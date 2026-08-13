@@ -3,7 +3,10 @@
 package vswitch
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -13,6 +16,60 @@ import (
 func skipIfNotRoot(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("requires root")
+	}
+}
+
+// TestVerifyCurrentSwitchWithRealPinnedMaps verifies that an open map fd is
+// accepted while it is current and rejected after the same switch name is
+// unpinned and recreated with a different map set.
+func TestVerifyCurrentSwitchWithRealPinnedMaps(t *testing.T) {
+	skipIfNotRoot(t)
+	if err := bpf.EnsureBPFFS(); err != nil {
+		t.Fatalf("EnsureBPFFS: %v", err)
+	}
+
+	switchName := fmt.Sprintf("test-verify-current-%d", os.Getpid())
+	pinPath := filepath.Join(bpf.BPFPath, switchName)
+	_ = bpf.UnpinMaps(switchName)
+	t.Cleanup(func() { _ = bpf.UnpinMaps(switchName) })
+
+	oldObjects, err := bpf.LoadObjects()
+	if err != nil {
+		t.Fatalf("LoadObjects old switch: %v", err)
+	}
+	defer oldObjects.Close()
+	if err := os.Mkdir(pinPath, 0755); err != nil {
+		t.Fatalf("create old pin directory: %v", err)
+	}
+	if err := oldObjects.PinMaps(switchName); err != nil {
+		t.Fatalf("pin old switch maps: %v", err)
+	}
+	oldContext := &switchContext{name: switchName, maps: oldObjects.Maps}
+	if err := verifyCurrentSwitch(oldContext); err != nil {
+		t.Fatalf("verify current old switch: %v", err)
+	}
+
+	if err := bpf.UnpinMaps(switchName); err != nil {
+		t.Fatalf("unpin old switch: %v", err)
+	}
+	newObjects, err := bpf.LoadObjects()
+	if err != nil {
+		t.Fatalf("LoadObjects replacement switch: %v", err)
+	}
+	defer newObjects.Close()
+	if err := os.Mkdir(pinPath, 0755); err != nil {
+		t.Fatalf("create replacement pin directory: %v", err)
+	}
+	if err := newObjects.PinMaps(switchName); err != nil {
+		t.Fatalf("pin replacement switch maps: %v", err)
+	}
+
+	if err := verifyCurrentSwitch(oldContext); err == nil || !strings.Contains(err.Error(), "was replaced") {
+		t.Fatalf("stale context verification error = %v", err)
+	}
+	newContext := &switchContext{name: switchName, maps: newObjects.Maps}
+	if err := verifyCurrentSwitch(newContext); err != nil {
+		t.Fatalf("verify replacement switch: %v", err)
 	}
 }
 

@@ -48,13 +48,14 @@ type DetachOptions struct {
 
 // AttachOptions holds options for the attach command.
 type AttachOptions struct {
-	Port             int              // Requested port number (0 for auto)
-	ToNetNS          string           // Target namespace
-	InnerIP          net.IP           // Sandbox internal IP
-	TransitGatewayIP net.IP           // GENEVE gateway IP
-	TransitGeneveVNI uint32           // GENEVE VNI
-	TransitMAC       net.HardwareAddr // Transit destination MAC (nil for broadcast)
-	SkipDevice       bool             // --skip-device: pure BPF slot operation, skip all device movement/checks
+	Port              int              // Requested port number (0 for auto)
+	ToNetNS           string           // Target namespace
+	InnerIP           net.IP           // Sandbox internal IP
+	TransitGatewayIP  net.IP           // GENEVE gateway IP
+	TransitGeneveVNI  uint32           // GENEVE VNI
+	TransitGeneveOpts []GeneveOption   `json:"transit_geneve_opts,omitempty"` // Opaque connector -> gateway GENEVE options
+	TransitMAC        net.HardwareAddr // Transit destination MAC (nil for broadcast)
+	SkipDevice        bool             // --skip-device: pure BPF slot operation, skip all device movement/checks
 }
 
 // ReserveOptions holds options for the reserve command.
@@ -75,7 +76,10 @@ type AttachOutput struct {
 	TransitType      string `json:"transit_type"`
 	TransitGatewayIP string `json:"transit_gateway_ip,omitempty"`
 	GenevePort       uint16 `json:"geneve_port,omitempty"`
+	GeneveLocator    string `json:"geneve_locator,omitempty"`
 	TransitGeneveVNI uint32 `json:"transit_geneve_vni,omitempty"`
+	WireGeneveVNI    uint32 `json:"wire_geneve_vni,omitempty"`
+	GeneveOptsLen    uint8  `json:"geneve_opts_len,omitempty"`
 	// TapSentTo is populated when attach was invoked with --open-port; it
 	// echoes the TAPFD_SOCKET destination that received the fd via SCM_RIGHTS.
 	TapSentTo string `json:"tap_sent_to,omitempty"`

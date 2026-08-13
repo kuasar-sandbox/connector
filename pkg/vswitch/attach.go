@@ -3,6 +3,8 @@ package vswitch
 import (
 	"fmt"
 
+	"github.com/cilium/ebpf"
+
 	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
 )
 
@@ -21,10 +23,41 @@ func Attach(switchName string, opts AttachOptions) (*AttachOutput, error) {
 // Allocates a port to a sandbox using the pre-loaded context.
 func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	cfg := s.cfg
+	locator := geneveLocatorFromConfig(cfg)
+	if !locator.valid() {
+		return nil, fmt.Errorf("switch has invalid GENEVE locator value %d; rebuild the switch", cfg.GeneveLocator)
+	}
+	if err := validateTransitGeneveVNI(locator, opts.TransitGeneveVNI); err != nil {
+		return nil, err
+	}
 
+	var tlvLocator *GeneveTLVLocator
+	if locator == GeneveLocatorTLV {
+		value := geneveTLVLocatorFromConfig(cfg)
+		tlvLocator = &value
+	}
+	geneveOptsValue, totalGeneveOptsLen, err := marshalGeneveOptions(locator, tlvLocator, opts.TransitGeneveOpts)
+	if err != nil {
+		return nil, err
+	}
+	hasGeneveOptsMap := s.maps != nil && s.maps.GeneveOpts != nil
+	if !hasGeneveOptsMap && (locator != GeneveLocatorPort || geneveOptsValue.Len != 0) {
+		return nil, fmt.Errorf("switch lacks the geneve_opts map required by geneve_locator=%s or non-empty transit_geneve_opts; rebuild the switch", locator)
+	}
 	innerIP := bpf.IPToUint32(opts.InnerIP)
 	if innerIP == 0 {
 		return nil, fmt.Errorf("inner-ip cannot be 0.0.0.0")
+	}
+	// The options map and the mmap'd slot are two separate kernel objects. New
+	// switches serialize slot ownership changes with the existing per-switch
+	// control flock so Detach/Reserve cannot release and reassign a slot between
+	// those writes. Old switches have no options map and keep their legacy path.
+	if hasGeneveOptsMap {
+		lock, err := acquireCurrentSwitchControlLock(s)
+		if err != nil {
+			return nil, err
+		}
+		defer lock.Release()
 	}
 
 	var slotID uint32
@@ -48,30 +81,59 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 		}
 	}
 
-	// Mode-specific validation: tap ports must have been provisioned (have a
-	// real ifindex) before attach because attach does not create devices. For
-	// veth this is enforced implicitly by the netns move below failing.
-	portKind := SlotPortKind(s.mmapSlots.GetSlot(slotID))
-	if portKind == PortKindTap && s.mmapSlots.GetSlot(slotID).Ifindex == 0 {
-		s.mmapSlots.TryRelease(slotID, innerIP)
-		return nil, fmt.Errorf("port %d: %w (tap mode requires provision first)", slotID+1, ErrPortNotProvisioned)
-	}
-
-	// CAS succeeded - slot is now ours. Update other fields via mmap.
-	// Note: We must unconditionally overwrite ALL transit fields because
-	// Detach does not clear them (to avoid race with concurrent Attach).
+	// From this point the claim is ours. As the first mmap update, suppress the
+	// old option lookup and overwrite every retained transit field. This happens
+	// before any map syscall, MTU lookup, or namespace work, so a reused slot
+	// cannot spend a slow operation using the previous attachment's transit
+	// state. Reserved is an explicit provision/control state and is never used
+	// as a transient Attach state.
 	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
+		slot.GeneveOptsLen = 0
 		if opts.TransitGatewayIP != nil {
 			slot.TransitGatewayIp = bpf.IPToUint32(opts.TransitGatewayIP)
 		} else {
 			slot.TransitGatewayIp = 0
 		}
 		slot.TransitGeneveVni = opts.TransitGeneveVNI
-		slot.ClearTransitMac() // Clear first
+		slot.ClearTransitMac()
 		if len(opts.TransitMAC) >= 6 {
 			slot.SetTransitMacAddr(opts.TransitMAC)
 		}
 	})
+	rollbackClaim := func() {
+		// The hint is not published until all fallible Attach work completes.
+		// Release only our CAS claim; if another operation already changed the
+		// owner, the CAS fails without touching that owner's state.
+		s.mmapSlots.TryRelease(slotID, innerIP)
+	}
+
+	// Mode-specific validation: tap ports must have been provisioned (have a
+	// real ifindex) before attach because attach does not create devices. For
+	// veth this is enforced implicitly by the netns move below failing.
+	portKind := SlotPortKind(s.mmapSlots.GetSlot(slotID))
+	if portKind == PortKindTap && s.mmapSlots.GetSlot(slotID).Ifindex == 0 {
+		rollbackClaim()
+		return nil, fmt.Errorf("port %d: %w (tap mode requires provision first)", slotID+1, ErrPortNotProvisioned)
+	}
+
+	// A new switch always has the map. Overwrite the entire fixed-size value,
+	// including the zero value for empty options, before publishing any hint.
+	if hasGeneveOptsMap {
+		if err := writeGeneveOptsFn(s.maps.GeneveOpts, slotID, &geneveOptsValue); err != nil {
+			rollbackClaim()
+			return nil, fmt.Errorf("write GENEVE options for port %d: %w", slotID+1, err)
+		}
+	}
+
+	// Fixed locator overhead was checked at switch start. Recheck every non-zero
+	// wire option budget (including the generated TLV locator) against the
+	// selected port's actual MTU before moving a device or delivering a tap FD.
+	if totalGeneveOptsLen != 0 {
+		if err := validateAttachMTUFn(s, slotID, portKind, int(totalGeneveOptsLen)); err != nil {
+			rollbackClaim()
+			return nil, err
+		}
+	}
 
 	// Reset stats for this slot on attach
 	if err := s.statsMgr.ResetStats(slotID); err != nil {
@@ -90,7 +152,7 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 		portNs, err := netnsGetByName(portNsName)
 		if err != nil {
 			// Rollback: release the slot
-			s.mmapSlots.TryRelease(slotID, innerIP)
+			rollbackClaim()
 			return nil, fmt.Errorf("failed to get port netns %s: %w", portNsName, err)
 		}
 		defer portNs.Close()
@@ -98,21 +160,29 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 		toNs, err := netnsGetByName(opts.ToNetNS)
 		if err != nil {
 			// Rollback: release the slot
-			s.mmapSlots.TryRelease(slotID, innerIP)
+			rollbackClaim()
 			return nil, fmt.Errorf("failed to get target netns %s: %w", opts.ToNetNS, err)
 		}
 		defer toNs.Close()
 
 		if err := netnsMoveDevice(portName, portNs, toNs); err != nil {
 			// Rollback: release the slot
-			s.mmapSlots.TryRelease(slotID, innerIP)
+			rollbackClaim()
 			return nil, fmt.Errorf("failed to move %s to %s: %w", portName, opts.ToNetNS, err)
 		}
 	}
 
+	// Publish the opaque length only after the fixed map value, every transit
+	// field, MTU validation, and device movement are complete. Until this point
+	// every failure path can release its claim with the hint still at zero.
+	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
+		slot.GeneveOptsLen = geneveOptsValue.Len
+	})
+
 	// Calculate derived values
 	floatingIP := bpf.Uint32ToIP(cfg.FloatingIpBase + slotID)
-	genevePort := uint16(cfg.GenevePortBase) + uint16(slotID)
+	genevePort := geneveWirePort(locator, cfg.GenevePortBase, slotID)
+	wireGeneveVNI := geneveWireVNI(locator, slotID, opts.TransitGeneveVNI)
 
 	// Use GetPortMAC to get fixed or per-port derived MAC
 	portMAC := GetPortMAC(cfg.SwitchMac[:], cfg.PortMac[:], slotID)
@@ -138,11 +208,57 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 		out.TransitType = "overlay-geneve"
 		out.TransitGatewayIP = opts.TransitGatewayIP.String()
 		out.GenevePort = genevePort
+		out.GeneveLocator = locator.String()
 		out.TransitGeneveVNI = opts.TransitGeneveVNI
+		out.WireGeneveVNI = wireGeneveVNI
+		out.GeneveOptsLen = totalGeneveOptsLen
 	} else {
 		out.TransitType = "none"
 	}
 	return out, nil
+}
+
+func writeGeneveOpts(optionsMap BPFMap, slotID uint32, value *GeneveOptsValue) error {
+	if err := optionsMap.Update(slotID, value, ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("update geneve_opts map: %w", err)
+	}
+	return nil
+}
+
+func validateAttachMTU(s *switchContext, slotID uint32, portKind PortKind, optionsOverhead int) error {
+	if s.meta == nil || s.meta.TransitDevName() == "" {
+		return nil
+	}
+	switchNs, err := netnsGetByName(s.meta.SwitchNetnsName())
+	if err != nil {
+		return fmt.Errorf("validate GENEVE options MTU: get switch netns %s: %w", s.meta.SwitchNetnsName(), err)
+	}
+	defer switchNs.Close()
+
+	portName := PeerDeviceName(s.name, slotID)
+	if portKind == PortKindTap {
+		portName = TapDeviceName(s.name, slotID)
+	}
+	portMTU, err := netlinkGetMTUInNs(switchNs, portName)
+	if err != nil {
+		return fmt.Errorf("validate GENEVE options MTU: get port %s MTU: %w", portName, err)
+	}
+	transitDev := s.meta.TransitDevName()
+	transitMTU, err := netlinkGetMTUInNs(switchNs, transitDev)
+	if err != nil {
+		return fmt.Errorf("validate GENEVE options MTU: get transit device %s MTU: %w", transitDev, err)
+	}
+
+	baseOverhead := GeneveIPOverhead
+	if s.cfg.GeneveEncapEth != 0 {
+		baseOverhead = GeneveEthOverhead
+	}
+	requiredMTU := portMTU + baseOverhead + optionsOverhead
+	if transitMTU < requiredMTU {
+		return fmt.Errorf("transit device %s MTU %d is too small for port %s: port MTU %d + base GENEVE overhead %d + options overhead %d = required MTU %d",
+			transitDev, transitMTU, portName, portMTU, baseOverhead, optionsOverhead, requiredMTU)
+	}
+	return nil
 }
 
 // Reserve reserves a port slot.
@@ -163,6 +279,14 @@ func (s *switchContext) Reserve(opts ReserveOptions) (*ReserveOutput, error) {
 	slotID := uint32(opts.Port - 1)
 	if slotID >= s.cfg.N_ports {
 		return nil, fmt.Errorf("port %d: %w (max %d)", opts.Port, ErrPortOutOfRange, s.cfg.N_ports)
+	}
+	hasGeneveOptsMap := s.maps != nil && s.maps.GeneveOpts != nil
+	if hasGeneveOptsMap {
+		lock, err := acquireCurrentSwitchControlLock(s)
+		if err != nil {
+			return nil, err
+		}
+		defer lock.Release()
 	}
 
 	status := "reserved"
@@ -198,8 +322,9 @@ func (s *switchContext) Reserve(opts ReserveOptions) (*ReserveOutput, error) {
 }
 
 // Detach releases a port from a sandbox.
-// Uses atomic CAS on mmap'd BPF map for concurrent-safe slot release.
-// The device move is idempotent and performed before the atomic release.
+// Uses atomic CAS on the mmap'd BPF map for concurrent-safe slot release.
+// The device move is idempotent and performed before claiming the slot for
+// release.
 func Detach(switchName string, opts DetachOptions) error {
 	sw, err := Open(switchName)
 	if err != nil {
@@ -220,6 +345,14 @@ func (s *switchContext) Detach(opts DetachOptions) error {
 	slotID := uint32(opts.Port - 1) // Convert to 0-based
 	if slotID >= cfg.N_ports {
 		return fmt.Errorf("port %d: %w", opts.Port, ErrPortOutOfRange)
+	}
+	hasGeneveOptsMap := s.maps != nil && s.maps.GeneveOpts != nil
+	if hasGeneveOptsMap {
+		lock, err := acquireCurrentSwitchControlLock(s)
+		if err != nil {
+			return err
+		}
+		defer lock.Release()
 	}
 
 	// Read current InnerIP atomically
@@ -266,19 +399,28 @@ func (s *switchContext) Detach(opts DetachOptions) error {
 		// else: device already in port namespace, skip move (idempotent)
 	}
 
-	// Atomically release the slot using CAS (currentIP → 0)
-	// Note: transit fields are not cleared here to avoid race with concurrent Attach.
-	// When InnerIP=0, eBPF ignores these fields; next Attach will overwrite them.
+	// Release ownership directly. Reserved is an explicit
+	// reserve/provision/stop state and is never a transient Detach state.
 	if !s.mmapSlots.TryRelease(slotID, currentIP) {
-		// CAS failed - another process may have detached/reattached
-		// Re-read and check if slot is now free or has different IP
+		// A concurrent force-reserve must remain Reserved. A completed concurrent
+		// detach is also idempotent; a new allocated owner is reported without
+		// touching any of its state after the failed CAS.
 		newIP := s.mmapSlots.GetInnerIP(slotID)
-		if newIP == 0 {
-			// Slot is already free - another detach succeeded
+		if newIP == InnerIPFree || newIP == InnerIPReserved {
 			return nil
 		}
-		// Slot has different IP - concurrent reattach happened
 		return fmt.Errorf("port %d was reattached by another process", opts.Port)
+	}
+
+	// Once inner_ip is Free, the data plane no longer reads this slot. New
+	// switches still hold the control lock, so clear only the fast-path hint
+	// without racing a new Attach. Keep the fixed map value and retained transit
+	// fields for the next Attach to overwrite in full. Old switches have no
+	// geneve_opts map or hint to manage and retain their legacy Detach path.
+	if hasGeneveOptsMap {
+		s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
+			slot.GeneveOptsLen = 0
+		})
 	}
 
 	return nil

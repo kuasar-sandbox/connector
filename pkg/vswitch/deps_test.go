@@ -34,12 +34,15 @@ func resetDeps() {
 	newStatsManagerFn = NewStatsManager
 	updateSwitchConfigFn = UpdateSwitchConfig
 	updateSwitchMetadataFn = UpdateSwitchMetadata
+	writeGeneveOptsFn = writeGeneveOpts
+	validateAttachMTUFn = validateAttachMTU
 	updateSwitchConfigFieldsFn = updateSwitchConfigFields
 	updateSwitchMetadataFieldsFn = updateSwitchMetadataFields
 	openSwitchFn = openSwitch
 	bpfObjectsPinMaps = func(objects *bpf.Objects, name string) error { return objects.PinMaps(name) }
 	bpfEnsureBPFFS = bpf.EnsureBPFFS
 	acquireControlLockFn = AcquireControlLock
+	verifyCurrentSwitchFn = verifyCurrentSwitch
 
 	unixMmap = unix.Mmap
 	unixMunmap = unix.Munmap
