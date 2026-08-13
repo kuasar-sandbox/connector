@@ -1,6 +1,7 @@
 package vswitch
 
 import (
+	"bytes"
 	"errors"
 	"net"
 	"strings"
@@ -197,6 +198,90 @@ func TestAttachMTUFailureRollsBackWithHintZero(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 	if slots.GetInnerIP(0) != 0 || slots.GetSlot(0).GeneveOptsLen != 0 {
+		t.Fatalf("rollback state: inner=%#x hint=%d", slots.GetInnerIP(0), slots.GetSlot(0).GeneveOptsLen)
+	}
+}
+
+func TestAttachOverwritesTransitBeforeMTUValidation(t *testing.T) {
+	defer resetDeps()
+	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
+	slot := slots.GetSlot(0)
+	slot.TransitGatewayIp = 0xc0000201
+	slot.TransitGeneveVni = 0x00ffffff
+	slot.SetTransitMacAddr(net.HardwareAddr{0, 1, 2, 3, 4, 5})
+	slot.GeneveOptsLen = 12
+
+	innerIP := net.ParseIP("10.0.0.1")
+	wantInnerIP := bpf.IPToUint32(innerIP)
+	wantGateway := bpf.IPToUint32(net.ParseIP("192.0.2.2"))
+	wantMAC := net.HardwareAddr{6, 7, 8, 9, 10, 11}
+	assertInitialized := func(stage string) {
+		if got := slots.GetInnerIP(0); got != wantInnerIP || got == InnerIPReserved {
+			t.Fatalf("inner IP during %s = %#x, want allocated %#x", stage, got, wantInnerIP)
+		}
+		got := slots.GetSlot(0)
+		if got.GeneveOptsLen != 0 {
+			t.Fatalf("options hint during %s = %d, want 0", stage, got.GeneveOptsLen)
+		}
+		if got.TransitGatewayIp != wantGateway || got.TransitGeneveVni != 0x123 {
+			t.Fatalf("transit fields during %s = gateway %#x VNI %#x", stage, got.TransitGatewayIp, got.TransitGeneveVni)
+		}
+		if mac := net.HardwareAddr(got.TransitMac[:]); !bytes.Equal(mac, wantMAC) {
+			t.Fatalf("transit MAC during %s = %s, want %s", stage, mac, wantMAC)
+		}
+	}
+	writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error {
+		assertInitialized("options map update")
+		return nil
+	}
+	validateAttachMTUFn = func(*switchContext, uint32, PortKind, int) error {
+		assertInitialized("MTU validation")
+		return errors.New("MTU too small")
+	}
+
+	_, err := s.Attach(AttachOptions{
+		InnerIP:           innerIP,
+		TransitGatewayIP:  net.ParseIP("192.0.2.2"),
+		TransitGeneveVNI:  0x123,
+		TransitMAC:        wantMAC,
+		SkipDevice:        true,
+		TransitGeneveOpts: []GeneveOption{{Class: 1, Type: 2}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "MTU too small") {
+		t.Fatalf("error = %v", err)
+	}
+	if slots.GetInnerIP(0) != InnerIPFree || slots.GetSlot(0).GeneveOptsLen != 0 {
+		t.Fatalf("rollback state: inner=%#x hint=%d", slots.GetInnerIP(0), slots.GetSlot(0).GeneveOptsLen)
+	}
+}
+
+func TestAttachDeviceMoveFailureRollsBackWithoutReserved(t *testing.T) {
+	defer resetDeps()
+	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
+	s.meta.PortNetNS = "port-ns"
+	writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error { return nil }
+	validateAttachMTUFn = func(*switchContext, uint32, PortKind, int) error { return nil }
+	netnsGetByName = func(string) (*netns.NetNS, error) { return &netns.NetNS{}, nil }
+	wantInnerIP := bpf.IPToUint32(net.ParseIP("10.0.0.1"))
+	netnsMoveDevice = func(string, *netns.NetNS, *netns.NetNS) error {
+		if got := slots.GetInnerIP(0); got != wantInnerIP || got == InnerIPReserved {
+			t.Fatalf("inner IP during device move = %#x, want allocated %#x", got, wantInnerIP)
+		}
+		if got := slots.GetSlot(0).GeneveOptsLen; got != 0 {
+			t.Fatalf("options hint during device move = %d, want 0", got)
+		}
+		return errors.New("injected move failure")
+	}
+
+	_, err := s.Attach(AttachOptions{
+		InnerIP:           net.ParseIP("10.0.0.1"),
+		ToNetNS:           "sandbox-ns",
+		TransitGeneveOpts: []GeneveOption{{Class: 1, Type: 2}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected move failure") {
+		t.Fatalf("error = %v", err)
+	}
+	if slots.GetInnerIP(0) != InnerIPFree || slots.GetSlot(0).GeneveOptsLen != 0 {
 		t.Fatalf("rollback state: inner=%#x hint=%d", slots.GetInnerIP(0), slots.GetSlot(0).GeneveOptsLen)
 	}
 }

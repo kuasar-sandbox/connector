@@ -140,6 +140,31 @@ func TestValidateConfigMatchGenevePortBaseMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateConfigMatchLegacyOmittedGenevePortBase(t *testing.T) {
+	requested := testRequestedConfig()
+	requested.GenevePortBase = 0 // omitted JSON/direct Config value
+	existing := testSwitchConfig()
+	existing.GenevePortBase = 0 // historical persisted value
+
+	if err := validateConfigMatch(requested, existing, testSwitchMetadata()); err != nil {
+		t.Fatalf("legacy omitted GENEVE port base: %v", err)
+	}
+	if requested.GenevePortBase != DefaultGenevePortBase {
+		t.Fatalf("requested default = %d, want %d", requested.GenevePortBase, DefaultGenevePortBase)
+	}
+}
+
+func TestValidateConfigMatchExplicitDefaultRejectsLegacyZeroBase(t *testing.T) {
+	requested := testRequestedConfig() // explicit 50000
+	existing := testSwitchConfig()
+	existing.GenevePortBase = 0
+
+	err := validateConfigMatch(requested, existing, testSwitchMetadata())
+	if err == nil || !strings.Contains(err.Error(), "geneve_port_base") {
+		t.Fatalf("explicit default mismatch error = %v", err)
+	}
+}
+
 func TestValidateConfigMatchMultipleMismatches(t *testing.T) {
 	requested := testRequestedConfig()
 	existing := testSwitchConfig()

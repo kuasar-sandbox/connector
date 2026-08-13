@@ -236,6 +236,11 @@ type Config struct {
 	// is NOT persisted. Default (PortKindVeth) preserves backward compatibility.
 	// Mutually exclusive with Reserved-only start (which has no auto-provision).
 	DefaultMode PortKind
+
+	// genevePortBaseDefaulted records that the caller omitted the port base and
+	// applyGeneveDefaults supplied it. It is used only when matching historical
+	// pinned configs, whose omitted JSON/direct value was persisted as zero.
+	genevePortBaseDefaulted bool
 }
 
 // Validate validates the switch configuration for a full `Start` (which runs
@@ -302,6 +307,7 @@ func (c *Config) validateBase() error {
 func (c *Config) applyGeneveDefaults() {
 	if c.GenevePortBase == 0 {
 		c.GenevePortBase = DefaultGenevePortBase
+		c.genevePortBaseDefaulted = true
 	}
 }
 

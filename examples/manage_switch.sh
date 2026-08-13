@@ -127,7 +127,7 @@ example = {
             },
             "netns": ["sw_test_ns", "sw_test_ports", "@sw_test_mgmt"],
             "interfaces": [
-                { "dev": "eth0sub10", "type": "ipvlan", "ipvlan_parent": "eth0", "mtu": 1564 }
+                { "dev": "eth0sub10", "type": "ipvlan", "ipvlan_parent": "eth0", "mtu": 1572 }
             ],
             "sandboxes": [
                 { "ip": "10.100.0.1", "vni": 100, "gateway_ip": "10.100.0.254",

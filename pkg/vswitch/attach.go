@@ -71,23 +71,30 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 		}
 	}
 
-	// From this point the claim is ours. Suppress option lookup immediately so
-	// an old slot value can never be observed under the new owner. Rollback
-	// leaves the fixed map value untouched and clears only the fast-path hint.
+	// From this point the claim is ours. As the first mmap update, suppress the
+	// old option lookup and overwrite every retained transit field. This happens
+	// before any map syscall, MTU lookup, or namespace work, so a reused slot
+	// cannot spend a slow operation using the previous attachment's transit
+	// state. Reserved is an explicit provision/control state and is never used
+	// as a transient Attach state.
 	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
 		slot.GeneveOptsLen = 0
+		if opts.TransitGatewayIP != nil {
+			slot.TransitGatewayIp = bpf.IPToUint32(opts.TransitGatewayIP)
+		} else {
+			slot.TransitGatewayIp = 0
+		}
+		slot.TransitGeneveVni = opts.TransitGeneveVNI
+		slot.ClearTransitMac()
+		if len(opts.TransitMAC) >= 6 {
+			slot.SetTransitMacAddr(opts.TransitMAC)
+		}
 	})
 	rollbackClaim := func() {
-		// Reclaim this attachment before touching its non-atomic fields. If a
-		// concurrent Detach already freed and reattached the slot, the CAS fails
-		// and the new owner's state must remain untouched.
-		if !s.mmapSlots.TryReserve(slotID, innerIP) {
-			return
-		}
-		s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
-			slot.GeneveOptsLen = 0
-		})
-		s.mmapSlots.TryUnreserve(slotID)
+		// The hint is not published until all fallible Attach work completes.
+		// Release only our CAS claim; if another operation already changed the
+		// owner, the CAS fails without touching that owner's state.
+		s.mmapSlots.TryRelease(slotID, innerIP)
 	}
 
 	// Mode-specific validation: tap ports must have been provisioned (have a
@@ -117,27 +124,6 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 			return nil, err
 		}
 	}
-
-	// CAS succeeded - slot is now ours. Update other fields via mmap.
-	// Note: We must unconditionally overwrite ALL transit fields because
-	// Detach does not clear them (to avoid race with concurrent Attach).
-	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
-		if opts.TransitGatewayIP != nil {
-			slot.TransitGatewayIp = bpf.IPToUint32(opts.TransitGatewayIP)
-		} else {
-			slot.TransitGatewayIp = 0
-		}
-		slot.TransitGeneveVni = opts.TransitGeneveVNI
-		slot.ClearTransitMac() // Clear first
-		if len(opts.TransitMAC) >= 6 {
-			slot.SetTransitMacAddr(opts.TransitMAC)
-		}
-	})
-	// Publish the opaque length only after the map value and every transit field
-	// are complete. A zero value retains the legacy no-lookup hot path.
-	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
-		slot.GeneveOptsLen = geneveOptsValue.Len
-	})
 
 	// Reset stats for this slot on attach
 	if err := s.statsMgr.ResetStats(slotID); err != nil {
@@ -175,6 +161,13 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 			return nil, fmt.Errorf("failed to move %s to %s: %w", portName, opts.ToNetNS, err)
 		}
 	}
+
+	// Publish the opaque length only after the fixed map value, every transit
+	// field, MTU validation, and device movement are complete. Until this point
+	// every failure path can release its claim with the hint still at zero.
+	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
+		slot.GeneveOptsLen = geneveOptsValue.Len
+	})
 
 	// Calculate derived values
 	floatingIP := bpf.Uint32ToIP(cfg.FloatingIpBase + slotID)

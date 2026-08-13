@@ -784,7 +784,12 @@ func validateConfigMatch(requested *Config, existing *SwitchConfig, existingMeta
 	} else {
 		switch requested.GeneveLocator {
 		case GeneveLocatorPort:
-			if uint32(requested.GenevePortBase) != existing.GenevePortBase {
+			// Before the default was applied consistently, an omitted JSON or
+			// directly-constructed port base was persisted as zero. An omitted
+			// request may reopen that exact historical switch without changing
+			// its active wire config. An explicit 50000 request still mismatches.
+			legacyOmittedBase := requested.genevePortBaseDefaulted && existing.GenevePortBase == 0
+			if !legacyOmittedBase && uint32(requested.GenevePortBase) != existing.GenevePortBase {
 				mismatches = append(mismatches, fmt.Sprintf("geneve_port_base: requested %d, existing %d", requested.GenevePortBase, existing.GenevePortBase))
 			}
 		case GeneveLocatorTLV:
