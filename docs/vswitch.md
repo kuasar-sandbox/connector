@@ -927,6 +927,10 @@ CAS 只保证单 slot 所有权原子;多 slot/多资源的控制操作,以及�
 | Attach / Detach / Reserve(新 switch) | ✓ | ✓;锁覆盖 claim、map/MTU/device 更新与 hint 发布/回收 |
 | Attach / Detach / Reserve(旧 switch,无 `geneve_opts`) | – | ✓(兼容的 CAS-only 路径) |
 
+新 switch 的 Attach、Detach、Reserve 在取得 flock 后、执行任何 CAS 前,会把已打开
+`slots` map 的 kernel map ID 与当前 pin path 中的 map ID 比较。同名 switch 若在等待锁时
+已被 `StopReleased` 并重建,旧 context 会失败并要求重新 Open,不会修改已 unpin 的旧 map。
+
 ### 6.5 两阶段启动
 
 为支持 systemd `Type=notify` 与快速冷启动,`start` 拆为两阶段。

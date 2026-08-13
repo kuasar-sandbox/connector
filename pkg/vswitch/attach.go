@@ -53,9 +53,9 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	// control flock so Detach/Reserve cannot release and reassign a slot between
 	// those writes. Old switches have no options map and keep their legacy path.
 	if hasGeneveOptsMap {
-		lock, err := acquireControlLockFn(s.name)
+		lock, err := acquireCurrentSwitchControlLock(s)
 		if err != nil {
-			return nil, fmt.Errorf("failed to acquire control lock: %w", err)
+			return nil, err
 		}
 		defer lock.Release()
 	}
@@ -282,9 +282,9 @@ func (s *switchContext) Reserve(opts ReserveOptions) (*ReserveOutput, error) {
 	}
 	hasGeneveOptsMap := s.maps != nil && s.maps.GeneveOpts != nil
 	if hasGeneveOptsMap {
-		lock, err := acquireControlLockFn(s.name)
+		lock, err := acquireCurrentSwitchControlLock(s)
 		if err != nil {
-			return nil, fmt.Errorf("failed to acquire control lock: %w", err)
+			return nil, err
 		}
 		defer lock.Release()
 	}
@@ -348,9 +348,9 @@ func (s *switchContext) Detach(opts DetachOptions) error {
 	}
 	hasGeneveOptsMap := s.maps != nil && s.maps.GeneveOpts != nil
 	if hasGeneveOptsMap {
-		lock, err := acquireControlLockFn(s.name)
+		lock, err := acquireCurrentSwitchControlLock(s)
 		if err != nil {
-			return fmt.Errorf("failed to acquire control lock: %w", err)
+			return err
 		}
 		defer lock.Release()
 	}

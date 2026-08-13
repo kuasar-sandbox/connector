@@ -27,6 +27,7 @@ func newGeneveAttachTestContext(cfg *SwitchConfig, withOptionsMap bool) (*switch
 	if withOptionsMap {
 		maps.GeneveOpts = &ebpf.Map{}
 		acquireControlLockFn = func(string) (*ControlLock, error) { return &ControlLock{}, nil }
+		verifyCurrentSwitchFn = func(*switchContext) error { return nil }
 	}
 	return &switchContext{
 		name:      "sw0",
@@ -111,6 +112,22 @@ func TestAttachGeneveControlLockFailureBeforeCAS(t *testing.T) {
 	}
 	if slots.GetInnerIP(0) != InnerIPFree {
 		t.Fatalf("lock failure allocated slot: inner=%#x", slots.GetInnerIP(0))
+	}
+}
+
+func TestAttachGeneveSwitchVerificationFailureBeforeCAS(t *testing.T) {
+	defer resetDeps()
+	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
+	verifyCurrentSwitchFn = func(*switchContext) error {
+		return errors.New("injected stale switch")
+	}
+
+	_, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true})
+	if err == nil || !strings.Contains(err.Error(), "injected stale switch") {
+		t.Fatalf("error = %v", err)
+	}
+	if slots.GetInnerIP(0) != InnerIPFree {
+		t.Fatalf("switch verification failure allocated slot: inner=%#x", slots.GetInnerIP(0))
 	}
 }
 
@@ -457,6 +474,27 @@ func TestDetachGeneveControlLockFailurePreservesAttachment(t *testing.T) {
 	}
 }
 
+func TestDetachGeneveSwitchVerificationFailurePreservesAttachment(t *testing.T) {
+	defer resetDeps()
+	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
+	innerIP := bpf.IPToUint32(net.ParseIP("10.0.0.1"))
+	if !slots.TryAllocate(0, innerIP) {
+		t.Fatal("allocate slot")
+	}
+	slots.GetSlot(0).GeneveOptsLen = 12
+	verifyCurrentSwitchFn = func(*switchContext) error {
+		return errors.New("injected stale switch")
+	}
+
+	err := s.Detach(DetachOptions{Port: 1, SkipDevice: true})
+	if err == nil || !strings.Contains(err.Error(), "injected stale switch") {
+		t.Fatalf("error = %v", err)
+	}
+	if slots.GetInnerIP(0) != innerIP || slots.GetSlot(0).GeneveOptsLen != 12 {
+		t.Fatalf("switch verification failure changed attachment: inner=%#x hint=%d", slots.GetInnerIP(0), slots.GetSlot(0).GeneveOptsLen)
+	}
+}
+
 func TestReserveGeneveControlLockFailurePreservesFreeSlot(t *testing.T) {
 	defer resetDeps()
 	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
@@ -470,6 +508,22 @@ func TestReserveGeneveControlLockFailurePreservesFreeSlot(t *testing.T) {
 	}
 	if slots.GetInnerIP(0) != InnerIPFree {
 		t.Fatalf("lock failure reserved slot: inner=%#x", slots.GetInnerIP(0))
+	}
+}
+
+func TestReserveGeneveSwitchVerificationFailurePreservesFreeSlot(t *testing.T) {
+	defer resetDeps()
+	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
+	verifyCurrentSwitchFn = func(*switchContext) error {
+		return errors.New("injected stale switch")
+	}
+
+	_, err := s.Reserve(ReserveOptions{Port: 1, Force: true})
+	if err == nil || !strings.Contains(err.Error(), "injected stale switch") {
+		t.Fatalf("error = %v", err)
+	}
+	if slots.GetInnerIP(0) != InnerIPFree {
+		t.Fatalf("switch verification failure reserved slot: inner=%#x", slots.GetInnerIP(0))
 	}
 }
 
