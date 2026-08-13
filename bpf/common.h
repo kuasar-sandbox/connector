@@ -11,6 +11,19 @@
 #define MAX_MGMT_CIDR_PER_SLOT 3
 #define MAX_MGMT_CIDR_EXT      (MAX_MGMT_CIDR_PER_SLOT - 1)  // Extended array size (cold path)
 
+// GENEVE locator and option limits. MAX_GENEVE_OPTS_LEN covers every wire
+// option after the base header, including the generated 8-byte TLV locator.
+#define MAX_GENEVE_OPTS_LEN      64
+#define GENEVE_LOCATOR_PORT      0
+#define GENEVE_LOCATOR_VNI       1
+#define GENEVE_LOCATOR_TLV       2
+#define GENEVE_VNI_LOCATOR_BITS  12
+#define GENEVE_VNI_VALUE_MASK    0x0fff
+#define GENEVE_TLV_LOCATOR_LEN   8
+
+_Static_assert(MAX_PORTS == (1U << GENEVE_VNI_LOCATOR_BITS),
+               "MAX_PORTS must match the fixed GENEVE VNI locator layout");
+
 // inner_ip empty slot definitions (supports async initialization)
 #define INNER_IP_FREE       0
 #define INNER_IP_RESERVED   0xFFFFFFFF
@@ -40,7 +53,7 @@
 #define ARPOP_REQUEST 1
 #define ARPOP_REPLY 2
 
-// GENEVE default port
+// GENEVE standard port
 #define GENEVE_PORT 6081
 
 // Address families
@@ -84,6 +97,23 @@ struct svc_val {
     __u16 _pad;   // reserved
 };  // Total: 8 bytes
 
+// Serialized opaque GENEVE options for one slot. The generated TLV locator is
+// not stored here: the data path prepends it from switch_config when needed.
+struct geneve_opts_value {
+    __u8 len;
+    __u8 critical;
+    __u16 reserved;
+    __u8 data[MAX_GENEVE_OPTS_LEN];
+};  // Total: 68 bytes
+
+// RFC 8926 option header. The low 5 bits of rsvd_len contain the data length
+// in 4-byte words; the high 3 bits are reserved and must be zero.
+struct geneve_opt_hdr {
+    __be16 opt_class;
+    __u8 type;
+    __u8 rsvd_len;
+} __attribute__((packed));
+
 // Management CIDR entry
 struct mgmt_cidr {
     __u32 ip;      // Management service IP (e.g., 169.254.169.254)
@@ -112,7 +142,7 @@ struct slot_item {
     __u32 transit_geneve_vni; // offset 20 - GENEVE VNI
     __u8  transit_mac[6];     // offset 24 - Transit destination MAC
     __u8  mode;               // offset 30 - Port kind: 0=veth (default), 1=tap (PORT_KIND_*)
-    __u8  _pad_mac;           // offset 31 - Alignment / reserved
+    __u8  geneve_opts_len;    // offset 31 - Opaque option bytes; 0 skips map lookup
     __u32 mgmt_cidr_count;    // offset 32 - Number of management routes
     struct mgmt_cidr mgmt_cidrs_0;  // offset 36-55 (20B) - Inline first mgmt_cidr (hot entry)
     __u8  _pad_cl0[8];        // offset 56-63 - Pad to 64 bytes
@@ -137,7 +167,9 @@ struct switch_config {
     __u32 transit_nexthop;    // transit-dev L3 nexthop IP, 0 = FIB lookup
     __u8  port_mac[6];        // Port MAC: all-zero = per-port derivation, non-zero = fixed value
     __u8  _pad4[2];           // Alignment
-    __u8  _pad5[4];           // Pad to 40 bytes (8-byte aligned)
+    __u8  geneve_locator;     // GENEVE_LOCATOR_*; zero is legacy port mode
+    __u8  geneve_tlv_type;    // Exact 8-bit wire type, including critical bit
+    __u16 geneve_tlv_class;   // Host-order option class
 };  // Total: 40 bytes
 
 // Userspace-only metadata (stored in separate 'metadata' map as JSON)
@@ -167,6 +199,13 @@ enum exported_u32 {
     __INNER_IP_RESERVED = INNER_IP_RESERVED,
     __PORT_KIND_VETH = PORT_KIND_VETH,
     __PORT_KIND_TAP = PORT_KIND_TAP,
+    __MAX_GENEVE_OPTS_LEN = MAX_GENEVE_OPTS_LEN,
+    __GENEVE_PORT = GENEVE_PORT,
+    __GENEVE_LOCATOR_PORT = GENEVE_LOCATOR_PORT,
+    __GENEVE_LOCATOR_VNI = GENEVE_LOCATOR_VNI,
+    __GENEVE_LOCATOR_TLV = GENEVE_LOCATOR_TLV,
+    __GENEVE_VNI_LOCATOR_BITS = GENEVE_VNI_LOCATOR_BITS,
+    __GENEVE_VNI_VALUE_MASK = GENEVE_VNI_VALUE_MASK,
 };
 
 #endif /* __COMMON_H__ */

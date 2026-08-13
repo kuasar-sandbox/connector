@@ -48,6 +48,8 @@ var (
 	updateSwitchConfigFn         = UpdateSwitchConfig
 	updateSwitchMetadataFn       = UpdateSwitchMetadata
 	writeMgmtServicesFn          = WriteMgmtServices
+	writeGeneveOptsFn            = writeGeneveOpts
+	validateAttachMTUFn          = validateAttachMTU
 	updateSwitchConfigFieldsFn   = updateSwitchConfigFields
 	updateSwitchMetadataFieldsFn = updateSwitchMetadataFields
 	openSwitchFn                 = openSwitch

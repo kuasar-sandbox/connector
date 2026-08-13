@@ -45,23 +45,25 @@ Example (config file):
 }
 
 var (
-	startConfigFile     string
-	startNetNS          string
-	startPortNetNS      string
-	startPorts          uint32
-	startMACAddr        string
-	startFloatingIPBase string
-	startMgmtExtracts   []string
-	startMgmtServices   []string
-	startTransitDev     string
-	startTransitDevAddr string
-	startTransitDevMTU  string
-	startGenevePortBase uint16
-	startGeneveEncapEth bool
-	startMTU            int
-	startPortMACAddr    string
-	startReserved       bool
-	startMode           string
+	startConfigFile       string
+	startNetNS            string
+	startPortNetNS        string
+	startPorts            uint32
+	startMACAddr          string
+	startFloatingIPBase   string
+	startMgmtExtracts     []string
+	startMgmtServices     []string
+	startTransitDev       string
+	startTransitDevAddr   string
+	startTransitDevMTU    string
+	startGeneveLocator    string
+	startGenevePortBase   uint16
+	startGeneveTLVLocator string
+	startGeneveEncapEth   bool
+	startMTU              int
+	startPortMACAddr      string
+	startReserved         bool
+	startMode             string
 )
 
 func init() {
@@ -76,7 +78,9 @@ func init() {
 	startCmd.Flags().StringVar(&startTransitDev, "transit-dev", "", "Transit device name")
 	startCmd.Flags().StringVar(&startTransitDevAddr, "transit-dev-addr", "", "Transit device address (format: <ip>/<prefix>:<nexthop> or 'auto' for DHCP)")
 	startCmd.Flags().StringVar(&startTransitDevMTU, "transit-dev-mtu", "", "Transit device MTU ('auto' or specific value, default: no change)")
+	startCmd.Flags().StringVar(&startGeneveLocator, "geneve-locator", "port", "GENEVE slot locator (port, vni, or tlv)")
 	startCmd.Flags().Uint16Var(&startGenevePortBase, "geneve-port-base", 50000, "GENEVE UDP port base")
+	startCmd.Flags().StringVar(&startGeneveTLVLocator, "geneve-tlv-locator", "", "GENEVE TLV slot locator CLASS:TYPE (required with --geneve-locator=tlv)")
 	startCmd.Flags().BoolVar(&startGeneveEncapEth, "geneve-encap-eth", false, "Use Ether-over-GENEVE (default: IP-over-GENEVE)")
 	startCmd.Flags().IntVar(&startMTU, "mtu", 0, "MTU for switch ports (default: OS default)")
 	startCmd.Flags().StringVar(&startPortMACAddr, "port-mac-addr", "fixed", "Port MAC address mode: 'fixed' (default), 'per-port', or specific MAC address")
@@ -116,17 +120,31 @@ func buildConfig(args []string) (*vswitch.Config, error) {
 		if floatingIP == nil {
 			return nil, fmt.Errorf("invalid floating-ip-base: %s", startFloatingIPBase)
 		}
+		geneveLocator, err := vswitch.ParseGeneveLocator(startGeneveLocator)
+		if err != nil {
+			return nil, err
+		}
+		var geneveTLVLocator *vswitch.GeneveTLVLocator
+		if startGeneveTLVLocator != "" {
+			parsed, err := vswitch.ParseGeneveTLVLocator(startGeneveTLVLocator)
+			if err != nil {
+				return nil, err
+			}
+			geneveTLVLocator = &parsed
+		}
 
 		cfg = &vswitch.Config{
-			Name:           switchName,
-			SwitchNetNS:    startNetNS,
-			PortNetNS:      startPortNetNS,
-			NumPorts:       startPorts,
-			MACAddr:        mac,
-			FloatingIPBase: floatingIP,
-			GenevePortBase: startGenevePortBase,
-			GeneveEncapEth: startGeneveEncapEth,
-			MTU:            startMTU,
+			Name:             switchName,
+			SwitchNetNS:      startNetNS,
+			PortNetNS:        startPortNetNS,
+			NumPorts:         startPorts,
+			MACAddr:          mac,
+			FloatingIPBase:   floatingIP,
+			GeneveLocator:    geneveLocator,
+			GenevePortBase:   startGenevePortBase,
+			GeneveTLVLocator: geneveTLVLocator,
+			GeneveEncapEth:   startGeneveEncapEth,
+			MTU:              startMTU,
 		}
 
 		// Parse management extractions

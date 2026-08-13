@@ -59,23 +59,27 @@ type SlotJSON struct {
 	TransitIP        string `json:"transit_ip,omitempty"`
 	TransitGatewayIP string `json:"transit_gateway_ip,omitempty"`
 	TransitGeneveVNI uint32 `json:"transit_geneve_vni,omitempty"`
+	GeneveOptsLen    uint8  `json:"geneve_opts_len,omitempty"`
 	TransitMAC       string `json:"transit_mac,omitempty"`
 	Ifindex          uint32 `json:"ifindex"`
 }
 
 // ConfigJSON is the JSON-friendly view of the in-kernel SwitchConfig.
 type ConfigJSON struct {
-	SwitchMAC      string                    `json:"switch_mac"`
-	PortMAC        string                    `json:"port_mac"`
-	NPorts         uint32                    `json:"n_ports"`
-	FloatingIPBase string                    `json:"floating_ip_base"`
-	GenevePortBase uint32                    `json:"geneve_port_base"`
-	GeneveEncapEth bool                      `json:"geneve_encap_eth"`
-	TransitNexthop string                    `json:"transit_nexthop,omitempty"`
-	TransitDev     string                    `json:"transit_dev,omitempty"`
-	TransitDevAddr string                    `json:"transit_dev_addr,omitempty"`
-	MgmtPlanes     []vswitch.MgmtPlaneInfo   `json:"mgmt_planes,omitempty"`
-	MgmtServices   []vswitch.MgmtServiceInfo `json:"mgmt_services,omitempty"`
+	SwitchMAC        string                    `json:"switch_mac"`
+	PortMAC          string                    `json:"port_mac"`
+	NPorts           uint32                    `json:"n_ports"`
+	FloatingIPBase   string                    `json:"floating_ip_base"`
+	GeneveLocator    string                    `json:"geneve_locator"`
+	GenevePort       uint16                    `json:"geneve_port"`
+	GenevePortBase   uint32                    `json:"geneve_port_base,omitempty"`
+	GeneveTLVLocator string                    `json:"geneve_tlv_locator,omitempty"`
+	GeneveEncapEth   bool                      `json:"geneve_encap_eth"`
+	TransitNexthop   string                    `json:"transit_nexthop,omitempty"`
+	TransitDev       string                    `json:"transit_dev,omitempty"`
+	TransitDevAddr   string                    `json:"transit_dev_addr,omitempty"`
+	MgmtPlanes       []vswitch.MgmtPlaneInfo   `json:"mgmt_planes,omitempty"`
+	MgmtServices     []vswitch.MgmtServiceInfo `json:"mgmt_services,omitempty"`
 }
 
 func runShowSlots(cmd *cobra.Command, args []string) error {
@@ -141,6 +145,9 @@ func slotToJSON(cfg *vswitch.SwitchConfig, ps vswitch.PortSlot, sid uint32) Slot
 		Ifindex:          ps.Ifindex,
 		TransitGeneveVNI: ps.TransitGeneveVni,
 	}
+	if ps.Allocated {
+		sj.GeneveOptsLen = vswitch.GeneveTotalOptionsLen(vswitch.GeneveLocatorFromSwitchConfig(cfg), ps.GeneveOptsLen)
+	}
 	if ps.TransitIp != 0 {
 		sj.TransitIP = vswitch.Uint32ToIP(ps.TransitIp).String()
 	}
@@ -181,17 +188,25 @@ func runShowConfig(cmd *cobra.Command, args []string) error {
 	switchMAC := net.HardwareAddr(cfg.SwitchMac[:]).String()
 	portMAC := net.HardwareAddr(cfg.PortMac[:]).String()
 
+	geneveLocator := vswitch.GeneveLocatorFromSwitchConfig(cfg)
 	out := ConfigJSON{
 		SwitchMAC:      switchMAC,
 		PortMAC:        portMAC,
 		NPorts:         cfg.N_ports,
 		FloatingIPBase: vswitch.Uint32ToIP(cfg.FloatingIpBase).String(),
-		GenevePortBase: cfg.GenevePortBase,
+		GeneveLocator:  geneveLocator.String(),
+		GenevePort:     vswitch.GeneveWirePort(geneveLocator, cfg.GenevePortBase, 0),
 		GeneveEncapEth: cfg.GeneveEncapEth != 0,
 		TransitDev:     meta.TransitDevName(),
 		TransitDevAddr: meta.TransitDevAddrStr(),
 		MgmtPlanes:     meta.MgmtPlaneInfos(),
 		MgmtServices:   meta.MgmtServiceInfos(),
+	}
+	if geneveLocator == vswitch.GeneveLocatorPort {
+		out.GenevePortBase = cfg.GenevePortBase
+	}
+	if geneveLocator == vswitch.GeneveLocatorTLV {
+		out.GeneveTLVLocator = vswitch.GeneveTLVLocatorFromSwitchConfig(cfg).String()
 	}
 	if cfg.TransitNexthop != 0 {
 		out.TransitNexthop = vswitch.Uint32ToIP(cfg.TransitNexthop).String()

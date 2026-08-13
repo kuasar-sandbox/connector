@@ -209,24 +209,26 @@ func ParseTransitDevAddr(s string) (*net.IPNet, net.IP, error) {
 
 // Config holds the switch configuration.
 type Config struct {
-	Name              string           // Switch name
-	SwitchNetNS       string           // Switch namespace name
-	PortNetNS         string           // Ports namespace name
-	NumPorts          uint32           // Number of ports
-	MACAddr           net.HardwareAddr // Virtual MAC address
-	FloatingIPBase    net.IP           // Floating IP base address
-	MgmtExtracts      []*MgmtExtract   // Management plane extraction CIDR matches
-	MgmtServices      []*MgmtService   // Management service VIP<->target translations (require MgmtExtracts)
-	TransitDev        string           // Transit device name
-	TransitAddr       *net.IPNet       // Transit device address (nil if auto)
-	TransitNexthop    net.IP           // Transit nexthop (nil if auto)
-	TransitAddrAuto   bool             // Use DHCP to acquire address in switch namespace
-	TransitDevMTU     int              // Transit device MTU (0 = no change)
-	TransitDevMTUAuto bool             // Use auto-calculated MTU for transit device
-	GenevePortBase    uint16           // GENEVE UDP port base
-	GeneveEncapEth    bool             // true = Ether-over-GENEVE, false = IP-over-GENEVE (default)
-	MTU               int              // MTU for switch ports (0 = OS default)
-	PortMAC           net.HardwareAddr // Port MAC: all-zero = per-port derivation, non-zero = fixed value
+	Name              string            // Switch name
+	SwitchNetNS       string            // Switch namespace name
+	PortNetNS         string            // Ports namespace name
+	NumPorts          uint32            // Number of ports
+	MACAddr           net.HardwareAddr  // Virtual MAC address
+	FloatingIPBase    net.IP            // Floating IP base address
+	MgmtExtracts      []*MgmtExtract    // Management plane extraction CIDR matches
+	MgmtServices      []*MgmtService    // Management service VIP<->target translations (require MgmtExtracts)
+	TransitDev        string            // Transit device name
+	TransitAddr       *net.IPNet        // Transit device address (nil if auto)
+	TransitNexthop    net.IP            // Transit nexthop (nil if auto)
+	TransitAddrAuto   bool              // Use DHCP to acquire address in switch namespace
+	TransitDevMTU     int               // Transit device MTU (0 = no change)
+	TransitDevMTUAuto bool              // Use auto-calculated MTU for transit device
+	GenevePortBase    uint16            // GENEVE UDP port base
+	GeneveLocator     GeneveLocator     // slot_id wire locator; zero value is legacy port mode
+	GeneveTLVLocator  *GeneveTLVLocator // exact class/type for the TLV locator
+	GeneveEncapEth    bool              // true = Ether-over-GENEVE, false = IP-over-GENEVE (default)
+	MTU               int               // MTU for switch ports (0 = OS default)
+	PortMAC           net.HardwareAddr  // Port MAC: all-zero = per-port derivation, non-zero = fixed value
 
 	// DefaultMode is used by Start() to auto-provision all ports with this kind
 	// at switch creation. Per-slot mode is still recorded in slot.Mode by
@@ -264,6 +266,7 @@ func (c *Config) ValidateReserved() error {
 
 // validateBase runs the checks that apply to every start path.
 func (c *Config) validateBase() error {
+	c.applyGeneveDefaults()
 	if c.Name == "" {
 		return fmt.Errorf("switch name is required")
 	}
@@ -285,8 +288,51 @@ func (c *Config) validateBase() error {
 	if err := c.validateMgmtServices(); err != nil {
 		return err
 	}
+	if err := c.validateGeneve(); err != nil {
+		return err
+	}
 	if c.MTU < 0 || c.MTU > 65535 {
 		return fmt.Errorf("MTU must be between 0 and 65535")
+	}
+	return nil
+}
+
+// applyGeneveDefaults keeps CLI, file, and directly-constructed Config values
+// consistent. GeneveLocatorPort is already the zero value by ABI design.
+func (c *Config) applyGeneveDefaults() {
+	if c.GenevePortBase == 0 {
+		c.GenevePortBase = DefaultGenevePortBase
+	}
+}
+
+func (c *Config) validateGeneve() error {
+	if !c.GeneveLocator.valid() {
+		return fmt.Errorf("unknown GENEVE locator value %d", c.GeneveLocator)
+	}
+
+	switch c.GeneveLocator {
+	case GeneveLocatorPort:
+		if c.GeneveTLVLocator != nil {
+			return fmt.Errorf("geneve_tlv_locator is only valid with geneve_locator=tlv")
+		}
+		lastPort := uint32(c.GenevePortBase) + c.NumPorts - 1
+		if lastPort > 65535 {
+			return fmt.Errorf("geneve_port_base %d with %d ports exceeds UDP port 65535", c.GenevePortBase, c.NumPorts)
+		}
+	case GeneveLocatorVNI:
+		if c.GeneveTLVLocator != nil {
+			return fmt.Errorf("geneve_tlv_locator is only valid with geneve_locator=tlv")
+		}
+		if c.GenevePortBase != DefaultGenevePortBase {
+			return fmt.Errorf("geneve_port_base is not configurable with geneve_locator=vni; UDP port is fixed at %d", GeneveStandardPort)
+		}
+	case GeneveLocatorTLV:
+		if c.GeneveTLVLocator == nil {
+			return fmt.Errorf("geneve_tlv_locator is required with geneve_locator=tlv")
+		}
+		if c.GenevePortBase != DefaultGenevePortBase {
+			return fmt.Errorf("geneve_port_base is not configurable with geneve_locator=tlv; UDP port is fixed at %d", GeneveStandardPort)
+		}
 	}
 	return nil
 }
@@ -365,21 +411,23 @@ func (c *Config) DummyDeviceName() string {
 
 // FileConfig is the JSON file format for switch configuration.
 type FileConfig struct {
-	SwitchName     string   `json:"switch_name"`
-	SwitchNetNS    string   `json:"switch_netns"`
-	PortNetNS      string   `json:"port_netns"`
-	NumPorts       uint32   `json:"num_ports"`
-	MACAddr        string   `json:"mac_addr"`
-	FloatingIPBase string   `json:"floating_ip_base"`
-	MgmtExtracts   []string `json:"mgmt_extracts,omitempty"`
-	MgmtServices   []string `json:"mgmt_services,omitempty"`
-	TransitDev     string   `json:"transit_dev,omitempty"`
-	TransitDevAddr string   `json:"transit_dev_addr,omitempty"`
-	TransitDevMTU  string   `json:"transit_dev_mtu,omitempty"`
-	GenevePortBase uint16   `json:"geneve_port_base,omitempty"`
-	GeneveEncapEth bool     `json:"geneve_encap_eth,omitempty"`
-	MTU            int      `json:"mtu,omitempty"`
-	PortMACAddr    string   `json:"port_mac_addr,omitempty"` // "fixed" (default), "per-port", or MAC address
+	SwitchName       string            `json:"switch_name"`
+	SwitchNetNS      string            `json:"switch_netns"`
+	PortNetNS        string            `json:"port_netns"`
+	NumPorts         uint32            `json:"num_ports"`
+	MACAddr          string            `json:"mac_addr"`
+	FloatingIPBase   string            `json:"floating_ip_base"`
+	MgmtExtracts     []string          `json:"mgmt_extracts,omitempty"`
+	MgmtServices     []string          `json:"mgmt_services,omitempty"`
+	TransitDev       string            `json:"transit_dev,omitempty"`
+	TransitDevAddr   string            `json:"transit_dev_addr,omitempty"`
+	TransitDevMTU    string            `json:"transit_dev_mtu,omitempty"`
+	GeneveLocator    GeneveLocator     `json:"geneve_locator,omitempty"`
+	GenevePortBase   uint16            `json:"geneve_port_base,omitempty"`
+	GeneveTLVLocator *GeneveTLVLocator `json:"geneve_tlv_locator,omitempty"`
+	GeneveEncapEth   bool              `json:"geneve_encap_eth,omitempty"`
+	MTU              int               `json:"mtu,omitempty"`
+	PortMACAddr      string            `json:"port_mac_addr,omitempty"` // "fixed" (default), "per-port", or MAC address
 }
 
 // LoadConfigFile reads and parses a switch configuration from a JSON file.
@@ -408,17 +456,20 @@ func (fc *FileConfig) ToConfig() (*Config, error) {
 	}
 
 	cfg := &Config{
-		Name:           fc.SwitchName,
-		SwitchNetNS:    fc.SwitchNetNS,
-		PortNetNS:      fc.PortNetNS,
-		NumPorts:       fc.NumPorts,
-		MACAddr:        mac,
-		FloatingIPBase: fip,
-		GenevePortBase: fc.GenevePortBase,
-		GeneveEncapEth: fc.GeneveEncapEth,
-		MTU:            fc.MTU,
-		TransitDev:     fc.TransitDev,
+		Name:             fc.SwitchName,
+		SwitchNetNS:      fc.SwitchNetNS,
+		PortNetNS:        fc.PortNetNS,
+		NumPorts:         fc.NumPorts,
+		MACAddr:          mac,
+		FloatingIPBase:   fip,
+		GeneveLocator:    fc.GeneveLocator,
+		GenevePortBase:   fc.GenevePortBase,
+		GeneveTLVLocator: fc.GeneveTLVLocator,
+		GeneveEncapEth:   fc.GeneveEncapEth,
+		MTU:              fc.MTU,
+		TransitDev:       fc.TransitDev,
 	}
+	cfg.applyGeneveDefaults()
 
 	for _, s := range fc.MgmtExtracts {
 		me, err := ParseMgmtExtract(s)
