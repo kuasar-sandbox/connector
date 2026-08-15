@@ -40,9 +40,9 @@ sudo make test-e2e              # 运行 test/e2e/run_all.sh
 仓库的 `Release` workflow 从 `main` 的精确提交发布独立 `vX.Y.Z` 版本。发布包
 `connector-vX.Y.Z-linux-x86_64.tar.gz` 可与其他 Kuasar Sandbox 组件直接解压到
 同一部署目录,包含二进制、部署文件和运维/性能辅助脚本。本仓文档与 `test/e2e/`
-仅由 platform 从所选 tag 聚合进 platform 包,不在组件包中重复交付。
+仅由项目主仓从所选 tag 聚合进 platform 包,不在组件包中重复交付。
 当前 Release 只发布已完成全量构建与 BMS 验证的 Linux x86_64 目标。正式版之前,
-`platform` 仓的每日协调器按上海日期触发
+项目主仓的每日协调器按上海日期触发
 `v0.1.0-preview.YYYYMMDD` prerelease;preview 不更新 GitHub Latest,正式
 `v0.1.0` 由独立构建发布。
 
