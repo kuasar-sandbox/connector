@@ -31,7 +31,7 @@ Commands and results:
 - [ ] The integration commit has exactly two parents: the recorded base, then the recorded head.
 - [ ] `kuasar/bms-exact-head` is `success` on that integration SHA.
 - [ ] The exact-head status points to a completed, successful `pull_request_target` BMS run.
-- [ ] A final query confirmed that the base, head, and integration SHA are unchanged.
+- [ ] A final query confirmed that the base, head, and integration SHA are unchanged and the exact-head status still succeeds for the recorded run.
 - [ ] The pull request will be squash merged manually; auto-merge is not used.
 
 Base SHA:

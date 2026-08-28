@@ -166,6 +166,12 @@ jq -e --arg base "$base_sha" --arg head "$head_sha" \
     and .merge_commit_sha == $integration
   ' <<<"$final_pr_json" >/dev/null
 
+final_status=$(gh api "repos/$repo/commits/$integration_sha/status")
+jq -e --arg run "$bms_run_url" '
+  [.statuses[] | select(.context == "kuasar/bms-exact-head")][0]
+  | .state == "success" and .target_url == $run
+  ' <<<"$final_status" >/dev/null
+
 printf 'base=%s\nhead=%s\nintegration=%s\nBMS=%s\n' \
   "$base_sha" "$head_sha" "$integration_sha" "$bms_run_url"
 ```
@@ -173,9 +179,11 @@ printf 'base=%s\nhead=%s\nintegration=%s\nBMS=%s\n' \
 Run this check again immediately before merging. Any base, head, or integration
 change invalidates the old evidence. An exact-head success proves that finalize
 revalidated the admitted companion source set before publishing that status; a
-later companion update is not encoded in the primary integration SHA. If a
-companion changes after success, rerun the current workflow and wait for its new
-exact-head result instead of relying on the earlier run.
+later companion selection or revision is not encoded in the primary integration
+SHA. Adding, removing, or editing the `kuasar-bms-companions` block—or an
+update to a selected companion—after success invalidates that evidence. Because
+body edits are not a supported wrapper event, convert the pull request to draft
+and mark it Ready again, then wait for the new exact-head result.
 
 When the primary base, head, and integration are unchanged and a failure is
 confirmed to be transient infrastructure, the current workflow run may also be
