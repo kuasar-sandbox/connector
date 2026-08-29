@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   preflight:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, kuasar-control]
     outputs:
       version: ${{ steps.request.outputs.version }}
     steps:
@@ -96,7 +96,7 @@ jobs:
 
   publish:
     needs: [preflight, build]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, kuasar-control]
     concurrency:
       group: component-publish-${{ github.repository }}
       cancel-in-progress: false
@@ -127,7 +127,7 @@ jobs:
 
   cleanup:
     needs: publish
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, kuasar-control]
     timeout-minutes: 5
     permissions:
       actions: write
