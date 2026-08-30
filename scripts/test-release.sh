@@ -28,6 +28,11 @@ if env PATH="$TMP/source-bin:$PATH" GITHUB_REPOSITORY=kuasar-sandbox/connector F
   fail "release source validator accepted a tag from another version line"
 fi
 bash -n "$ROOT/scripts/delete-preview.sh" "$ROOT/scripts/validate-release-source.sh"
+grep -Fqx 'run-name: Release ${{ inputs.version }} @${{ inputs.source_sha }}' \
+  "$ROOT/.github/workflows/release.yml" \
+  || fail "release run identity does not pin source_sha"
+grep -Fq 'kuasar-preview-binding' "$ROOT/scripts/publish-release.sh" \
+  || fail "Preview publisher does not record its build binding"
 
 for entrypoint in test/e2e/run_all.sh test/e2e/geneve_eth_test.sh \
   test/e2e/geneve_ip_test.sh test/e2e/mgmt_isolation_test.sh \
