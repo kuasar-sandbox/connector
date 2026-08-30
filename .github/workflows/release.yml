@@ -8,6 +8,14 @@ on:
         description: Component version in vX.Y.Z or vX.Y.Z-preview.YYYYMMDD form
         required: true
         type: string
+      source_ref:
+        description: Exact source branch selected by the platform release controller
+        required: true
+        type: string
+      source_sha:
+        description: Exact source commit selected from source_ref
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,9 +28,11 @@ jobs:
   preflight:
     runs-on: [self-hosted, Linux, X64, kuasar-control]
     outputs:
+      source_ref: ${{ steps.request.outputs.source_ref }}
+      source_sha: ${{ steps.request.outputs.source_sha }}
       version: ${{ steps.request.outputs.version }}
     steps:
-      - name: Require main release source
+      - name: Require trusted release controller
         run: |
           set -euo pipefail
           [ "$GITHUB_REF" = refs/heads/main ] \
@@ -40,12 +50,20 @@ jobs:
         id: request
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
           VERSION: ${{ inputs.version }}
           TARGET_ARCH: x86_64
         run: |
           set -euo pipefail
+          bash scripts/validate-release-source.sh \
+            "$SOURCE_REF" "$SOURCE_SHA" "$VERSION" connector
           bash scripts/publish-release.sh check "$VERSION" "$TARGET_ARCH"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          {
+            echo "source_ref=$SOURCE_REF"
+            echo "source_sha=$SOURCE_SHA"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     needs: preflight
@@ -62,12 +80,14 @@ jobs:
         continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.preflight.outputs.source_sha }}
           persist-credentials: false
 
       - name: Retry exact component source checkout
         if: steps.checkout-source.outcome == 'failure'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.preflight.outputs.source_sha }}
           persist-credentials: false
 
       - name: Attach native source cache
@@ -90,7 +110,8 @@ jobs:
         run: |
           set -euo pipefail
           export SOURCE_DATE_EPOCH
-          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          [ "$(git rev-parse HEAD)" = "${{ needs.preflight.outputs.source_sha }}" ]
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "${{ needs.preflight.outputs.source_sha }}")
           bash scripts/release.sh package "$VERSION" "$TARGET_ARCH" release-bundle
 
       - name: Upload validated release bundle
@@ -129,11 +150,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.preflight.outputs.version }}
+          SOURCE_REF: ${{ needs.preflight.outputs.source_ref }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
           TARGET_ARCH: x86_64
         run: |
           set -euo pipefail
           bash scripts/publish-release.sh publish \
-            "$VERSION" "$TARGET_ARCH" "$GITHUB_SHA" release-bundle
+            "$VERSION" "$TARGET_ARCH" "$SOURCE_SHA" release-bundle "$SOURCE_REF"
 
   cleanup:
     needs: publish
