@@ -33,6 +33,14 @@ grep -Fqx 'run-name: Release ${{ inputs.version }} @${{ inputs.source_sha }}' \
   || fail "release run identity does not pin source_sha"
 grep -Fq 'kuasar-preview-binding' "$ROOT/scripts/publish-release.sh" \
   || fail "Preview publisher does not record its build binding"
+for workflow in release.yml delete-preview.yml; do
+  grep -Fq 'group: component-publish-${{ github.repository }}-${{ inputs.version }}' \
+    "$ROOT/.github/workflows/$workflow" \
+    || fail "$workflow does not serialize publication by exact version"
+done
+if grep -R -Fq 'queue: max' "$ROOT/.github/workflows"; then
+  fail "workflows use the unsupported concurrency queue key"
+fi
 
 for entrypoint in test/e2e/run_all.sh test/e2e/geneve_eth_test.sh \
   test/e2e/geneve_ip_test.sh test/e2e/mgmt_isolation_test.sh \
