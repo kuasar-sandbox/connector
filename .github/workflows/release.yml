@@ -69,7 +69,7 @@ jobs:
           bash scripts/validate-release-source.sh \
             "$SOURCE_REF" "$SOURCE_SHA" "$VERSION" connector
           bash scripts/validate-preview-line.sh \
-            "$VERSION" "$AGGREGATE_VERSION" "$AGGREGATE_SHA"
+            connector "$VERSION" "$AGGREGATE_VERSION" "$AGGREGATE_SHA"
           bash scripts/publish-release.sh check "$VERSION" "$TARGET_ARCH"
           {
             echo "source_ref=$SOURCE_REF"
@@ -170,7 +170,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/validate-preview-line.sh \
-            "$VERSION" "$AGGREGATE_VERSION" "$AGGREGATE_SHA"
+            connector "$VERSION" "$AGGREGATE_VERSION" "$AGGREGATE_SHA"
           bash scripts/publish-release.sh publish \
             "$VERSION" "$TARGET_ARCH" "$SOURCE_SHA" release-bundle "$SOURCE_REF"
 
