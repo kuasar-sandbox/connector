@@ -1,85 +1,128 @@
+[English](README.md) | [简体中文](README_zh.md)
+
 # connector
 
-基于 eBPF/TC 的虚拟交换机:为单节点最多 4096 个沙箱(microVM)提供隔离网络通道——
-沙箱间无转发路径,管理平面经无状态 SNAT/DNAT,外部网络经 GENEVE 隧道;支持按 UDP
-port、VNI 高 12 bits 或精确 TLV 定位 slot,并可在单向出站携带 per-port opaque Geneve
-options;配置完成后
-用户态进程退出,转发全部由内核 eBPF 承载。是
-[kuasar-sandbox](https://github.com/kuasar-sandbox/kuasar-sandbox) 平台的网络组件,
-独立演进。
+`connector` is the **high-density eBPF networking component** for MicroVMs in [Kuasar Sandbox](https://github.com/kuasar-sandbox/kuasar-sandbox).
 
-对外导出 `pkg/tapfd`(tapfd 交接协议 SDK,`sandboxer` 作 consumer 直接
-import);协议规格见 [docs/tapfd.md](docs/tapfd.md)。
+It allocates and releases sandbox network resources quickly, forwards established traffic in the Linux kernel, keeps sandbox-to-sandbox forwarding absent by default, assigns a platform-controlled network identity to each sandbox, and provides the foundation for enforcing sandbox-level policy at an external network gateway.
 
-## 组成
+The repository can be used as part of the full Kuasar Sandbox platform or integrated independently with another MicroVM runtime through its TAP file-descriptor handoff contract.
 
-| 路径 | 角色 |
+## Network model
+
+The base vSwitch provides:
+
+- per-sandbox isolated network channels;
+- kernel-resident forwarding through eBPF/TC after control-plane configuration;
+- platform validation and rewriting of sandbox network identity rather than trusting guest-supplied source identity;
+- controlled access to node management services;
+- external-network integration through GENEVE;
+- fast attach, detach, reserve, provision, and port-open operations;
+- statistics and lifecycle inspection through `connector-ctl`;
+- TAP and network-namespace file-descriptor handoff to the VMM/runtime.
+
+The top-level purpose is not a particular Slot, VNI, UDP-port, or TLV encoding. Those mechanisms let a deployment assign each sandbox an independent tunnel-plane identity and carry trusted sandbox metadata to an external policy gateway. The gateway can then apply sandbox-level public-network, private-network, DNS, proxy, audit, and traffic-governance rules without embedding application policy in the base switch.
+
+A node-local lightweight Egress policy plane is tracked as a [proposed extension](https://github.com/kuasar-sandbox/connector/issues/9). It is not presented as an already delivered feature of the base vSwitch.
+
+## Main interfaces
+
+| Path | Purpose |
 | --- | --- |
-| `cmd/connector-ctl` | CLI:start/serve/stop、attach/detach、reserve/provision、open-port、status/stats/show、dhcp |
-| `cmd/connector-ctl` | tapfd provider 子命令:开 tap,经 `TAPFD_SOCKET` 以 SCM_RIGHTS 递交 vnet_hdr 队列 fd |
-| `pkg/tapfd` | **导出面**:tapfd 协议参考库,收发两侧(`OpenTap`/`SendFd`/`RecvFd`/`RecvFdsWithNetns`);仅 stdlib + x/sys |
-| `pkg/vswitch` | 交换机生命周期编排(`Open`/`Start`/`Stop`/`Attach`/`Detach`/`ProvisionPorts`/`Status`/`Stats`) |
-| `pkg/netlink` `pkg/netns` `pkg/dhcp` `pkg/daemon` | 底层工具:veth/tap/TC、netns enter/exec、DHCP 客户端+服务器、sd_notify |
-| `pkg/internal/{bpf,bpfmap}` | 私有:与 BPF C 结构字节偏移耦合的绑定与原语(mmap slots/CAS/stats) |
-| `bpf/` | eBPF C 源;预生成 `.o` 随仓,普通构建无需 clang |
-| `dist/` | systemd 单元与配置模板 |
+| `cmd/connector-ctl` | Start/serve/stop a vSwitch; attach/detach, reserve/provision, open a port, inspect status/statistics, and provide DHCP support |
+| `pkg/vswitch` | Programmatic vSwitch lifecycle and port management |
+| `pkg/tapfd` | Public provider/consumer SDK for passing TAP and network-namespace file descriptors over Unix sockets |
+| `pkg/netlink`, `pkg/netns`, `pkg/dhcp`, `pkg/daemon` | Linux network, namespace, DHCP, and service helpers |
+| `bpf/` | eBPF C sources and pre-generated objects used by the runtime |
+| `dist/` | systemd units and configuration templates |
 
-## 构建
+The normative TAP handoff protocol is documented in [`docs/tapfd.md`](docs/tapfd.md).
+
+## Build and test
 
 ```bash
-make build                      # bin/<arch>/connector-ctl;纯 Go,CGO_ENABLED=0
-make build TARGET_ARCH=aarch64  # 交叉编译(别名 amd64 / arm64)
-make release VERSION=v0.1.0     # build/release-bundle:archive + checksums + provenance
-make generate                   # 仅修改 bpf/*.c 时需要(clang 12+)
-make test                       # 单元测试;集成/e2e 见 docs/vswitch.md §10
-sudo make test-e2e              # 运行 test/e2e/run_all.sh
+make build                      # bin/<arch>/connector-ctl; pure Go control plane
+make build TARGET_ARCH=aarch64  # cross-compile; amd64/arm64 aliases are accepted
+make generate                   # regenerate BPF objects after changing bpf/*.c; requires Clang/LLVM
+make test                       # unit tests
+sudo make test-e2e              # privileged networking owner suite
 ```
 
-运行需要 Linux 5.10+(BTF + TC BPF)与 root;构建需要 Go 1.24+。
+Runtime requirements:
 
-仓库 `main` 上受信任的 `Release` workflow 从调度器钉住的源码分支和精确 SHA
-发布独立 `vX.Y.Z` 版本。发布包
-`connector-vX.Y.Z-linux-x86_64.tar.gz` 可与其他 Kuasar Sandbox 组件直接解压到
-同一部署目录,包含二进制、部署文件和运维/性能辅助脚本。本仓文档与 `test/e2e/`
-仅由项目主仓从所选 tag 聚合进 platform 包,不在组件包中重复交付。
-当前 Release 只发布已完成全量构建与 BMS 验证的 Linux x86_64 目标。组件
-`main` 用于主线,`release/vX.Y.x` 用于对应组件维护线。Preview 和维护分支 Stable
-不更新 GitHub Latest;独立的幂等 Reconcile Latest 工作流按 `main` 源码提交先后协调
-主线 Stable,同一提交才比较 SemVer。组件版本与平台聚合版本独立,平台始终按精确 Tag
-选择本组件。
-同版本发布与删除共用完整 workflow mutation group;若 GitHub 合并 pending 请求,项目主仓
-协调器会把 cancelled 状态作为未完成操作自动重跑,不会把它当作发布或 GC 已完成。
+- Linux 5.10 or newer with BTF and TC BPF support;
+- root or the equivalent required capabilities;
+- network namespaces, TAP, veth, routing, and TC support;
+- Go 1.24 or newer for source builds;
+- Clang 12 or newer only when regenerating BPF objects.
 
-## 快速开始
+The repository includes pre-generated BPF objects, so an ordinary build does not require Clang. A skipped privileged test must not be interpreted as completed network validation. Privileged E2E must run in an isolated candidate environment and clean up every TAP device, namespace, route, rule, BPF map, and pin path owned by the run.
+
+## Minimal local example
+
+The following illustrates the lifecycle; production values depend on the deployment network:
 
 ```bash
-connector-ctl vswitch start sw1 --netns=sw_ns --ports=128 \
-    --mac-addr=02:00:00:00:00:01 --floating-ip-base=100.100.96.0 \
+connector-ctl vswitch start sw1 \
+    --netns=sw_ns \
+    --ports=128 \
+    --mac-addr=02:00:00:00:00:01 \
+    --floating-ip-base=100.100.96.0 \
     --mgmt-extract=mgmt_ns:eth0:169.254.169.254/32 \
-    --transit-dev=eth1 --transit-dev-addr=10.0.0.1/24:10.0.0.2
-# Deployment assigns service-owned addresses; --mgmt-extract only classifies traffic.
+    --transit-dev=eth1 \
+    --transit-dev-addr=10.0.0.1/24:10.0.0.2
+
 ip netns exec mgmt_ns ip addr replace 169.254.169.254/32 dev eth0
 
-connector-ctl vswitch attach sw1 --inner-ip=169.254.1.1 \
-    --transit-gateway-ip=10.0.0.2 --transit-geneve-vni=100
-TAPFD_SOCKET=/tmp/recv.sock connector-ctl vswitch open-port sw1 --port=1   # tap fd → VMM
+connector-ctl vswitch attach sw1 \
+    --inner-ip=169.254.1.1 \
+    --transit-gateway-ip=10.0.0.2 \
+    --transit-geneve-vni=100
+
+TAPFD_SOCKET=/tmp/recv.sock \
+    connector-ctl vswitch open-port sw1 --port=1
 
 connector-ctl vswitch detach sw1 --port=1
 connector-ctl vswitch stop sw1
 ```
 
-命令与参数详见 [docs/vswitch.md](docs/vswitch.md) §2;Go 接收端(consumer)示例见
-[docs/tapfd.md](docs/tapfd.md) §7 与源码树 `examples/tapfd_receiver/`。
+These addresses are documentation values, not a production topology. The complete command reference and deployment semantics are in [`docs/vswitch.md`](docs/vswitch.md).
 
-## 文档
+## Integration with sandboxer
 
-- [docs/vswitch.md](docs/vswitch.md) — 设计与命令参考:架构/数据面/关键机制/安全/
-  可靠性/性能/测试。
-- [docs/tapfd.md](docs/tapfd.md) — tapfd 交接协议规格(provider/consumer 双侧契约,
-  normative)。
+`sandboxer` imports only `connector/pkg/tapfd`. `connector-ctl` opens and configures TAP queues, then passes their file descriptors and, where required, a network-namespace descriptor over a Unix socket using `SCM_RIGHTS`. This keeps the runtime integration narrow and avoids linking the eBPF implementation into the MicroVM lifecycle engine.
+
+## Release model
+
+`connector` publishes independent component versions named `vX.Y.Z`. The x86_64 component archive contains `connector-ctl`, deployment files, and the operational helpers selected by the component release contract. Design documents and E2E sources are collected from the selected component tag into the project platform archive.
+
+The project repository publishes aggregate versions named `release-vX.Y.Z`, selecting an exact `connector` tag together with the other release units and validating the combined platform. Component and aggregate version numbers are independent.
+
+See the [project release documentation](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/release.md) and the [latest Stable aggregate release](https://github.com/kuasar-sandbox/kuasar-sandbox/releases/latest).
+
+## Documentation
+
+Detailed design and reference documents are currently maintained primarily in Chinese:
+
+- [`docs/vswitch.md`](docs/vswitch.md) — architecture, data paths, management and external networking, security properties, reliability, performance, and tests;
+- [`docs/tapfd.md`](docs/tapfd.md) — normative TAP file-descriptor handoff protocol for providers and consumers.
+
+The English README contains the complete public component entry path. Detailed locator encodings and packet-field layouts remain in the specialized design document rather than the public overview.
+
+## Project boundaries
+
+- node and cluster orchestration belongs to [`orchestrator`](https://github.com/kuasar-sandbox/orchestrator);
+- MicroVM lifecycle and the TAP consumer belong to [`sandboxer`](https://github.com/kuasar-sandbox/sandboxer);
+- image/snapshot data infrastructure belongs to [`accelerator`](https://github.com/kuasar-sandbox/accelerator);
+- guest runtime and kernel artifacts belong to [`guest-runtime`](https://github.com/kuasar-sandbox/guest-runtime);
+- system design, shared BMS, demos, and aggregate releases belong to [`kuasar-sandbox/kuasar-sandbox`](https://github.com/kuasar-sandbox/kuasar-sandbox).
+
+## Contributing and security
+
+Read the [organization contribution guide](https://github.com/kuasar-sandbox/.github/blob/main/CONTRIBUTING.md). Network protocol, TAP handoff, or cross-repository contract changes require linked companion pull requests and exact-source project validation.
+
+Do not publish credentials, real internal topology, packet captures containing sensitive payloads, or unpatched vulnerabilities. Use the [Kuasar Sandbox Security Policy](https://github.com/kuasar-sandbox/kuasar-sandbox/security/policy) and GitHub private vulnerability reporting.
 
 ## License
 
-本仓库的项目原创内容采用 [Apache License 2.0](LICENSE).eBPF 程序及其生成物的
-GPL-2.0-only 边界见 [LICENSE_SCOPE.md](LICENSE_SCOPE.md).
-贡献授权说明见 [CONTRIBUTING.md](CONTRIBUTING.md).
+Original project content is licensed under the [Apache License 2.0](LICENSE). The eBPF programs and generated objects retain the GPL-2.0-only boundary documented in [`LICENSE_SCOPE.md`](LICENSE_SCOPE.md). Preserve Linux, toolchain, vendored-code, and generated-artifact attribution and licensing.
