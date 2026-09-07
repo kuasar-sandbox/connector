@@ -93,6 +93,14 @@ connector-ctl vswitch stop sw1
 
 These addresses are documentation values, not a production topology. Run `stop` from the namespace that should receive the returned transit device. Inspect actual port and transit MTUs: the current two-phase provision path does not propagate `--mtu` to newly created TAP/veth ports. The complete command reference and deployment semantics are in [`docs/vswitch.md`](docs/vswitch.md).
 
+The legacy [manage_switch.sh](examples/manage_switch.sh) helper illustrates veth
+namespace orchestration. Its current start call omits `--mode=veth` even though
+the CLI defaults to TAP: adapt that call to `start --mode=veth --config "$tmpfile"`
+before using `setup`. The helper also derives ports from sandbox index + 1 and
+therefore assumes fresh sequential allocation; reuse requires consuming the
+actual port returned by `attach`. Its `help` output describes the configuration
+shape, and `example` prints JSON without setting up networking.
+
 ## Integration with sandboxer
 
 `sandboxer` imports only `github.com/kuasar-sandbox/connector/pkg/tapfd`. `connector-ctl` opens and configures TAP queues, then passes their file descriptors and, where required, a network-namespace descriptor over a Unix socket using `SCM_RIGHTS`. This keeps the runtime integration narrow and avoids linking the eBPF implementation into the MicroVM lifecycle engine.
