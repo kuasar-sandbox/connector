@@ -40,7 +40,7 @@ git switch -c feat/short-description
 git push -u origin feat/short-description
 ```
 
-Open a pull request from `<your-login>/connector:feat/short-description` to `kuasar-sandbox/connector:main`. Enable **Allow edits from maintainers** when appropriate.
+Open a pull request to the appropriate target: `main` for current development, or a supported `release/vMAJOR.MINOR.x` maintenance branch. For example, use `<your-login>/connector:feat/short-description` → `kuasar-sandbox/connector:main`. Enable **Allow edits from maintainers** when appropriate.
 
 ## Pull request requirements
 
@@ -53,6 +53,10 @@ A pull request should:
 - describe validation already performed and any operational or compatibility risk.
 
 Draft pull requests are welcome for early feedback, but they are not merge candidates.
+
+## Documentation
+
+Follow the [project documentation policy](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/documentation-policy.md). Maintain full English/Chinese pairs at `name.md` and `name_zh.md` with reciprocal selectors. Preserve requirements, identifiers, examples, diagrams, facts and links; record source-backed corrections. Existing complete English-only material may remain English-only. A summary or language-detector pass is not a complete translation.
 
 ## Licensing of contributions
 
@@ -77,7 +81,8 @@ owns admission, source BMS execution, and final status publication.
 
 Admission re-queries the current pull request and compares its state, base ref,
 base/head repositories and SHAs, author, and draft state with the triggering
-event. A non-draft same-repository pull request is eligible automatically. A
+event. The target must be `main` or a supported `release/vMAJOR.MINOR.x` branch.
+A non-draft same-repository pull request is eligible automatically. A
 fork pull request is eligible only when its author is currently an active
 `kuasar-sandbox` organization member. Draft pull requests run only the BMS
 control jobs, not the full E2E job; their `kuasar/bms-exact-head` status remains
@@ -96,13 +101,15 @@ commit status.
 An optional `kuasar-bms-companions` block in the pull request body may select
 current integration commits from other component pull requests. Admission
 validates and records each companion's base, head, two-parent integration, and
-current `main`; finalization revalidates the same source set. Pull requests
-without this block use the other repositories' current `main` revisions during
-source assembly.
+current target branch; finalization revalidates the same source set. Without
+companions, the other revisions are selected for the target platform version
+line: `main` uses component main; a platform maintenance target follows its
+selected manifest and the documented maintenance-branch/tag rules. See the
+[central CI contract](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/ci.md).
 
 After BMS finishes, the trusted finalizer re-queries the pull request. It writes
 `kuasar/bms-exact-head=success` only if BMS succeeded and the pull request is
-still open, non-draft, based on `main`, and still has the admitted base, head,
+still open, non-draft, based on an admitted supported target, and still has the admitted base, head,
 integration commit, parent order, and companion source set. A successful
 `BMS E2E / e2e` job by itself is not merge evidence.
 
@@ -152,17 +159,21 @@ jq -e '
   and .status == "completed"
   and .conclusion == "success"
   and any(.referenced_workflows[]?;
-    .path == "kuasar-sandbox/kuasar-sandbox/.github/workflows/bms-entry.yml@main"
-    and .ref == "refs/heads/main")
+    (.path | startswith("kuasar-sandbox/kuasar-sandbox/.github/workflows/bms-entry.yml@"))
+    and .ref == "refs/heads/main"
+    and (.sha | test("^[0-9a-f]{40}$")))
   and any(.referenced_workflows[]?;
     (.path | startswith("kuasar-sandbox/kuasar-sandbox/.github/workflows/bms-e2e.yml@"))
-    and .ref == "refs/heads/main")
+    and .ref == "refs/heads/main"
+    and (.sha | test("^[0-9a-f]{40}$")))
   ' <<<"$run_json" >/dev/null
 
 final_pr_json=$(gh api "repos/$repo/pulls/$pr")
 jq -e --arg base "$base_sha" --arg head "$head_sha" \
   --arg integration "$integration_sha" '
-    .base.sha == $base
+    .state == "open"
+    and .draft == false
+    and .base.sha == $base
     and .head.sha == $head
     and .merge_commit_sha == $integration
   ' <<<"$final_pr_json" >/dev/null
