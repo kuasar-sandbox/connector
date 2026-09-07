@@ -1254,7 +1254,7 @@ pkg/tapfd 除标准库与 golang.org/x/sys 外独立。
 ## 12. See Also
 
 - [tapfd.md](tapfd_zh.md):完整 provider/consumer fd 交接契约。
-- [sandboxer/docs/sandbox.md](https://github.com/kuasar-sandbox/sandboxer/blob/main/docs/sandbox.md):
+- [sandboxer/docs/sandbox_zh.md](https://github.com/kuasar-sandbox/sandboxer/blob/main/docs/sandbox_zh.md):
   sandbox-ctl 经 TAPFD helper 消费网络队列。
 - [RFC 8926](https://www.rfc-editor.org/rfc/rfc8926):GENEVE framing。
 - [Linux commit fc9702273e2e](https://github.com/torvalds/linux/commit/fc9702273e2edb90400a34b3be76f7b08fa3344b):

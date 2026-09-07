@@ -26,7 +26,7 @@ json_query() {
     python3 -c "import json,sys; data=json.load(open('$1')); $2"
 }
 
-# ─── 辅助函数 ───────────────────────────────────────────────────────────────
+# ─── Helper functions ───────────────────────────────────────────────────────────────
 
 strip_at() { echo "${1#@}"; }
 
@@ -52,8 +52,8 @@ JSON config structure:
       {
         "switch_config": {        Switch daemon configuration (passed to switch binary)
           "switch_name": "...",       Unique name for this switch instance
-          "switch_ns": "...",         Netns where the switch runs
-          "transit_iface": "...",     Transit-facing interface device name
+          "switch_netns": "...",         Netns where the switch runs
+          "transit_dev": "...",     Transit-facing interface device name
           ...                         Other switch-specific fields
         },
         "netns": [                List of netns to create before setup
@@ -97,6 +97,13 @@ Netns @ prefix:
   Prefix a netns name with "@" (e.g. "@mgmt_ns") to automatically run
   "ip link set lo up" inside that netns after creation. The actual netns name
   will be "mgmt_ns" (without the @).
+
+Current helper limits:
+  This legacy helper expects veth peers, while connector-ctl start defaults
+  to tap. Its start invocation currently omits --mode=veth. Before using
+  setup, adapt that invocation to: start --mode=veth --config "$tmpfile".
+  It also assumes fresh, sequential port allocation (sandbox index + 1);
+  reuse requires taking the actual allocated port from attach output.
 
 Sandbox auto-created netns:
   When a sandbox omits "netns", the script auto-creates "<switch_name>_sb<index>"
@@ -142,7 +149,7 @@ print(json.dumps(example, indent=2))
 '
 }
 
-# ─── 参数解析 ───────────────────────────────────────────────────────────────
+# ─── Argument parsing ───────────────────────────────────────────────────────────────
 
 # Handle no-config subcommands first
 case "${1:-}" in
@@ -174,7 +181,7 @@ CONFIG_FILE="$(cd "$(dirname "$CONFIG_FILE")" && pwd)/$(basename "$CONFIG_FILE")
 
 NUM_INSTANCES=$(json_query "$CONFIG_FILE" "print(len(data['instances']))")
 
-# ─── 单实例函数 ─────────────────────────────────────────────────────────────
+# ─── Per-instance functions ─────────────────────────────────────────────────────────────
 
 get_switch_name() {
     # $1=instance_index
@@ -504,7 +511,7 @@ print(ns if ns else '${sw_name}_sb${s}')
     echo ""
 }
 
-# ─── 编排层 ─────────────────────────────────────────────────────────────────
+# ─── Orchestration ─────────────────────────────────────────────────────────────────
 
 do_setup() {
     for ((i=0; i<NUM_INSTANCES; i++)); do
