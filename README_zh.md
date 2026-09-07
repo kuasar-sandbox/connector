@@ -104,4 +104,4 @@ connector-ctl vswitch stop sw1
 
 本仓库的项目原创内容采用 [Apache License 2.0](LICENSE).eBPF 程序及其生成物的
 GPL-2.0-only 边界见 [LICENSE_SCOPE_zh.md](LICENSE_SCOPE_zh.md).
-贡献授权说明见 [CONTRIBUTING.md](CONTRIBUTING.md).
+贡献授权说明见 [CONTRIBUTING.md（英文）](CONTRIBUTING.md).
