@@ -332,6 +332,11 @@ TAPFD_SOCKET=fd=3 connector-ctl vswitch open-port sw0 --port=3      # 继承 fd 
 `MgmtDevicesReady`、`TransitDeviceReady`;ProvisionPorts 未完成(或
 `start --reserved` 之后)还会出现 `PortReserved`。
 
+`PortReserved` 是信息项。设备检查跳过 Reserved slot,所以即使全部端口仍 Reserved,
+`Ready` 与 `PortDevicesReady` 也可能为 True。判断可分配容量须检查
+`ports_available`/`ports_reserved` 或目标 slot;不能只凭 `status --ready`。
+见 [status 实现](../pkg/vswitch/status.go)。
+
 | 参数 | 说明 |
 | --- | --- |
 | `--ready` | 不打 JSON,按 Conditions 退出:`0`=Ready,`3`=NotExist,`4`=NotReady |
@@ -353,13 +358,14 @@ TAPFD_SOCKET=fd=3 connector-ctl vswitch open-port sw0 --port=3      # 继承 fd 
 }
 ```
 
-ProvisionPorts 完成前的过渡形态:
+全部 4096 个端口仍 Reserved、没有非 Reserved 设备可检查时的 Conditions 片段:
 
 ```json
 "conditions": [
-  { "type": "Ready",        "status": "False", "reason": "PortsReserved" },
-  { "type": "PortReserved", "status": "True",
-    "message": "all 4096 ports still in Reserved state (ProvisionPorts pending)" }
+  { "type": "Ready", "status": "True" },
+  { "type": "PortDevicesReady", "status": "True",
+    "message": "0 ports to check (all reserved)" },
+  { "type": "PortReserved", "status": "True", "message": "4096 ports reserved" }
 ]
 ```
 
@@ -632,8 +638,10 @@ ip route add <floating_ip_base>/20 dev <mgmt-dev> metric <100+index>
 ```
 
 floating base 不对齐 /20 时最大段跨两个 /20,两条都装。被路由捕获但不属于实际
-floating 范围的地址到达管理设备后,因无匹配 slot 被丢弃。管理 namespace 留空时
-路由位于 caller/Host netns,仍不替换 Host 默认路由。
+floating 范围的地址到达管理设备后,`tc_ingress_mx` 因无匹配 slot 返回 `TC_ACT_OK`,
+不执行 sandbox DNAT/redirect;后续由 switch namespace 协议栈及其过滤策略处理,
+不是 TC 强制丢包。管理 namespace 留空时,路由位于 caller/Host netns,
+仍不替换 Host 默认路由。
 
 **可选管理服务转换**:没有 --mgmt-service 时,extraction 只转换 inner↔floating,
 服务目的 IP/端口不变,部署须保证 VIP 可达并正确监听。
@@ -945,7 +953,9 @@ port ingress,写设备/管理/transit 字段,再 CAS Reserved→Free。Free/Allo
    SIGTERM/SIGINT 退出进程,不拆除 switch 数据面。
 
 依赖服务可在 READY=1 后启动,但必须处理端口暂不可用并重试;systemd 进程就绪
-不等于所有端口已经 Free。
+不等于所有端口已经 Free。`Ready` Condition 同样跳过 Reserved slot 的设备检查,
+应按 §2.9 检查容量或目标 slot。Reserved slot 可能在后续未 provision 设备检查之前
+就因所有权 CAS 失败而拒绝分配,调用方也须处理这种分配失败。
 
 ### 6.6 端口模式:veth 与 tap
 
@@ -1064,10 +1074,16 @@ Connector 是 MicroVM 外的纵深防御层,VMM 仍是 Guest 的主要隔离边�
 1. **无直接 port→port 路径**:本地程序没有将一个 sandbox ingress 桥接到另一个的分支。
 2. **交换机拥有 ARP 回复**:消费端口 ARP request,构造回复交回本端口,不向其他端口广播。
 3. **源 MAC 受控**:转发 Ethernet header 使用 switch/选定 port MAC,不把沙箱源 MAC 当 slot 身份。
-4. **回程受限**:按 locator 恢复 slot,拒绝未分配/无 ifindex、gateway 源 IP 或 VNI 不匹配。
+4. **回程受限**:按 locator 恢复 slot;未分配/无 ifindex、gateway 源 IP 或 VNI 不匹配时,
+   不进行 sandbox 解封装/投递。当前不匹配分支返回 `TC_ACT_OK` 给 namespace 协议栈,
+   不承诺在 TC hook 丢包。
 5. **管理 NAT**:出向源改 floating,入向目的改 inner。该性质指 packet header,不隐藏应用可能写在 payload 中的 IP。
 
 这些是局部数据面性质,不授权任意 gateway/管理 backend 流量,也不代替它们的访问控制。
+
+sandbox 投递与 `TC_ACT_OK` 的区别见
+[tc_ingress_mx / tc_ingress_transit](../bpf/switch_kern.c)。namespace 协议栈的
+路由/过滤仍由部署负责。
 
 ### 7.3 所需权限
 
@@ -1122,7 +1138,7 @@ namespace/设备删除、map 损坏、Host 重启或 ABI 不兼容是其他故�
 | `failed to pin maps: ...bpffs not mounted` | `mount -t bpf bpf /sys/fs/bpf`,并加入 `/etc/fstab` |
 | `switch already exists` | 先检查已有 switch/配置;确需替换时正常 stop,不把活跃转发下删除 pins 当常规重启流程。 |
 | 升级后 ABI 不兼容 | 先排空/停止 consumer,正常或强制 cleanup;损坏状态的 force-clean 只删 pins,还须检查/清理孤儿设备/TC 并还回 transit,再 recreate。 |
-| `port not provisioned` | ProvisionPorts 尚未完成;等 `status` 的 `PortDevicesReady` 转 True 后重试 |
+| `port not provisioned` 或 Reserved slot 无法 attach | 检查 `ports_available`/`ports_reserved` 或目标 slot,等待/重试或显式修复 Reserved slot;仅凭 `PortDevicesReady=True` 不能证明有可分配容量 |
 | open-port 报 `port not attached` | 先 attach 再 open-port |
 
 ## 9. 性能特征
@@ -1245,4 +1261,3 @@ pkg/tapfd 除标准库与 golang.org/x/sys 外独立。
   BPF_MAP_TYPE_ARRAY 的 mmap 支持。
 - [sd_notify](https://www.freedesktop.org/software/systemd/man/sd_notify.html):systemd Type=notify 集成。
 - [cilium/ebpf](https://github.com/cilium/ebpf)、[vishvananda/netlink](https://github.com/vishvananda/netlink):实现使用的 Go 库。
-

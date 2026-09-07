@@ -306,6 +306,8 @@ Selected output fields:
 
 Status reports Conditions including `Ready`, `PortDevicesReady`, `MgmtDevicesReady` and `TransitDeviceReady`. While ports remain Reserved, including after `start --reserved`, it can also report `PortReserved`.
 
+`PortReserved` is informational. The device checks skip Reserved slots, so even when all ports are Reserved, `Ready` and `PortDevicesReady` can be True. Inspect `ports_available`/`ports_reserved` or the selected slot before assuming attachment capacity; `status --ready` alone does not establish it. See [status implementation](../pkg/vswitch/status.go).
+
 | Flag | Meaning |
 |---|---|
 | `--ready` | Suppress JSON and return 0 for Ready, 3 for NotExist, or 4 for NotReady. |
@@ -329,13 +331,14 @@ Selected JSON fields:
 }
 ```
 
-Conditions fragment before provisioning completes:
+Conditions fragment when all 4096 ports are still Reserved and there are no non-Reserved devices to check:
 
 ```json
 "conditions": [
-  { "type": "Ready",        "status": "False", "reason": "PortsReserved" },
-  { "type": "PortReserved", "status": "True",
-    "message": "all 4096 ports still in Reserved state (ProvisionPorts pending)" }
+  { "type": "Ready", "status": "True" },
+  { "type": "PortDevicesReady", "status": "True",
+    "message": "0 ports to check (all reserved)" },
+  { "type": "PortReserved", "status": "True", "message": "4096 ports reserved" }
 ]
 ```
 
@@ -589,7 +592,7 @@ CIDRs from `--mgmt-extract` populate each slot's destination classifiers; they d
 ip route add <floating_ip_base>/20 dev <mgmt-dev> metric <100+index>
 ```
 
-If the floating base is not /20-aligned, the maximum span crosses two /20s and both routes are installed. Addresses captured by those routes but outside the configured floating range reach the management device and are dropped when no slot matches. An empty management namespace means these routes are in the caller/host namespace; they still do not replace its default route.
+If the floating base is not /20-aligned, the maximum span crosses two /20s and both routes are installed. Addresses captured by those routes but outside the configured floating range reach the management device. With no matching slot, `tc_ingress_mx` returns `TC_ACT_OK` without sandbox DNAT/redirect, leaving further processing to the switch namespace stack and its filtering policy. This is not a TC-enforced drop. An empty management namespace means these routes are in the caller/host namespace; they still do not replace its default route.
 
 **Optional management-service translation:** without `--mgmt-service`, extraction changes inner↔floating addressing while retaining the requested service destination IP/port. Deployment must make the VIP reachable and listen appropriately. `--mgmt-service=<VIP>:<vport>:<targetIP>:<targetPort>` adds deterministic stateless TCP/UDP translation:
 
@@ -853,7 +856,7 @@ Startup is split to support Type=notify and early control-plane availability.
 4. Provision ports asynchronously.
 5. Run health checks and watchdog keepalives; handle listener/provision failure and termination signals. SIGTERM/SIGINT exits the process without tearing down the switch data plane.
 
-Dependent services can start after READY=1, before every port is provisioned. They must handle temporary unavailability and retry; readiness of the systemd process is not proof that all ports are Free.
+Dependent services can start after READY=1, before every port is provisioned. They must handle temporary unavailability and retry; readiness of the systemd process is not proof that all ports are Free. The `Ready` Condition also excludes Reserved slots from device checks, so inspect capacity or the selected slot as described in §2.9. A Reserved slot can reject the ownership CAS before the later unprovisioned-device check; callers must handle that allocation failure too.
 
 <a id="66-端口模式veth-与-tap"></a>
 
@@ -958,10 +961,12 @@ Connector is a defense-in-depth layer outside the MicroVM; the VMM remains the p
 1. **No direct port-to-port path:** the dedicated local forwarding program has no branch bridging one sandbox ingress to another sandbox ingress.
 2. **Switch-owned ARP replies:** port ARP requests are consumed and answered back to that port, not broadcast to other ports.
 3. **Controlled source MACs:** forwarded Ethernet headers use switch or selected port MACs rather than trusting the sandbox's source MAC as slot identity.
-4. **Restricted transit return:** recover the slot using the configured locator and reject invalid allocation/ifindex, gateway-source IP or VNI.
+4. **Restricted transit return:** recover the slot using the configured locator and refuse sandbox decapsulation/delivery for invalid allocation/ifindex, gateway-source IP or VNI. Current nonmatching paths return `TC_ACT_OK` to the namespace stack; they do not promise a drop at the TC hook.
 5. **Management address translation:** outbound source becomes floating IP and inbound destination becomes inner IP. This describes packet-header NAT, not concealment of IP values an application might put in payloads.
 
 These are local data-plane properties. They do not authorize arbitrary traffic through the management backend or gateway, and they do not replace those systems' access controls.
+
+The distinction between sandbox delivery and `TC_ACT_OK` follows [tc_ingress_mx / tc_ingress_transit](../bpf/switch_kern.c). Namespace-stack routing and filtering remain deployment responsibilities.
 
 <a id="73-所需权限"></a>
 
@@ -1021,7 +1026,7 @@ After a serve crash, systemd Restart=on-failure launches a process that reopens 
 | `failed to pin maps: ...bpffs not mounted` | Mount bpffs at /sys/fs/bpf and configure persistent mounting as appropriate. |
 | `switch already exists` | Inspect the existing switch/config first. Stop it normally when replacement is intended; do not delete pins under active forwarding as a routine restart procedure. |
 | ABI incompatible after upgrade | Drain/stop consumers and use normal or forced cleanup. For damaged state, force-clean only removes pins; explicitly inspect/remove orphaned devices/TC and return transit before recreating. |
-| `port not provisioned` | Wait for provisioning/PortDevicesReady, or repair the Reserved slot explicitly. |
+| `port not provisioned` or a Reserved slot cannot attach | Inspect `ports_available`/`ports_reserved` or the selected slot, wait/retry, or explicitly repair the Reserved slot. `PortDevicesReady=True` alone does not prove allocatable capacity. |
 | open-port reports `port not attached` | Attach first, then request the queue. |
 
 <a id="9-性能特征"></a>

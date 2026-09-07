@@ -28,10 +28,14 @@ var serveCmd = &cobra.Command{
 	Long: `Start a virtual switch with async port provisioning and sd_notify integration.
 
 The serve command performs:
-1. StartReserved: fast initialization (BPF load, pin, config, slots Reserved)
-2. sd_notify READY=1: notify systemd the switch is ready for attach operations
-3. ProvisionPorts: asynchronously create veth devices for all Reserved slots
-4. Health check loop: periodic status monitoring until SIGTERM/SIGINT
+1. StartReserved: initialize BPF, maps, fixed devices, and Reserved slots
+2. Open the optional --tapfd-listen server before notifying readiness
+3. sd_notify READY=1: notify systemd that the control service is available
+4. ProvisionPorts: asynchronously create tap or veth devices for Reserved slots
+5. Health check loop: periodic status monitoring until SIGTERM/SIGINT
+
+READY=1 and the Ready condition do not guarantee allocatable ports. Inspect
+ports_available/ports_reserved or the selected slot and retry while provisioning.
 
 This is the recommended way to run connector-ctl vswitch as a systemd service
 (Type=notify) for fast startup with background port provisioning.
