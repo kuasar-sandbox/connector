@@ -87,6 +87,12 @@ connector-ctl vswitch stop sw1
 命令与参数详见 [docs/vswitch_zh.md](docs/vswitch_zh.md) §2;Go 接收端(consumer)示例见
 [docs/tapfd_zh.md](docs/tapfd_zh.md#8-交接示例) §8 与源码树 `examples/tapfd_receiver/`。
 
+旧版 [manage_switch.sh](examples/manage_switch.sh) 辅助脚本演示 veth namespace 编排。
+当前 start 调用没有传 `--mode=veth`，而 CLI 默认是 TAP；使用 `setup` 前，需将该调用
+调整为 `start --mode=veth --config "$tmpfile"`。脚本还以 sandbox index + 1 推算端口，
+因此只适用于从空闲新交换机顺序分配；复用时必须读取 `attach` 返回的实际端口。
+`help` 输出配置结构，`example` 仅打印 JSON，不配置网络。
+
 ## 文档
 
 - [docs/vswitch_zh.md](docs/vswitch_zh.md) — 设计与命令参考:架构/数据面/关键机制/安全/
@@ -98,4 +104,4 @@ connector-ctl vswitch stop sw1
 
 本仓库的项目原创内容采用 [Apache License 2.0](LICENSE).eBPF 程序及其生成物的
 GPL-2.0-only 边界见 [LICENSE_SCOPE_zh.md](LICENSE_SCOPE_zh.md).
-贡献授权说明见 [CONTRIBUTING.md](CONTRIBUTING.md).
+贡献授权说明见 [CONTRIBUTING.md（英文）](CONTRIBUTING.md).
