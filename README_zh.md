@@ -11,7 +11,7 @@ options;配置完成后
 独立演进。
 
 对外导出 `pkg/tapfd`(tapfd 交接协议 SDK,`sandboxer` 作 consumer 直接
-import);协议规格见 [docs/tapfd.md](docs/tapfd.md)。
+import);协议规格见 [docs/tapfd_zh.md](docs/tapfd_zh.md)。
 
 ## 组成
 
@@ -71,13 +71,13 @@ connector-ctl vswitch stop sw1
 ```
 
 命令与参数详见 [docs/vswitch.md](docs/vswitch.md) §2;Go 接收端(consumer)示例见
-[docs/tapfd.md](docs/tapfd.md) §7 与源码树 `examples/tapfd_receiver/`。
+[docs/tapfd_zh.md](docs/tapfd_zh.md#8-交接示例) §8 与源码树 `examples/tapfd_receiver/`。
 
 ## 文档
 
 - [docs/vswitch.md](docs/vswitch.md) — 设计与命令参考:架构/数据面/关键机制/安全/
   可靠性/性能/测试。
-- [docs/tapfd.md](docs/tapfd.md) — tapfd 交接协议规格(provider/consumer 双侧契约,
+- [docs/tapfd_zh.md](docs/tapfd_zh.md) — tapfd 交接协议规格(provider/consumer 双侧契约,
   normative)。
 
 ## License
