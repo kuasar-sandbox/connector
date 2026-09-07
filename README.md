@@ -109,8 +109,8 @@ See the [project release documentation](https://github.com/kuasar-sandbox/kuasar
 
 Detailed design and reference documents have complete English and Chinese editions:
 
-- [vSwitch — English](docs/vswitch.md) / [简体中文](docs/vswitch_zh.md) — architecture, data paths, management and external networking, security properties, reliability, performance, and tests;
-- [TAPFD — English](docs/tapfd.md) / [简体中文](docs/tapfd_zh.md) — normative TAP file-descriptor handoff protocol for providers and consumers.
+- [vSwitch — English](docs/vswitch.md) / [Chinese](docs/vswitch_zh.md) — architecture, data paths, management and external networking, security properties, reliability, performance, and tests;
+- [TAPFD — English](docs/tapfd.md) / [Chinese](docs/tapfd_zh.md) — normative TAP file-descriptor handoff protocol for providers and consumers.
 
 The English README contains the complete public component entry path. Detailed locator encodings and packet-field layouts remain in the specialized design document rather than the public overview.
 
