@@ -13,7 +13,7 @@ MUST / MUST NOT / SHOULD / SHOULD NOT / MAY。consumer 如何在自身配置中�
 (YAML/JSON 格式、L3/路由/DNS 等字段)是 consumer 的实现细节,不属于本协议。
 
 参考实现:`connector-ctl vswitch open-port` 与`connector-ctl tapfd get` 子命令 是 provider 实现
-([vswitch.md](vswitch.md) §2.8、§2.13);Go 参考库
+([vswitch.md](vswitch_zh.md) §2.8、§2.13);Go 参考库
 `github.com/kuasar-sandbox/connector/pkg/tapfd` 覆盖收发两侧;可运行的
 consumer 示例见源码树 `examples/tapfd_receiver/`。
 
@@ -340,7 +340,7 @@ if err != nil { log.Fatal(err) }
 <a id="8-see-also"></a>
 ## 9. See Also
 
-- [vswitch.md](vswitch.md) — connector 设计与命令参考;`open-port`(§2.8)与
+- [vswitch.md](vswitch_zh.md) — connector 设计与命令参考;`open-port`(§2.8)与
   `connector-ctl tapfd get`(§2.13)是本协议的 provider 实现,§6.7 记录其实现取舍。
 - `pkg/tapfd` — Go 参考库:provider 侧 `OpenTap`/`SendFd`,consumer 侧
   `RecvFd`/`RecvFds`/`RecvFdsWithNetns`,建连 `ConnectUnix`/`UnixConnFromFd`。

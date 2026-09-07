@@ -82,9 +82,9 @@ func init() {
 	startCmd.Flags().Uint16Var(&startGenevePortBase, "geneve-port-base", 50000, "GENEVE UDP port base")
 	startCmd.Flags().StringVar(&startGeneveTLVLocator, "geneve-tlv-locator", "", "GENEVE TLV slot locator CLASS:TYPE (required with --geneve-locator=tlv)")
 	startCmd.Flags().BoolVar(&startGeneveEncapEth, "geneve-encap-eth", false, "Use Ether-over-GENEVE (default: IP-over-GENEVE)")
-	startCmd.Flags().IntVar(&startMTU, "mtu", 0, "MTU for switch ports (default: OS default)")
+	startCmd.Flags().IntVar(&startMTU, "mtu", 0, "Requested MTU for management setup and transit budgeting; not applied to TAP/veth ports by two-phase provisioning")
 	startCmd.Flags().StringVar(&startPortMACAddr, "port-mac-addr", "fixed", "Port MAC address mode: 'fixed' (default), 'per-port', or specific MAC address")
-	startCmd.Flags().BoolVar(&startReserved, "reserved", false, "Only initialize switch (slots in Reserved state, no veth creation); --port-netns becomes optional since no provisioning runs here — provide it later via the switch config when running `provision --mode=veth`")
+	startCmd.Flags().BoolVar(&startReserved, "reserved", false, "Only initialize Reserved slots; set --port-netns now if later provisioning veth peers because provision reads the pinned start-time configuration")
 	startCmd.Flags().StringVar(&startMode, "mode", "tap", `Port kind for the auto-provision step: "tap" (default) or "veth". With tap (default), ports stay in switch-netns and the sandbox receives a fd via 'open-port' (--port-netns optional); veth moves a peer into the sandbox netns and requires --port-netns.`)
 }
 

@@ -33,7 +33,7 @@ A node-local lightweight Egress policy plane is tracked as a [proposed extension
 | `pkg/vswitch` | Programmatic vSwitch lifecycle and port management |
 | `pkg/tapfd` | Public provider/consumer SDK for passing TAP and network-namespace file descriptors over Unix sockets |
 | `pkg/netlink`, `pkg/netns`, `pkg/dhcp`, `pkg/daemon` | Linux network, namespace, DHCP, and service helpers |
-| `bpf/` | eBPF C sources and pre-generated objects used by the runtime |
+| `bpf/` | eBPF C sources; pre-generated runtime objects are in `pkg/internal/bpf/` |
 | `dist/` | systemd units and configuration templates |
 
 The normative TAP handoff protocol is documented in [`docs/tapfd.md`](docs/tapfd.md).
@@ -60,9 +60,13 @@ The repository includes pre-generated BPF objects, so an ordinary build does not
 
 ## Minimal local example
 
-The following illustrates the lifecycle; production values depend on the deployment network:
+The following illustrates a fresh switch. Run as root with a dedicated, unused `eth1` that can safely be moved into `sw_ns`; the underlay must support the resulting transit MTU. A TAPFD-capable VMM receiver must already be listening on `/tmp/recv.sock` before `open-port`. Production values depend on the deployment network:
 
 ```bash
+ip netns add sw_ns
+ip netns add mgmt_ns
+ip link set eth1 down
+
 connector-ctl vswitch start sw1 \
     --netns=sw_ns \
     --ports=128 \
@@ -70,7 +74,8 @@ connector-ctl vswitch start sw1 \
     --floating-ip-base=100.100.96.0 \
     --mgmt-extract=mgmt_ns:eth0:169.254.169.254/32 \
     --transit-dev=eth1 \
-    --transit-dev-addr=10.0.0.1/24:10.0.0.2
+    --transit-dev-addr=10.0.0.1/24:10.0.0.2 \
+    --transit-dev-mtu=auto
 
 ip netns exec mgmt_ns ip addr replace 169.254.169.254/32 dev eth0
 
@@ -86,7 +91,7 @@ connector-ctl vswitch detach sw1 --port=1
 connector-ctl vswitch stop sw1
 ```
 
-These addresses are documentation values, not a production topology. The complete command reference and deployment semantics are in [`docs/vswitch.md`](docs/vswitch.md).
+These addresses are documentation values, not a production topology. Run `stop` from the namespace that should receive the returned transit device. Inspect actual port and transit MTUs: the current two-phase provision path does not propagate `--mtu` to newly created TAP/veth ports. The complete command reference and deployment semantics are in [`docs/vswitch.md`](docs/vswitch.md).
 
 ## Integration with sandboxer
 
@@ -102,10 +107,10 @@ See the [project release documentation](https://github.com/kuasar-sandbox/kuasar
 
 ## Documentation
 
-Detailed design and reference documents are currently maintained primarily in Chinese:
+Detailed design and reference documents have complete English and Chinese editions:
 
-- [`docs/vswitch.md`](docs/vswitch.md) — architecture, data paths, management and external networking, security properties, reliability, performance, and tests;
-- [`docs/tapfd.md`](docs/tapfd.md) — normative TAP file-descriptor handoff protocol for providers and consumers.
+- [vSwitch — English](docs/vswitch.md) / [简体中文](docs/vswitch_zh.md) — architecture, data paths, management and external networking, security properties, reliability, performance, and tests;
+- [TAPFD — English](docs/tapfd.md) / [简体中文](docs/tapfd_zh.md) — normative TAP file-descriptor handoff protocol for providers and consumers.
 
 The English README contains the complete public component entry path. Detailed locator encodings and packet-field layouts remain in the specialized design document rather than the public overview.
 

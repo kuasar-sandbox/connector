@@ -67,7 +67,7 @@ func init() {
 	serveCmd.Flags().Uint16Var(&startGenevePortBase, "geneve-port-base", 50000, "GENEVE UDP port base")
 	serveCmd.Flags().StringVar(&startGeneveTLVLocator, "geneve-tlv-locator", "", "GENEVE TLV slot locator CLASS:TYPE (required with --geneve-locator=tlv)")
 	serveCmd.Flags().BoolVar(&startGeneveEncapEth, "geneve-encap-eth", false, "Use Ether-over-GENEVE (default: IP-over-GENEVE)")
-	serveCmd.Flags().IntVar(&startMTU, "mtu", 0, "MTU for switch ports (default: OS default)")
+	serveCmd.Flags().IntVar(&startMTU, "mtu", 0, "Requested MTU for management setup and transit budgeting; not applied to TAP/veth ports by two-phase provisioning")
 	serveCmd.Flags().StringVar(&startPortMACAddr, "port-mac-addr", "fixed", "Port MAC address mode: 'fixed' (default), 'per-port', or specific MAC address")
 	serveCmd.Flags().StringVar(&startMode, "mode", "tap", `Port kind for auto-provision: "tap" (default) or "veth". With veth, --port-netns is required.`)
 	serveCmd.Flags().DurationVar(&serveWatchInterval, "watch-interval", 30*time.Second, "Health check interval")
