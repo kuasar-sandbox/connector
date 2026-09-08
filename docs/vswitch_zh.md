@@ -77,11 +77,30 @@ flowchart TD
 L4+ 多租户策略管理或连接跟踪/L7 安全网关。
 
 
+<a id="21-子命令总览"></a>
+<a id="210-connector-ctl-vswitch-stats"></a>
+<a id="211-connector-ctl-vswitch-show"></a>
+<a id="212-connector-ctl-vswitch-dhcp"></a>
+<a id="213-connector-ctl-tapfd-get"></a>
+<a id="214-配置文件--config"></a>
+<a id="22-connector-ctl-vswitch-start--serve"></a>
+<a id="23-connector-ctl-vswitch-stop"></a>
+<a id="24-connector-ctl-vswitch-attach"></a>
+<a id="25-connector-ctl-vswitch-detach"></a>
+<a id="26-connector-ctl-vswitch-reserve"></a>
+<a id="27-connector-ctl-vswitch-provision"></a>
+<a id="28-connector-ctl-vswitch-open-port"></a>
+<a id="29-connector-ctl-vswitch-status"></a>
+
 ## 2. 命令行接口
 
 操作流程与完整示例见 [vSwitch 运维](vswitch-operations_zh.md#2-命令行与配置参考)；底层设计约束仍由本规范定义。
 
 
+<a id="31-系统要求"></a>
+<a id="32-构建"></a>
+<a id="33-systemd-集成"></a>
+<a id="34-首次启动"></a>
 ## 3. 部署
 
 操作流程与完整示例见 [vSwitch 运维](vswitch-operations_zh.md#1-部署与前置条件)；底层设计约束仍由本规范定义。
@@ -125,7 +144,7 @@ BPF 程序经 `skb->ingress_ifindex` 在程序内部分派 slot。
 `--mgmt-extract` 的 CIDR 写入 slot 目的流量分类条件,不是管理 peer 的接口地址。
 Connector 创建 veth、设置 MAC/MTU、拉起、挂 TC、写 extraction 并安装 floating
 回程路由。接口地址、local route、服务 listener 和 sysctl 由部署负责,确保目标在
-管理 namespace 内本地持有或经路由可达。systemd 示例用 MGMT_ADDRS 显式配址([§3.3](vswitch-operations_zh.md#33-systemd-集成))。
+管理 namespace 内本地持有或经路由可达。systemd 示例用 MGMT_ADDRS 显式配址([§1.3](vswitch-operations_zh.md#33-systemd-集成))。
 
 **沙箱 → 管理服务**(如 169.254.169.254):
 
@@ -345,14 +364,7 @@ TLV locator 的 `--geneve-tlv-locator=CLASS:TYPE` 是精确 wire class/type。�
 type`,`Length=1`,`Data=be32(slot_id)`,总长 8 bytes,且始终排在 options 首位。新定义
 可优先选用 critical type,但是否设置 critical bit 由协议双方决定。
 
-Attach 可重复提供 `--transit-geneve-opt=CLASS:TYPE:DATA`:
-
-```bash
-connector-ctl vswitch attach sw0 --inner-ip=169.254.1.1 \
-    --transit-gateway-ip=10.0.0.2 --transit-geneve-vni=42 \
-    --transit-geneve-opt=0102:02:0000002a \
-    --transit-geneve-opt=0102:83:1122334455667788
-```
+完整 attach 命令示例见 [运维 §2.4](vswitch-operations_zh.md#24-connector-ctl-vswitch-attach);以下维护 wire 契约。
 
 class/type/data 均为十六进制;type 同样是精确 8-bit wire value;data 长度必须是 4
 字节整数倍,协议合法的零长度写作 `0102:02:`。Connector 保持 option 输入顺序、data
@@ -379,16 +391,7 @@ L2 寻址:外层以太网由 `bpf_redirect_neigh` 经内核邻居子系统解析
 ARP 缓存;内层(仅 Ether-over-GENEVE)目标 MAC 取 `--transit-mac-addr`(未指定则
 广播),源 MAC 为派生端口 MAC,与端口设备一致,便于网关侧网桥 L2 学习。
 
-抓包调试可在 switch netns 的 transit 设备执行:
-
-```bash
-ip netns exec sw0_vswitch tcpdump -ni eth1 -vv -XX 'udp port 6081 or udp portrange 50000-54095'
-connector-ctl vswitch show config sw0
-connector-ctl vswitch show slots sw0
-```
-
-在 pcap 中核对 UDP dst、24-bit VNI、`OptLen`、base `C`、option class/type/length/data
-及 inner payload 起始偏移。TLV locator data 应是零基 slot_id 的 big-endian 32-bit 值。
+抓包命令与字段检查见 [运维 §3.1](vswitch-operations_zh.md#31-geneve-抓包)。
 
 ### 6.3 slot 分配与状态机
 
@@ -481,8 +484,8 @@ port ingress,写设备/管理/transit 字段,再 CAS Reserved→Free。Free/Allo
 | 交换机端设备 | `<sw>-nX`(veth 对端) | `<sw>-tX`(持久 tap,`TUNSETPERSIST`) |
 | 沙箱端 | `<sw>-pX`(attach 时移入沙箱 netns) | 无设备——沙箱经 `SCM_RIGHTS` 拿 fd |
 | `--port-netns` | 必需 | 不需要(tap 留在 switch netns) |
-| attach | CAS + 移动 `<sw>-pX` 进沙箱 netns | 仅 CAS(`slot.ifindex == 0` 则拒绝) |
-| detach | CAS + 把 `<sw>-pX` 移回 port netns | 仅 CAS |
+| attach | slot claim/control 更新，并可把 `<sw>-pX` 移入沙箱 netns | slot claim/control 更新；没有已 provision 的 ifindex 时拒绝 |
+| detach | 释放 claim，按配置检查/移回 peer；可显式跳过 | 释放 claim，不移动 TAP |
 | 取 fd | n/a | `open-port`([§2.8](vswitch-operations_zh.md#28-connector-ctl-vswitch-open-port))或 `attach --open-port` |
 
 模式切换:`provision --mode=<new>` 在 Reserved slot 上先创建新模式设备 → commit 新
@@ -490,8 +493,7 @@ port ingress,写设备/管理/transit 字段,再 CAS Reserved→Free。Free/Allo
 
 **核心不变量**:attach 和 detach 永远不创建/删除设备(两种模式皆然)。设备生命周期由
 `provision`(创建)与 `stop`/`stop --force`(删除)完全拥有;`stop --force-clean` 只
-unpin BPF 资源、不删设备。`--skip-device` 只跳过 veth 的 netns 移动,不绕过"必须
-provisioned"的前提。
+unpin BPF 资源、不删设备。`--skip-device` 控制允许的设备移动/检查，不会把 attach 变为设备 provision 操作。
 
 ### 6.7 tap fd 交接
 

@@ -209,8 +209,8 @@ Recommended error codes are `BAD_REQUEST`, `SWITCH_MISMATCH`, `PORT_INVALID`, `P
 <a id="5-生命周期与幂等"></a>
 ## 5. Lifetime and idempotency
 
-- **Device and descriptor lifetimes are separate:** the provider independently manages the TAP device. A transferred descriptor is only one queue reference; closing it in the consumer does **not** destroy the device. The provider **SHOULD** use a persistent TAP (`TUNSETPERSIST`) so the device survives descriptor closure.
-- **Reacquisition is idempotent:** consumer process exit closes its queue descriptors and detaches those queues, while the device remains. The consumer **MAY** request another handoff to obtain new queue descriptors.
+- **Device and descriptor lifetimes are separate:** a transferred descriptor is one TAP queue reference. The provider **SHOULD** use a persistent TAP (`TUNSETPERSIST`) when it independently manages a device that must survive descriptor closure. Closing consumer descriptors does not remove such a persistent device. For a nonpersistent TAP, including `connector-ctl tapfd get --new`, the device disappears when its last reference closes.
+- **Reacquisition:** consumer exit closes its queue descriptors and detaches those queues. If the provider-managed TAP still exists, the consumer **MAY** request another handoff to obtain new queue descriptors. A nonpersistent TAP that has disappeared must be recreated before another handoff; this protocol does not make device recreation or network-resource allocation idempotent.
 - **Descriptors work across netns boundaries:** the TAP may be in a provider-owned namespace, but a queue descriptor is a kernel reference. The consumer does **not** need to enter that namespace to use it.
 
 <a id="6-安全考量"></a>

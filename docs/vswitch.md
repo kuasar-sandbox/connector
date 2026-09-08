@@ -68,11 +68,38 @@ flowchart TD
 This fits a single-host MicroVM platform using Firecracker, Cloud Hypervisor or QEMU/KVM where each VM needs controlled egress and configured port capacity stays within 4096. It is not a distributed SDN control plane, a fine-grained L4+ multi-tenant policy manager or a connection-tracking/L7 security gateway.
 
 
+<a id="2-命令行接口"></a>
+<a id="21-subcommands"></a>
+<a id="21-子命令总览"></a>
+<a id="210-connector-ctl-vswitch-stats"></a>
+<a id="211-connector-ctl-vswitch-show"></a>
+<a id="212-connector-ctl-vswitch-dhcp"></a>
+<a id="213-connector-ctl-tapfd-get"></a>
+<a id="214-configuration-file---config"></a>
+<a id="214-配置文件--config"></a>
+<a id="22-connector-ctl-vswitch-start--serve"></a>
+<a id="23-connector-ctl-vswitch-stop"></a>
+<a id="24-connector-ctl-vswitch-attach"></a>
+<a id="25-connector-ctl-vswitch-detach"></a>
+<a id="26-connector-ctl-vswitch-reserve"></a>
+<a id="27-connector-ctl-vswitch-provision"></a>
+<a id="28-connector-ctl-vswitch-open-port"></a>
+<a id="29-connector-ctl-vswitch-status"></a>
+
 ## 2. Command-line interface
 
 Operational procedures and complete examples are in [vSwitch operations](vswitch-operations.md#2-command-line-and-configuration-reference). The underlying design constraints remain in this specification.
 
 
+<a id="3-部署"></a>
+<a id="31-system-requirements"></a>
+<a id="31-系统要求"></a>
+<a id="32-build"></a>
+<a id="32-构建"></a>
+<a id="33-systemd-integration"></a>
+<a id="33-systemd-集成"></a>
+<a id="34-first-startup"></a>
+<a id="34-首次启动"></a>
 ## 3. Deployment
 
 Operational procedures and complete examples are in [vSwitch operations](vswitch-operations.md#1-deployment-and-prerequisites). The underlying design constraints remain in this specification.
@@ -117,7 +144,7 @@ Device names follow `<switch>-{p,n,m,t}<id>`: `sw1-p7` is the sandbox veth peer,
 
 ### 4.3 Packet paths
 
-CIDRs from `--mgmt-extract` populate each slot's destination classifiers; they do not assign addresses to the management peer. Connector creates the pair, sets MAC/MTU, brings it up, attaches TC, records extraction matches and installs floating-IP return routes. Deployment supplies interface addresses, local routes, service listeners and sysctls, ensuring the selected destination is local or otherwise reachable in the management namespace. The service template uses MGMT_ADDRS for explicit address assignment ([§3.3](vswitch-operations.md#33-systemd-integration)).
+CIDRs from `--mgmt-extract` populate each slot's destination classifiers; they do not assign addresses to the management peer. Connector creates the pair, sets MAC/MTU, brings it up, attaches TC, records extraction matches and installs floating-IP return routes. Deployment supplies interface addresses, local routes, service listeners and sysctls, ensuring the selected destination is local or otherwise reachable in the management namespace. The service template uses MGMT_ADDRS for explicit address assignment ([§1.3](vswitch-operations.md#33-systemd-integration)).
 
 **Sandbox → management service**, for example 169.254.169.254:
 
@@ -311,14 +338,7 @@ The VNI locator has a fixed 12/12 split:
 
 `--geneve-tlv-locator=CLASS:TYPE` is an exact wire class/type. For `0102:81`, type is raw byte 0x81, including its critical bit; Connector does not silently set or clear 0x80. The generated option is Class=configured class, Type=configured type, Length=1, Data=be32(slot_id), eight bytes total, always first. New protocols may choose a critical type, but the two peers must agree.
 
-Attach accepts repeated opaque options:
-
-```bash
-connector-ctl vswitch attach sw0 --inner-ip=169.254.1.1 \
-    --transit-gateway-ip=10.0.0.2 --transit-geneve-vni=42 \
-    --transit-geneve-opt=0102:02:0000002a \
-    --transit-geneve-opt=0102:83:1122334455667788
-```
+[Operations §2.4](vswitch-operations.md#24-connector-ctl-vswitch-attach) contains the complete attach command example. The wire contract follows.
 
 Class, type and data are hex; type is the exact eight-bit wire value. Data length must be a multiple of four bytes, including zero (`0102:02:`). Input order, data byte order and duplicates are preserved. In TLV mode, an opaque option cannot share the locator's class and low seven type bits, even with a different critical bit. The GENEVE base C bit is one if the locator or any opaque option has `type & 0x80 != 0`, otherwise zero.
 
@@ -330,15 +350,7 @@ The inner five-tuple Jenkins hash selects an outer UDP source in **49152–65535
 
 For outer L2 delivery, bpf_redirect_neigh uses the kernel neighbor subsystem; the BPF program maintains no ARP cache. In Ether-over-GENEVE, the inner destination is transit-mac-addr or broadcast, and the inner source is the selected port MAC, matching the device/VMM configuration for gateway bridge learning.
 
-Capture on the switch namespace's transit device:
-
-```bash
-ip netns exec sw0_vswitch tcpdump -ni eth1 -vv -XX 'udp port 6081 or udp portrange 50000-54095'
-connector-ctl vswitch show config sw0
-connector-ctl vswitch show slots sw0
-```
-
-Inspect UDP destination, the 24-bit VNI, OptLen, base C, option class/type/length/data and the start of the inner payload. TLV locator data must be the zero-based slot ID in big-endian 32-bit form.
+Packet-capture commands and field inspection belong to [Operations §3.1](vswitch-operations.md#31-geneve-packet-capture).
 
 <a id="63-slot-分配与状态机"></a>
 
@@ -565,6 +577,7 @@ Linux 5.8+ separates some BPF privileges into CAP_BPF, but this does not replace
 After a serve crash, systemd Restart=on-failure launches a process that reopens compatible pinned state, skips already Free/Allocated ports during provisioning and resumes control/provider service. Existing forwarding can continue during this **process-only** restart. Deleted namespaces/devices, damaged maps, host reboot or incompatible ABI are different failures and are not covered by that guarantee.
 
 
+<a id="82-故障排除"></a>
 ### 8.2 Troubleshooting
 
 Operational procedures and complete examples are in [vSwitch operations](vswitch-operations.md#3-troubleshooting). The underlying design constraints remain in this specification.

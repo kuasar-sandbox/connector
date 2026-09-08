@@ -97,7 +97,7 @@ connector-ctl vswitch stop sw1
 
 - [vSwitch 运维](docs/vswitch-operations_zh.md) — 完整 CLI/配置、部署与故障排除。
 
-- [docs/vswitch_zh.md](docs/vswitch_zh.md) — 设计与命令参考:架构/数据面/关键机制/安全/
+- [docs/vswitch_zh.md](docs/vswitch_zh.md) — 设计:架构/数据面/关键机制/安全/
   可靠性/性能/测试。
 - [docs/tapfd_zh.md](docs/tapfd_zh.md) — tapfd 交接协议规格(provider/consumer 双侧契约,
   normative)。

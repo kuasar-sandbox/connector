@@ -274,6 +274,15 @@ Combined `attach --open-port` output, selected fields:
 }
 ```
 
+Attach accepts repeated opaque options:
+
+```bash
+connector-ctl vswitch attach sw0 --inner-ip=169.254.1.1 \
+    --transit-gateway-ip=10.0.0.2 --transit-geneve-vni=42 \
+    --transit-geneve-opt=0102:02:0000002a \
+    --transit-geneve-opt=0102:83:1122334455667788
+```
+
 ### 2.5 `connector-ctl vswitch detach`
 
 For a new switch, detach holds the per-switch control flock, directly CASes Allocated→Free, then clears the options fast-path hint. Reserved is reserved for explicit reserve/provision/stop state, not a detach intermediate. Detach leaves the fixed-size options map value and other transit fields for the next Attach to overwrite; free slots are ignored by the data plane. Old switches without `geneve_opts` retain their CAS-only path.
@@ -487,3 +496,17 @@ With `--config`, the positional switch name overrides the file's name, but ordin
 | ABI incompatible after upgrade | Drain/stop consumers and use normal or forced cleanup. For damaged state, force-clean only removes pins; explicitly inspect/remove orphaned devices/TC and return transit before recreating. |
 | `port not provisioned` or a Reserved slot cannot attach | Inspect `ports_available`/`ports_reserved` or the selected slot, wait/retry, or explicitly repair the Reserved slot. `PortDevicesReady=True` alone does not prove allocatable capacity. |
 | open-port reports `port not attached` | Attach first, then request the queue. |
+
+### 3.1 GENEVE packet capture
+
+Use the actual switch namespace, transit device and configured locator ports; the filter below is an example, not a universal port range. Capture only authorized traffic and protect captures because payloads and topology can be sensitive.
+
+Capture on the switch namespace's transit device:
+
+```bash
+ip netns exec sw0_vswitch tcpdump -ni eth1 -vv -XX 'udp port 6081 or udp portrange 50000-54095'
+connector-ctl vswitch show config sw0
+connector-ctl vswitch show slots sw0
+```
+
+Inspect UDP destination, the 24-bit VNI, OptLen, base C, option class/type/length/data and the start of the inner payload. TLV locator data must be the zero-based slot ID in big-endian 32-bit form.

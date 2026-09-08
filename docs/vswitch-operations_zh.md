@@ -240,8 +240,7 @@ unpin maps,把 transit 移入 **stop 调用方的 namespace**。若要还给原 
 
 ### 2.4 `connector-ctl vswitch attach`
 
-分配端口:CAS Free→IP;veth 模式可同时把端口设备移入沙箱 netns。端口未 provision 时
-返回 `port not provisioned`,调用方应重试([§6.5](vswitch_zh.md#65-两阶段启动))。
+分配端口：CAS Free→IP；veth 模式可同时把端口设备移入沙箱 netns。未 provision 的端口不可使用；异步启动期间，调用方应处理尚未 provision、分配失败或无可用端口的状态，并按[就绪条件（§6.5）](vswitch_zh.md#65-两阶段启动)重试。
 
 | 参数 | 说明 |
 | --- | --- |
@@ -284,6 +283,15 @@ attach/show JSON 的 `geneve_opts_len` 为 locator 加 opaque options 的总 wir
   "inner_ip": "169.254.4.1",
   "tap_sent_to": "/tmp/recv.sock"
 }
+```
+
+Attach 可重复提供 `--transit-geneve-opt=CLASS:TYPE:DATA`:
+
+```bash
+connector-ctl vswitch attach sw0 --inner-ip=169.254.1.1 \
+    --transit-gateway-ip=10.0.0.2 --transit-geneve-vni=42 \
+    --transit-geneve-opt=0102:02:0000002a \
+    --transit-geneve-opt=0102:83:1122334455667788
 ```
 
 ### 2.5 `connector-ctl vswitch detach`
@@ -521,3 +529,18 @@ ABI 只有三个位置,当前 provision 达上限便停止写入。JSON 解析�
 | 升级后 ABI 不兼容 | 先排空/停止 consumer,正常或强制 cleanup;损坏状态的 force-clean 只删 pins,还须检查/清理孤儿设备/TC 并还回 transit,再 recreate。 |
 | `port not provisioned` 或 Reserved slot 无法 attach | 检查 `ports_available`/`ports_reserved` 或目标 slot,等待/重试或显式修复 Reserved slot;仅凭 `PortDevicesReady=True` 不能证明有可分配容量 |
 | open-port 报 `port not attached` | 先 attach 再 open-port |
+
+### 3.1 GENEVE 抓包
+
+按实际 switch namespace、transit 设备和配置的 locator 端口调整命令;下方 filter 只是示例,不是通用端口范围。只抓取已授权流量,并保护可能含敏感 payload 与拓扑的抓包结果。
+
+抓包调试可在 switch netns 的 transit 设备执行:
+
+```bash
+ip netns exec sw0_vswitch tcpdump -ni eth1 -vv -XX 'udp port 6081 or udp portrange 50000-54095'
+connector-ctl vswitch show config sw0
+connector-ctl vswitch show slots sw0
+```
+
+在 pcap 中核对 UDP dst、24-bit VNI、`OptLen`、base `C`、option class/type/length/data
+及 inner payload 起始偏移。TLV locator data 应是零基 slot_id 的 big-endian 32-bit 值。
