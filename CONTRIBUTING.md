@@ -56,7 +56,7 @@ Draft pull requests are welcome for early feedback, but they are not merge candi
 
 ## Documentation
 
-Follow the [project documentation policy](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/documentation-policy.md). Maintain full English/Chinese pairs at `name.md` and `name_zh.md` with reciprocal selectors. Preserve requirements, identifiers, examples, diagrams, facts and links; record source-backed corrections. Existing complete English-only material may remain English-only. A summary or language-detector pass is not a complete translation.
+Follow the [project documentation policy](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/CONTRIBUTING.md#documentation-contributions). Maintain full English/Chinese pairs at `name.md` and `name_zh.md` with reciprocal selectors. Preserve requirements, identifiers, examples, diagrams, facts and links; record source-backed corrections. Existing complete English-only material may remain English-only. A summary or language-detector pass is not a complete translation.
 
 ## Licensing of contributions
 

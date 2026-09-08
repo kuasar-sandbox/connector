@@ -13,7 +13,7 @@ MUST / MUST NOT / SHOULD / SHOULD NOT / MAY。consumer 如何在自身配置中�
 (YAML/JSON 格式、L3/路由/DNS 等字段)是 consumer 的实现细节,不属于本协议。
 
 参考实现:`connector-ctl vswitch open-port` 与`connector-ctl tapfd get` 子命令 是 provider 实现
-([vswitch.md](vswitch_zh.md) §2.8、§2.13);Go 参考库
+([open-port](vswitch-operations_zh.md#28-connector-ctl-vswitch-open-port)、[tapfd provider](vswitch-operations_zh.md#213-connector-ctl-tapfd-get));Go 参考库
 `github.com/kuasar-sandbox/connector/pkg/tapfd` 覆盖收发两侧;可运行的
 consumer 示例见源码树 `examples/tapfd_receiver/`。
 
@@ -263,11 +263,8 @@ TAPFD/1 ERR code=PORT_UNAVAILABLE message=port_not_attached\n
 
 ## 5. 生命周期与幂等
 
-- **设备与 fd 解耦**:tap 设备的生命周期由 provider 独立管理,与交接出去的 fd 解耦。
-  被传递的 fd 只是该设备的一个队列引用;consumer 关闭 fd **不会**销毁设备。provider
-  **应当**以持久 tap(`TUNSETPERSIST`)承载该设备,使其在 fd 关闭后仍存在。
-- **重新获取幂等**:consumer 进程退出会关闭其队列 fd(队列从 tap 解绑),但设备仍在;
-  consumer **可**再次向 provider 发起交接,获取一个新的队列 fd。
+- **设备与 fd 生命周期有别**：交接的 fd 是一个 TAP 队列引用。如果 provider 独立管理的设备必须在 fd 关闭后继续存在，provider **应当**使用持久 TAP（`TUNSETPERSIST`）。consumer 关闭 fd 不会删除这样的持久设备。非持久 TAP（包括 `connector-ctl tapfd get --new` 创建的设备）会在最后一个引用关闭时消失。
+- **重新获取**：consumer 退出会关闭其队列 fd 并解绑队列。如果 provider 管理的 TAP 仍存在，consumer **可**再次请求交接以获取新的队列 fd。已经消失的非持久 TAP 必须先重建再交接；本协议并不使设备重建或网络资源分配自动具备幂等性。
 - **fd 跨 netns**:tap 设备可能位于 provider 的某个 network namespace,但队列 fd 是
   内核引用,consumer **无需**进入该 netns 即可使用。
 
@@ -340,8 +337,7 @@ if err != nil { log.Fatal(err) }
 <a id="8-see-also"></a>
 ## 9. See Also
 
-- [vswitch.md](vswitch_zh.md) — connector 设计与命令参考;`open-port`(§2.8)与
-  `connector-ctl tapfd get`(§2.13)是本协议的 provider 实现,§6.7 记录其实现取舍。
+- [vSwitch 运维](vswitch-operations_zh.md) — connector 命令参考；`open-port` 与 [`connector-ctl tapfd get`（§2.13）](vswitch-operations_zh.md#213-connector-ctl-tapfd-get) 是本协议的 provider 实现；[vSwitch 设计 §6.7](vswitch_zh.md#67-tap-fd-交接) 记录交接实现取舍。
 - `pkg/tapfd` — Go 参考库:provider 侧 `OpenTap`/`SendFd`,consumer 侧
   `RecvFd`/`RecvFds`/`RecvFdsWithNetns`,建连 `ConnectUnix`/`UnixConnFromFd`。
 - 源码树 `examples/tapfd_receiver/` — 可运行的 consumer 示例。
