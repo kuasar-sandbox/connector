@@ -6,7 +6,7 @@ In some virtualized networking deployments, a **provider** (switch or network ba
 
 The protocol is self-contained: either side can implement it without knowing the other's internals. Sections 2 (handoff wire protocol), 3 (dynamic acquisition contract) and 4 (persistent provider socket) are **normative**. The requirement words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** retain their RFC 2119 meanings. How a consumer represents networking in its own configuration (YAML/JSON, L3, routes, DNS and similar fields) is a consumer implementation detail, not part of this protocol.
 
-Reference providers are `connector-ctl vswitch open-port` and `connector-ctl tapfd get` ([vswitch.md](vswitch.md), sections 2.8 and 2.13). The Go reference library, `github.com/kuasar-sandbox/connector/pkg/tapfd`, implements both sending and receiving. A runnable consumer example is in [`examples/tapfd_receiver/`](../examples/tapfd_receiver/).
+Reference providers are `connector-ctl vswitch open-port` and `connector-ctl tapfd get` ([open-port](vswitch-operations.md#28-connector-ctl-vswitch-open-port) and [tapfd get](vswitch-operations.md#213-connector-ctl-tapfd-get)). The Go reference library, `github.com/kuasar-sandbox/connector/pkg/tapfd`, implements both sending and receiving. A runnable consumer example is in [`examples/tapfd_receiver/`](../examples/tapfd_receiver/).
 
 <a id="1-概述"></a>
 ## 1. Overview
@@ -270,7 +270,7 @@ Without the library, implement section 2.4 directly with `recvmsg(2)` and `SCM_R
 <a id="8-see-also"></a>
 ## 9. See also
 
-- [vswitch.md](vswitch.md): connector design and command reference. `open-port` (section 2.8) and `connector-ctl tapfd get` (section 2.13) implement the provider side; section 6.7 records implementation tradeoffs.
+- [vSwitch operations](vswitch-operations.md): `open-port` and `connector-ctl tapfd get` implement the provider side. [vSwitch design](vswitch.md#67-tap-descriptor-handoff) records implementation tradeoffs.
 - [`pkg/tapfd`](../pkg/tapfd/): Go reference library. Provider: `OpenTap`/`SendFd`; consumer: `RecvFd`/`RecvFds`/`RecvFdsWithNetns`; connection setup: `ConnectUnix`/`UnixConnFromFd`.
 - [`examples/tapfd_receiver/`](../examples/tapfd_receiver/): runnable consumer example.
 - unix(7), cmsg(3): `SCM_RIGHTS` descriptor passing.
