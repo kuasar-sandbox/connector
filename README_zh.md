@@ -84,7 +84,7 @@ connector-ctl vswitch stop sw1
 从应接收归还 transit 设备的 namespace 执行 `stop`。检查端口与 transit 的实际 MTU:
 当前两阶段 provision 未把 `--mtu` 传给新建 TAP/veth 端口。
 
-命令与参数详见 [docs/vswitch_zh.md](docs/vswitch_zh.md) §2;Go 接收端(consumer)示例见
+命令与参数详见 [vSwitch 运维 — 命令行参考](docs/vswitch-operations_zh.md#2-命令行接口);Go 接收端(consumer)示例见
 [docs/tapfd_zh.md](docs/tapfd_zh.md#8-交接示例) §8 与源码树 `examples/tapfd_receiver/`。
 
 旧版 [manage_switch.sh](examples/manage_switch.sh) 辅助脚本演示 veth namespace 编排。
@@ -95,7 +95,9 @@ connector-ctl vswitch stop sw1
 
 ## 文档
 
-- [docs/vswitch_zh.md](docs/vswitch_zh.md) — 设计与命令参考:架构/数据面/关键机制/安全/
+- [vSwitch 运维](docs/vswitch-operations_zh.md) — 完整 CLI/配置、部署与故障排除。
+
+- [docs/vswitch_zh.md](docs/vswitch_zh.md) — 设计:架构/数据面/关键机制/安全/
   可靠性/性能/测试。
 - [docs/tapfd_zh.md](docs/tapfd_zh.md) — tapfd 交接协议规格(provider/consumer 双侧契约,
   normative)。

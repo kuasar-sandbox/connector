@@ -6,7 +6,7 @@ In some virtualized networking deployments, a **provider** (switch or network ba
 
 The protocol is self-contained: either side can implement it without knowing the other's internals. Sections 2 (handoff wire protocol), 3 (dynamic acquisition contract) and 4 (persistent provider socket) are **normative**. The requirement words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** retain their RFC 2119 meanings. How a consumer represents networking in its own configuration (YAML/JSON, L3, routes, DNS and similar fields) is a consumer implementation detail, not part of this protocol.
 
-Reference providers are `connector-ctl vswitch open-port` and `connector-ctl tapfd get` ([vswitch.md](vswitch.md), sections 2.8 and 2.13). The Go reference library, `github.com/kuasar-sandbox/connector/pkg/tapfd`, implements both sending and receiving. A runnable consumer example is in [`examples/tapfd_receiver/`](../examples/tapfd_receiver/).
+Reference providers are `connector-ctl vswitch open-port` and `connector-ctl tapfd get` ([open-port](vswitch-operations.md#28-connector-ctl-vswitch-open-port) and [tapfd get](vswitch-operations.md#213-connector-ctl-tapfd-get)). The Go reference library, `github.com/kuasar-sandbox/connector/pkg/tapfd`, implements both sending and receiving. A runnable consumer example is in [`examples/tapfd_receiver/`](../examples/tapfd_receiver/).
 
 <a id="1-概述"></a>
 ## 1. Overview
@@ -209,8 +209,8 @@ Recommended error codes are `BAD_REQUEST`, `SWITCH_MISMATCH`, `PORT_INVALID`, `P
 <a id="5-生命周期与幂等"></a>
 ## 5. Lifetime and idempotency
 
-- **Device and descriptor lifetimes are separate:** the provider independently manages the TAP device. A transferred descriptor is only one queue reference; closing it in the consumer does **not** destroy the device. The provider **SHOULD** use a persistent TAP (`TUNSETPERSIST`) so the device survives descriptor closure.
-- **Reacquisition is idempotent:** consumer process exit closes its queue descriptors and detaches those queues, while the device remains. The consumer **MAY** request another handoff to obtain new queue descriptors.
+- **Device and descriptor lifetimes are separate:** a transferred descriptor is one TAP queue reference. The provider **SHOULD** use a persistent TAP (`TUNSETPERSIST`) when it independently manages a device that must survive descriptor closure. Closing consumer descriptors does not remove such a persistent device. For a nonpersistent TAP, including `connector-ctl tapfd get --new`, the device disappears when its last reference closes.
+- **Reacquisition:** consumer exit closes its queue descriptors and detaches those queues. If the provider-managed TAP still exists, the consumer **MAY** request another handoff to obtain new queue descriptors. A nonpersistent TAP that has disappeared must be recreated before another handoff; this protocol does not make device recreation or network-resource allocation idempotent.
 - **Descriptors work across netns boundaries:** the TAP may be in a provider-owned namespace, but a queue descriptor is a kernel reference. The consumer does **not** need to enter that namespace to use it.
 
 <a id="6-安全考量"></a>
@@ -270,7 +270,7 @@ Without the library, implement section 2.4 directly with `recvmsg(2)` and `SCM_R
 <a id="8-see-also"></a>
 ## 9. See also
 
-- [vswitch.md](vswitch.md): connector design and command reference. `open-port` (section 2.8) and `connector-ctl tapfd get` (section 2.13) implement the provider side; section 6.7 records implementation tradeoffs.
+- [vSwitch operations](vswitch-operations.md): `open-port` and `connector-ctl tapfd get` implement the provider side. [vSwitch design](vswitch.md#67-tap-descriptor-handoff) records implementation tradeoffs.
 - [`pkg/tapfd`](../pkg/tapfd/): Go reference library. Provider: `OpenTap`/`SendFd`; consumer: `RecvFd`/`RecvFds`/`RecvFdsWithNetns`; connection setup: `ConnectUnix`/`UnixConnFromFd`.
 - [`examples/tapfd_receiver/`](../examples/tapfd_receiver/): runnable consumer example.
 - unix(7), cmsg(3): `SCM_RIGHTS` descriptor passing.

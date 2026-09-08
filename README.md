@@ -91,7 +91,7 @@ connector-ctl vswitch detach sw1 --port=1
 connector-ctl vswitch stop sw1
 ```
 
-These addresses are documentation values, not a production topology. Run `stop` from the namespace that should receive the returned transit device. Inspect actual port and transit MTUs: the current two-phase provision path does not propagate `--mtu` to newly created TAP/veth ports. The complete command reference and deployment semantics are in [`docs/vswitch.md`](docs/vswitch.md).
+These addresses are documentation values, not a production topology. Run `stop` from the namespace that should receive the returned transit device. Inspect actual port and transit MTUs: the current two-phase provision path does not propagate `--mtu` to newly created TAP/veth ports. The complete command reference and deployment procedures are in [vSwitch operations](docs/vswitch-operations.md); forwarding and lifecycle constraints are defined in [vSwitch design](docs/vswitch.md).
 
 The legacy [manage_switch.sh](examples/manage_switch.sh) helper illustrates veth
 namespace orchestration. Its current start call omits `--mode=veth` even though
@@ -114,6 +114,8 @@ The project repository publishes aggregate versions named `release-vX.Y.Z`, sele
 See the [project release documentation](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/release.md) and the [latest Stable aggregate release](https://github.com/kuasar-sandbox/kuasar-sandbox/releases/latest).
 
 ## Documentation
+
+- [vSwitch operations](docs/vswitch-operations.md) — complete CLI/configuration, deployment and troubleshooting.
 
 Detailed design and reference documents have complete English and Chinese editions:
 
