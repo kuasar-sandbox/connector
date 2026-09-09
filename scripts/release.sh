@@ -109,7 +109,7 @@ validate_bundle() {
   check_go_binary "$extract/bin/connector-ctl"
   local file
   for file in deploy/connector-vswitch.service deploy/connector-switch.conf \
-    deploy/NetworkManager-connector.conf test/connector/manage_switch.sh \
+    deploy/NetworkManager-connector.conf \
     test/connector/perf_bench.sh test/connector/start_perf_bench.sh; do
     [ -f "$extract/$file" ] || fail "$archive is missing $file"
   done
@@ -133,7 +133,6 @@ package_release() {
   bin_dir="${RELEASE_BIN_DIR:-$ROOT/bin/$arch}"
   copy_executable "$bin_dir/connector-ctl" bin/connector-ctl
   check_go_binary "$STAGE/bin/connector-ctl"
-  copy_root_executable examples/manage_switch.sh test/connector/manage_switch.sh
   copy_root_executable examples/perf_bench.sh test/connector/perf_bench.sh
   copy_root_executable examples/start_perf_bench.sh test/connector/start_perf_bench.sh
   copy_file dist/connector-vswitch.service deploy/connector-vswitch.service

@@ -689,8 +689,8 @@ namespace/设备删除、map 损坏、Host 重启或 ABI 不兼容是其他故�
 | `provision_test.sh` | 两阶段启动 + Reserved 修复 + show |
 | `tap_test.sh` | tap 模式、open-port、`attach --open-port`、模式切换 |
 
-`examples/manage_switch.sh` 是 JSON 配置驱动的交换机管理脚本
-(setup/teardown/status/exec),用于运维操作与手工搭建拓扑。
+手工搭建拓扑与生命周期操作统一见维护中的 [vSwitch 运维指南](vswitch-operations_zh.md)。
+使用 `attach` 返回的实际分配结果，不按沙箱索引推算端口。
 
 ## 11. 内部组织
 

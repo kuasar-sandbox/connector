@@ -46,7 +46,7 @@ sudo make test-e2e              # 运行 test/e2e/run_all.sh
 同一部署目录,包含二进制、部署文件和运维/性能辅助脚本。本仓文档与 `test/e2e/`
 仅由项目主仓从所选 tag 聚合进 platform 包,不在组件包中重复交付。
 当前组件 Release 构建并打包 Linux x86_64 目标;项目聚合发布随后对所选组件的
-真实发布资产组合运行 BMS,不能把组件打包成功等同于聚合 BMS 通过。组件
+真实发布资产组合运行集成测试,不能把组件打包成功等同于聚合集成测试通过。组件
 `main` 用于主线,`release/vX.Y.x` 用于对应组件维护线。Preview 和维护分支 Stable
 不更新 GitHub Latest;独立的幂等 Reconcile Latest 工作流按 `main` 源码提交先后协调
 主线 Stable,同一提交才比较 SemVer。组件版本与平台聚合版本独立,平台始终按精确 Tag
@@ -86,12 +86,6 @@ connector-ctl vswitch stop sw1
 
 命令与参数详见 [vSwitch 运维 — 命令行参考](docs/vswitch-operations_zh.md#2-命令行接口);Go 接收端(consumer)示例见
 [docs/tapfd_zh.md](docs/tapfd_zh.md#8-交接示例) §8 与源码树 `examples/tapfd_receiver/`。
-
-旧版 [manage_switch.sh](examples/manage_switch.sh) 辅助脚本演示 veth namespace 编排。
-当前 start 调用没有传 `--mode=veth`，而 CLI 默认是 TAP；使用 `setup` 前，需将该调用
-调整为 `start --mode=veth --config "$tmpfile"`。脚本还以 sandbox index + 1 推算端口，
-因此只适用于从空闲新交换机顺序分配；复用时必须读取 `attach` 返回的实际端口。
-`help` 输出配置结构，`example` 仅打印 JSON，不配置网络。
 
 ## 文档
 

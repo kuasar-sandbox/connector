@@ -58,7 +58,7 @@ fi
 
 for entrypoint in test/e2e/run_all.sh test/e2e/geneve_eth_test.sh \
   test/e2e/geneve_ip_test.sh test/e2e/mgmt_isolation_test.sh \
-  test/e2e/provision_test.sh test/e2e/tap_test.sh examples/manage_switch.sh \
+  test/e2e/provision_test.sh test/e2e/tap_test.sh \
   examples/perf_bench.sh examples/start_perf_bench.sh; do
   [ "$(git -C "$ROOT" ls-files -s -- "$entrypoint" | awk '{print $1}')" = 100755 ] \
     || fail "$entrypoint is not executable in the Git index"
@@ -86,6 +86,9 @@ for path in ./bin/connector-ctl ./deploy/connector-vswitch.service \
 done
 if tar -tzf "$archive" | grep -E '^\./(docs|test/e2e)(/|$)|^\./test/connector/(geneve_.*_test|mgmt_isolation_test|provision_test|tap_test)\.sh$' >/dev/null; then
   fail "component archive contains documentation or E2E sources"
+fi
+if tar -tzf "$archive" | grep -Fx './test/connector/manage_switch.sh' >/dev/null; then
+  fail "archive contains the retired unsafe topology helper"
 fi
 if tar -tzf "$archive" | grep -E '(^|/)release\.json$|(^|/)release/[^/]+\.json$' >/dev/null; then
   fail "archive contains release metadata JSON"

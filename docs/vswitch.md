@@ -630,7 +630,7 @@ Use the maintained test entry points below and the [project performance methodol
 | provision_test.sh | Two-phase startup, Reserved-slot repair and show. |
 | tap_test.sh | TAP mode, open-port, attach --open-port and mode changes. |
 
-[examples/manage_switch.sh](../examples/manage_switch.sh) manages JSON-configured switches with setup/teardown/status/exec, supporting manual operations and topology construction.
+For manual topology construction and lifecycle operations, use the maintained [vSwitch operations guide](vswitch-operations.md). Consume the actual allocation returned by `attach`; do not infer a port from a sandbox index.
 
 <a id="11-内部组织"></a>
 
