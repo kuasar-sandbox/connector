@@ -164,8 +164,7 @@ package_release() {
   copy_file dist/connector-switch.conf deploy/connector-switch.conf
   copy_file dist/NetworkManager-connector.conf deploy/NetworkManager-connector.conf
 
-  project_sha="$(git -C "$ROOT" rev-parse HEAD)"
-  [[ "$project_sha" =~ ^[0-9a-f]{40}$ ]] || fail "cannot resolve the connector source commit"
+  project_sha="$(release_materials_resolve_git_source "$ROOT" "" connector)"
   release_materials_init "$STAGE" "$WORK/materials" "$NAME"
   release_materials_copy_licenses "$ROOT" project
   release_materials_record_source 'bin/*,deploy/*,test/connector/*' connector "$version" \

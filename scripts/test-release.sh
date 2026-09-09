@@ -11,6 +11,46 @@ fail() {
   exit 1
 }
 
+# shellcheck source=scripts/release-materials.sh
+source "$ROOT/scripts/release-materials.sh"
+
+init_fixture_repo() {
+  local directory="$1"
+  shift
+  git -C "$directory" init -q
+  git -C "$directory" config --local user.name "Chen Xiaohui"
+  git -C "$directory" config --local user.email "graych@gmail.com"
+  git -C "$directory" add -- "$@"
+  git -C "$directory" commit -q -m "test: create release source fixture"
+  git -C "$directory" rev-parse HEAD
+}
+
+mkdir -p "$TMP/git-source" \
+  "$TMP/material-hash/share/licenses/hash-test/LICENSES" \
+  "$TMP/material-hash/share/sources/hash-test"
+printf 'fixture license\n' > "$TMP/git-source/LICENSE"
+fixture_git_sha="$(init_fixture_repo "$TMP/git-source" LICENSE)"
+[ "$(release_materials_resolve_git_source "$TMP/git-source" "$fixture_git_sha" fixture)" = "$fixture_git_sha" ] \
+  || fail "clean source worktree did not resolve to its selected commit"
+if (release_materials_resolve_git_source "$TMP/git-source" \
+  0000000000000000000000000000000000000000 fixture >/dev/null 2>&1); then
+  fail "source resolver accepted a commit that differs from the selected commit"
+fi
+printf 'untracked source\n' > "$TMP/git-source/untracked.go"
+if (release_materials_resolve_git_source "$TMP/git-source" "" fixture >/dev/null 2>&1); then
+  fail "source resolver accepted a dirty source worktree"
+fi
+printf 'nested license manifest\n' \
+  > "$TMP/material-hash/share/licenses/hash-test/LICENSES/MATERIALS.sha256"
+printf 'generated inventory\n' \
+  > "$TMP/material-hash/share/sources/hash-test/MATERIALS.sha256"
+release_materials_hash_tree "$TMP/material-hash" hash-test "$TMP/material-hash-actual"
+grep -Fq 'share/licenses/hash-test/LICENSES/MATERIALS.sha256' "$TMP/material-hash-actual" \
+  || fail "license file named MATERIALS.sha256 was omitted from the material inventory"
+if grep -Fq 'share/sources/hash-test/MATERIALS.sha256' "$TMP/material-hash-actual"; then
+  fail "generated material inventory included itself"
+fi
+
 bash "$ROOT/scripts/test-preview-line.sh"
 bash "$ROOT/scripts/test-delete-preview.sh"
 
@@ -80,17 +120,22 @@ SOURCE_DATE_EPOCH=1700000000 RELEASE_BIN_DIR="$TMP/bin" \
   1111111111111111111111111111111111111111 release/v1.2.x
 
 archive="$TMP/bundle/assets/connector-v1.2.3-linux-x86_64.tar.gz"
+go_toolchain="$(go version | awk '{print $3}')"
 for path in ./bin/connector-ctl ./deploy/connector-vswitch.service \
   ./test/connector/perf_bench.sh \
   ./share/licenses/connector/project/LICENSE \
   ./share/licenses/connector/project/LICENSE_SCOPE.md \
   ./share/licenses/connector/project/LICENSES/GPL-2.0-only.txt \
+  ./share/licenses/connector/go-toolchain/"$go_toolchain"/LICENSE \
   ./share/sources/connector/SOURCES.tsv \
   ./share/sources/connector/GO-BUILD-INFO.tsv \
   ./share/sources/connector/GO-MODULES.tsv \
   ./share/sources/connector/MATERIALS.sha256; do
   tar -tzf "$archive" | grep -Fx "$path" >/dev/null || fail "archive is missing $path"
 done
+tar -xOf "$archive" ./share/sources/connector/SOURCES.tsv \
+  | grep -Fq $'\tGo toolchain\t'"$go_toolchain"$'\t' \
+  || fail "archive does not associate its Go toolchain with license material"
 if tar -tzf "$archive" | grep -E '^\./(docs|test/e2e)(/|$)|^\./test/connector/(geneve_.*_test|mgmt_isolation_test|provision_test|tap_test)\.sh$' >/dev/null; then
   fail "component archive contains documentation or E2E sources"
 fi
