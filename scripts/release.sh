@@ -129,6 +129,9 @@ validate_bundle() {
   mkdir -p "$extract"
   tar -xzf "$bundle/assets/$archive" -C "$extract"
   release_materials_validate "$extract" "$NAME"
+  release_materials_require_source "$extract" "$NAME" 'bin/*,deploy/*,test/connector/*' 'connector' "$version"
+  release_materials_require_source "$extract" "$NAME" 'bin/connector-ctl' 'embedded-ebpf' "$version"
+  release_materials_require_go "$extract" "$NAME" 'bin/connector-ctl'
   [ -x "$extract/bin/connector-ctl" ] \
     || fail "$archive is missing executable bin/connector-ctl"
   check_go_binary "$extract/bin/connector-ctl"
