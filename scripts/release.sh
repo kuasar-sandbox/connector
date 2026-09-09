@@ -137,7 +137,8 @@ validate_bundle() {
   mkdir -p "$extract"
   tar -xzf "$bundle/assets/$archive" -C "$extract"
   release_materials_validate "$extract" "$NAME"
-  release_materials_require_source "$extract" "$NAME" 'bin/*,deploy/*,test/connector/*' 'connector' "$version"
+  release_materials_require_project_source "$extract" "$NAME" 'bin/*,deploy/*,test/connector/*' "$version" \
+    bin/connector-ctl
   release_materials_require_source "$extract" "$NAME" 'bin/connector-ctl' 'embedded-ebpf' "$version"
   release_materials_require_go "$extract" "$NAME" 'bin/connector-ctl'
   [ -x "$extract/bin/connector-ctl" ] \
@@ -176,10 +177,12 @@ package_release() {
   copy_file dist/NetworkManager-connector.conf deploy/NetworkManager-connector.conf
 
   project_sha="$(release_materials_resolve_git_source "$ROOT" "" connector)"
+  local project_version
+  project_version="$(release_materials_git_version "$ROOT" "$version" "$project_sha")"
   release_materials_require_go_revision "$STAGE/bin/connector-ctl" "$project_sha"
   release_materials_init "$STAGE" "$WORK/materials" "$NAME"
   release_materials_copy_licenses "$ROOT" project
-  release_materials_record_source 'bin/*,deploy/*,test/connector/*' connector "$version" \
+  release_materials_record_source 'bin/*,deploy/*,test/connector/*' connector "$project_version" \
     "https://github.com/kuasar-sandbox/connector/commit/$project_sha" \
     "git:$project_sha" project
   release_materials_record_source bin/connector-ctl embedded-ebpf "$version" \

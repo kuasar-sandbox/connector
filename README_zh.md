@@ -45,6 +45,10 @@ sudo make test-e2e              # 运行 test/e2e/run_all.sh
 `connector-vX.Y.Z-linux-x86_64.tar.gz` 可与其他 Kuasar Sandbox 组件直接解压到
 同一部署目录,包含二进制、部署文件和运维/性能辅助脚本。本仓文档与 `test/e2e/`
 仅由项目主仓从所选 tag 聚合进 platform 包,不在组件包中重复交付。
+归档名称记录请求的发行版本;来源记录只有在本地 Git Tag 指向所选 commit 时才保留
+该版本,打 Tag 前使用 `git:<commit>`。验证器将所有 Go 载荷及项目来源 URL/摘要
+绑定到同一 commit。发布者传入其预期 commit,在任何 Tag/Release 写入前拒绝不同
+源码产生的包。
 当前组件 Release 构建并打包 Linux x86_64 目标;项目聚合发布随后对所选组件的
 真实发布资产组合运行集成测试,不能把组件打包成功等同于聚合集成测试通过。组件
 `main` 用于主线,`release/vX.Y.x` 用于对应组件维护线。Preview 和维护分支 Stable
