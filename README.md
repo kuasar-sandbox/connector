@@ -60,9 +60,11 @@ The repository includes pre-generated BPF objects, so an ordinary build does not
 
 ## Minimal local example
 
-The following illustrates a fresh switch. Run as root with a dedicated, unused `eth1` that can safely be moved into `sw_ns`; the underlay must support the resulting transit MTU. A TAPFD-capable VMM receiver must already be listening on `/tmp/recv.sock` before `open-port`. Production values depend on the deployment network:
+The following illustrates a fresh switch in Bash with `jq`. Run as root with a dedicated, unused `eth1` that can safely be moved into `sw_ns`; the underlay must support the resulting transit MTU. All three names (`sw1`, `sw_ns`, `mgmt_ns`) must be unused. A TAPFD-capable VMM receiver must already be listening at the run-owned private path supplied in `TAPFD_SOCKET` before `open-port`. Production values depend on the deployment network:
 
 ```bash
+set -euo pipefail
+: "${TAPFD_SOCKET:?Set the existing run-owned VMM receiver socket path}"
 ip netns add sw_ns
 ip netns add mgmt_ns
 ip link set eth1 down
@@ -79,19 +81,25 @@ connector-ctl vswitch start sw1 \
 
 ip netns exec mgmt_ns ip addr replace 169.254.169.254/32 dev eth0
 
-connector-ctl vswitch attach sw1 \
+port="$(connector-ctl vswitch attach sw1 \
     --inner-ip=169.254.1.1 \
     --transit-gateway-ip=10.0.0.2 \
-    --transit-geneve-vni=100
+    --transit-geneve-vni=100 \
+    | jq -er '.port | select(type == "number" and . >= 1 and . <= 128 and floor == .)')"
 
-TAPFD_SOCKET=/tmp/recv.sock \
-    connector-ctl vswitch open-port sw1 --port=1
+TAPFD_SOCKET="$TAPFD_SOCKET" connector-ctl vswitch open-port sw1 --port="$port"
 
-connector-ctl vswitch detach sw1 --port=1
+connector-ctl vswitch detach sw1 --port="$port"
 connector-ctl vswitch stop sw1
+ip netns del mgmt_ns
+ip netns del sw_ns
 ```
 
 These addresses are documentation values, not a production topology. Run `stop` from the namespace that should receive the returned transit device. Inspect actual port and transit MTUs: the current two-phase provision path does not propagate `--mtu` to newly created TAP/veth ports. The complete command reference and deployment procedures are in [vSwitch operations](docs/vswitch-operations.md); forwarding and lifecycle constraints are defined in [vSwitch design](docs/vswitch.md).
+
+This is a manual sequence, not an automatic failure-cleanup helper. Stop at any
+failed command, inspect the actual allocation, and remove only resources created
+by this run. Never force-stop a pre-existing switch or delete a foreign namespace.
 
 ## Integration with sandboxer
 
@@ -112,6 +120,7 @@ source URL/digest to the same commit. The publisher supplies its expected commit
 and rejects a different-source bundle before any Tag or Release write.
 
 `connector` publishes independent component versions named `vX.Y.Z`. The x86_64 component archive contains `connector-ctl`, deployment files, and the operational helpers selected by the component release contract. Design documents and E2E sources are collected from the selected component tag into the project platform archive.
+Use `make release VERSION=vX.Y.Z` to build and validate the same local bundle layout.
 
 The project repository publishes aggregate versions named `release-vX.Y.Z`, selecting an exact `connector` tag together with the other release units and validating the combined platform. Component and aggregate version numbers are independent.
 
