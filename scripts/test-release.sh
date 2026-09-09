@@ -81,7 +81,14 @@ SOURCE_DATE_EPOCH=1700000000 RELEASE_BIN_DIR="$TMP/bin" \
 
 archive="$TMP/bundle/assets/connector-v1.2.3-linux-x86_64.tar.gz"
 for path in ./bin/connector-ctl ./deploy/connector-vswitch.service \
-  ./test/connector/perf_bench.sh; do
+  ./test/connector/perf_bench.sh \
+  ./share/licenses/connector/project/LICENSE \
+  ./share/licenses/connector/project/LICENSE_SCOPE.md \
+  ./share/licenses/connector/project/LICENSES/GPL-2.0-only.txt \
+  ./share/sources/connector/SOURCES.tsv \
+  ./share/sources/connector/GO-BUILD-INFO.tsv \
+  ./share/sources/connector/GO-MODULES.tsv \
+  ./share/sources/connector/MATERIALS.sha256; do
   tar -tzf "$archive" | grep -Fx "$path" >/dev/null || fail "archive is missing $path"
 done
 if tar -tzf "$archive" | grep -E '^\./(docs|test/e2e)(/|$)|^\./test/connector/(geneve_.*_test|mgmt_isolation_test|provision_test|tap_test)\.sh$' >/dev/null; then

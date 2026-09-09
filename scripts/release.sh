@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+umask 022
 
 NAME=connector
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+# shellcheck source=scripts/release-materials.sh
+source "$ROOT/scripts/release-materials.sh"
 
 fail() {
   echo "release: $*" >&2
@@ -79,7 +82,7 @@ test/connector/start_perf_bench.sh
 EOF
   awk '
     { path=$0; sub(/^\.\//, "", path) }
-    path != "" && path !~ /\/$/ { print path }
+    path != "" && path !~ /\/$/ && path !~ /^share\/(licenses|sources)\/connector\// { print path }
   ' "$listing" | LC_ALL=C sort > "$actual_files"
   cmp -s "$expected_files" "$actual_files" \
     || { diff -u "$expected_files" "$actual_files" >&2 || true; fail "$archive does not match the exact connector release file set"; }
@@ -89,6 +92,10 @@ EOF
   # The release contract contains only directories and regular files.
   tar -tvzf "$archive" | awk '$1 !~ /^[-d]/ { exit 1 }' \
     || fail "$archive contains a non-regular, non-directory entry"
+  awk '
+    { path=$0; sub(/^\.\//, "", path) }
+    path != "" && path !~ /\/$/ && path ~ /^share\// && path !~ /^share\/(licenses|sources)\/connector\// { exit 1 }
+  ' "$listing" || fail "$archive contains another release unit's material namespace"
 }
 
 validate_bundle() {
@@ -121,6 +128,7 @@ validate_bundle() {
   rm -rf "$extract"
   mkdir -p "$extract"
   tar -xzf "$bundle/assets/$archive" -C "$extract"
+  release_materials_validate "$extract" "$NAME"
   [ -x "$extract/bin/connector-ctl" ] \
     || fail "$archive is missing executable bin/connector-ctl"
   check_go_binary "$extract/bin/connector-ctl"
@@ -134,7 +142,7 @@ validate_bundle() {
 
 package_release() {
   [ "$#" -eq 3 ] || fail "usage: release.sh package <version> <arch> <output-dir>"
-  local version="$1" arch output="$3" archive epoch bin_dir
+  local version="$1" arch output="$3" archive epoch bin_dir project_sha
   arch="$(normalize_arch "$2")"
   archive="$(archive_name "$version" "$arch")"
   if [ -z "$output" ] || [ "$output" = / ] || [ "$output" = . ]; then
@@ -155,6 +163,19 @@ package_release() {
   copy_file dist/connector-vswitch.service deploy/connector-vswitch.service
   copy_file dist/connector-switch.conf deploy/connector-switch.conf
   copy_file dist/NetworkManager-connector.conf deploy/NetworkManager-connector.conf
+
+  project_sha="$(git -C "$ROOT" rev-parse HEAD)"
+  [[ "$project_sha" =~ ^[0-9a-f]{40}$ ]] || fail "cannot resolve the connector source commit"
+  release_materials_init "$STAGE" "$WORK/materials" "$NAME"
+  release_materials_copy_licenses "$ROOT" project
+  release_materials_record_source 'bin/*,deploy/*,test/connector/*' connector "$version" \
+    "https://github.com/kuasar-sandbox/connector/commit/$project_sha" \
+    "git:$project_sha" project
+  release_materials_record_source bin/connector-ctl embedded-ebpf "$version" \
+    "https://github.com/kuasar-sandbox/connector/blob/$project_sha/bpf/switch_kern.c" \
+    "git:$project_sha;spdx:GPL-2.0-only" project
+  release_materials_add_go_binary "$STAGE/bin/connector-ctl" bin/connector-ctl
+  release_materials_finish
 
   mkdir -p "$output/assets"
   tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$epoch" \
