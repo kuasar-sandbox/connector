@@ -14,6 +14,8 @@ fail() {
 # shellcheck source=scripts/release-materials.sh
 source "$ROOT/scripts/release-materials.sh"
 
+bash "$ROOT/scripts/test-release-materials.sh"
+
 init_fixture_repo() {
   local directory="$1"
   shift
@@ -219,13 +221,43 @@ for entrypoint in test/e2e/run_all.sh test/e2e/geneve_eth_test.sh \
 done
 
 mkdir -p "$TMP/bin" "$TMP/src"
-printf 'package main\nfunc main() {}\n' > "$TMP/src/main.go"
-GO111MODULE=off go build -o "$TMP/go-fixture" "$TMP/src/main.go"
+fixture_root="$TMP/project"
+mkdir -p "$fixture_root/scripts"
+install -m 0644 "$ROOT/LICENSE" "$fixture_root/LICENSE"
+install -m 0644 "$ROOT/LICENSE_SCOPE.md" "$fixture_root/LICENSE_SCOPE.md"
+install -m 0644 "$ROOT/LICENSE_SCOPE_zh.md" "$fixture_root/LICENSE_SCOPE_zh.md"
+cp -a "$ROOT/LICENSES" "$fixture_root/LICENSES"
+printf '/bin/\n/build/\n' > "$fixture_root/.gitignore"
+install -m 0755 "$ROOT/scripts/release.sh" "$fixture_root/scripts/release.sh"
+install -m 0755 "$ROOT/scripts/release-materials.sh" "$fixture_root/scripts/release-materials.sh"
+printf 'module release-fixture.invalid\n\ngo 1.24\n' > "$fixture_root/go.mod"
+printf 'package main\nfunc main() {}\n' > "$fixture_root/main.go"
+mkdir -p "$fixture_root/."
+cp -a "$ROOT/examples" "$fixture_root/examples"
+mkdir -p "$fixture_root/."
+cp -a "$ROOT/dist" "$fixture_root/dist"
+fixture_project_sha="$(init_fixture_repo "$fixture_root" LICENSE LICENSE_SCOPE.md LICENSE_SCOPE_zh.md LICENSES .gitignore scripts go.mod main.go examples dist)"
+(cd "$fixture_root" && GOWORK=off go build -buildvcs=true -o "$TMP/go-fixture" .)
+release_materials_require_go_revision "$TMP/go-fixture" "$fixture_project_sha"
+printf '// dirty fixture\n' >> "$fixture_root/main.go"
+(cd "$fixture_root" && GOWORK=off go build -buildvcs=true -o "$TMP/dirty-go-fixture" .)
+if (release_materials_require_go_revision "$TMP/dirty-go-fixture" "$fixture_project_sha" >/dev/null 2>&1); then
+  fail "release accepted a binary built from dirty source"
+fi
+printf 'package main\nfunc main() {}\n' > "$fixture_root/main.go"
+if (release_materials_require_go_revision "$TMP/go-fixture" \
+  0000000000000000000000000000000000000000 >/dev/null 2>&1); then
+  fail "release accepted a binary built from another commit"
+fi
+GO111MODULE=off go build -o "$TMP/unstamped-go-fixture" "$fixture_root/main.go"
+if (release_materials_require_go_revision "$TMP/unstamped-go-fixture" "$fixture_project_sha" >/dev/null 2>&1); then
+  fail "release accepted a binary without source stamping"
+fi
 install -m 0755 "$TMP/go-fixture" "$TMP/bin/connector-ctl"
 
 SOURCE_DATE_EPOCH=1700000000 RELEASE_BIN_DIR="$TMP/bin" \
-  "$ROOT/scripts/release.sh" package v1.2.3 x86_64 "$TMP/bundle"
-"$ROOT/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/bundle"
+  "$fixture_root/scripts/release.sh" package v1.2.3 x86_64 "$TMP/bundle"
+"$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/bundle"
 "$ROOT/scripts/test-publisher.sh" "$ROOT/scripts/publish-release.sh" \
   "$TMP/bundle" kuasar-sandbox/connector v1.2.3 \
   1111111111111111111111111111111111111111 main
@@ -261,19 +293,19 @@ if tar -tzf "$archive" | grep -E '(^|/)release\.json$|(^|/)release/[^/]+\.json$'
 fi
 
 SOURCE_DATE_EPOCH=1700000000 RELEASE_BIN_DIR="$TMP/bin" \
-  "$ROOT/scripts/release.sh" package v1.2.3 x86_64 "$TMP/reproducible"
+  "$fixture_root/scripts/release.sh" package v1.2.3 x86_64 "$TMP/reproducible"
 cmp -s "$archive" "$TMP/reproducible/assets/connector-v1.2.3-linux-x86_64.tar.gz" \
   || fail "identical inputs did not produce an identical archive"
 
 cp -a "$TMP/bundle" "$TMP/tampered"
 printf 'tampered\n' >> "$TMP/tampered/assets/connector-v1.2.3-linux-x86_64.tar.gz"
-if "$ROOT/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/tampered" >/dev/null 2>&1; then
+if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/tampered" >/dev/null 2>&1; then
   fail "validator accepted a tampered archive"
 fi
 
 cp -a "$TMP/bundle" "$TMP/extra"
 touch "$TMP/extra/assets/release.json"
-if "$ROOT/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/extra" >/dev/null 2>&1; then
+if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/extra" >/dev/null 2>&1; then
   fail "validator accepted an extra asset"
 fi
 
@@ -285,15 +317,15 @@ install -m 0755 /dev/null "$TMP/retired-stage/test/connector/manage_switch.sh"
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='@1700000000' \
   --pax-option=delete=atime,delete=ctime -czf "$retired_archive" -C "$TMP/retired-stage" .
 (cd "$TMP/retired-helper/assets" && sha256sum "$(basename "$retired_archive")" > SHA256SUMS)
-if "$ROOT/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/retired-helper" >/dev/null 2>&1; then
+if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/retired-helper" >/dev/null 2>&1; then
   fail "validator accepted a checksummed archive containing the retired topology helper"
 fi
 
-if RELEASE_BIN_DIR="$TMP/bin" "$ROOT/scripts/release.sh" package 01.2.3 x86_64 \
+if RELEASE_BIN_DIR="$TMP/bin" "$fixture_root/scripts/release.sh" package 01.2.3 x86_64 \
   "$TMP/invalid-version" >/dev/null 2>&1; then
   fail "packager accepted an invalid version"
 fi
-if RELEASE_BIN_DIR="$TMP/bin" "$ROOT/scripts/release.sh" package v1.2.3 aarch64 \
+if RELEASE_BIN_DIR="$TMP/bin" "$fixture_root/scripts/release.sh" package v1.2.3 aarch64 \
   "$TMP/invalid-arch" >/dev/null 2>&1; then
   fail "packager accepted an unvalidated release architecture"
 fi

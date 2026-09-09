@@ -168,6 +168,7 @@ package_release() {
   copy_file dist/NetworkManager-connector.conf deploy/NetworkManager-connector.conf
 
   project_sha="$(release_materials_resolve_git_source "$ROOT" "" connector)"
+  release_materials_require_go_revision "$STAGE/bin/connector-ctl" "$project_sha"
   release_materials_init "$STAGE" "$WORK/materials" "$NAME"
   release_materials_copy_licenses "$ROOT" project
   release_materials_record_source 'bin/*,deploy/*,test/connector/*' connector "$version" \
