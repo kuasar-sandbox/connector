@@ -68,10 +68,27 @@ validate_archive_paths() {
   if grep -E '(^|/)release\.json$|(^|/)release/[^/]+\.json$' "$listing" >/dev/null; then
     fail "$archive contains release metadata JSON"
   fi
+  local expected_files="$WORK/expected-archive-files" actual_files="$WORK/actual-archive-files"
+  cat > "$expected_files" <<'EOF'
+bin/connector-ctl
+deploy/NetworkManager-connector.conf
+deploy/connector-switch.conf
+deploy/connector-vswitch.service
+test/connector/perf_bench.sh
+test/connector/start_perf_bench.sh
+EOF
   awk '
     { path=$0; sub(/^\.\//, "", path) }
-    path != "" && path !~ /\/$/ && path !~ /^(bin|deploy)\// && path !~ /^test\/connector\// { exit 1 }
-  ' "$listing" || fail "$archive contains a file outside bin/, deploy/, or test/connector/"
+    path != "" && path !~ /\/$/ { print path }
+  ' "$listing" | LC_ALL=C sort > "$actual_files"
+  cmp -s "$expected_files" "$actual_files" \
+    || { diff -u "$expected_files" "$actual_files" >&2 || true; fail "$archive does not match the exact connector release file set"; }
+
+  # A name-only allowlist is insufficient: an archive could replace an allowed
+  # path with a link and make extraction depend on content outside the bundle.
+  # The release contract contains only directories and regular files.
+  tar -tvzf "$archive" | awk '$1 !~ /^[-d]/ { exit 1 }' \
+    || fail "$archive contains a non-regular, non-directory entry"
 }
 
 validate_bundle() {
@@ -109,7 +126,7 @@ validate_bundle() {
   check_go_binary "$extract/bin/connector-ctl"
   local file
   for file in deploy/connector-vswitch.service deploy/connector-switch.conf \
-    deploy/NetworkManager-connector.conf test/connector/manage_switch.sh \
+    deploy/NetworkManager-connector.conf \
     test/connector/perf_bench.sh test/connector/start_perf_bench.sh; do
     [ -f "$extract/$file" ] || fail "$archive is missing $file"
   done
@@ -133,7 +150,6 @@ package_release() {
   bin_dir="${RELEASE_BIN_DIR:-$ROOT/bin/$arch}"
   copy_executable "$bin_dir/connector-ctl" bin/connector-ctl
   check_go_binary "$STAGE/bin/connector-ctl"
-  copy_root_executable examples/manage_switch.sh test/connector/manage_switch.sh
   copy_root_executable examples/perf_bench.sh test/connector/perf_bench.sh
   copy_root_executable examples/start_perf_bench.sh test/connector/start_perf_bench.sh
   copy_file dist/connector-vswitch.service deploy/connector-vswitch.service

@@ -58,7 +58,7 @@ fi
 
 for entrypoint in test/e2e/run_all.sh test/e2e/geneve_eth_test.sh \
   test/e2e/geneve_ip_test.sh test/e2e/mgmt_isolation_test.sh \
-  test/e2e/provision_test.sh test/e2e/tap_test.sh examples/manage_switch.sh \
+  test/e2e/provision_test.sh test/e2e/tap_test.sh \
   examples/perf_bench.sh examples/start_perf_bench.sh; do
   [ "$(git -C "$ROOT" ls-files -s -- "$entrypoint" | awk '{print $1}')" = 100755 ] \
     || fail "$entrypoint is not executable in the Git index"
@@ -87,6 +87,9 @@ done
 if tar -tzf "$archive" | grep -E '^\./(docs|test/e2e)(/|$)|^\./test/connector/(geneve_.*_test|mgmt_isolation_test|provision_test|tap_test)\.sh$' >/dev/null; then
   fail "component archive contains documentation or E2E sources"
 fi
+if tar -tzf "$archive" | grep -Fx './test/connector/manage_switch.sh' >/dev/null; then
+  fail "archive contains the retired unsafe topology helper"
+fi
 if tar -tzf "$archive" | grep -E '(^|/)release\.json$|(^|/)release/[^/]+\.json$' >/dev/null; then
   fail "archive contains release metadata JSON"
 fi
@@ -106,6 +109,18 @@ cp -a "$TMP/bundle" "$TMP/extra"
 touch "$TMP/extra/assets/release.json"
 if "$ROOT/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/extra" >/dev/null 2>&1; then
   fail "validator accepted an extra asset"
+fi
+
+cp -a "$TMP/bundle" "$TMP/retired-helper"
+retired_archive="$TMP/retired-helper/assets/connector-v1.2.3-linux-x86_64.tar.gz"
+mkdir -p "$TMP/retired-stage"
+tar -xzf "$retired_archive" -C "$TMP/retired-stage"
+install -m 0755 /dev/null "$TMP/retired-stage/test/connector/manage_switch.sh"
+tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='@1700000000' \
+  --pax-option=delete=atime,delete=ctime -czf "$retired_archive" -C "$TMP/retired-stage" .
+(cd "$TMP/retired-helper/assets" && sha256sum "$(basename "$retired_archive")" > SHA256SUMS)
+if "$ROOT/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/retired-helper" >/dev/null 2>&1; then
+  fail "validator accepted a checksummed archive containing the retired topology helper"
 fi
 
 if RELEASE_BIN_DIR="$TMP/bin" "$ROOT/scripts/release.sh" package 01.2.3 x86_64 \
