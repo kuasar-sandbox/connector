@@ -90,8 +90,16 @@ EOF
   # A name-only allowlist is insufficient: an archive could replace an allowed
   # path with a link and make extraction depend on content outside the bundle.
   # The release contract contains only directories and regular files.
-  tar --numeric-owner -tvzf "$archive" | awk '$1 !~ /^[-d]/ || $2 != "0/0" { exit 1 }' \
-    || fail "$archive contains a non-regular entry or non-root ownership"
+  tar --numeric-owner -tvzf "$archive" | awk '
+    $2 != "0/0" { exit 1 }
+    $1 ~ /^d/ { if ($1 != "drwxr-xr-x") exit 1; next }
+    $1 !~ /^-/ { exit 1 }
+    {
+      path=$6; sub(/^\.\//, "", path)
+      expected=(path ~ /^(bin\/|test\/connector\/)/ ? "-rwxr-xr-x" : "-rw-r--r--")
+      if ($1 != expected) exit 1
+    }
+  ' || fail "$archive contains an unsafe type, mode or ownership"
   awk '
     { path=$0; sub(/^\.\//, "", path) }
     path != "" && path !~ /\/$/ && path ~ /^share\// && path !~ /^share\/(licenses|sources)\/connector\// { exit 1 }
