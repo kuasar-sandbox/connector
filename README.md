@@ -99,6 +99,12 @@ These addresses are documentation values, not a production topology. Run `stop` 
 
 ## Release model
 
+Packaging rebuilds Go payloads in fresh checkouts of the selected Connector commit,
+with `GOWORK=off` and read-only module resolution. Ignored development files and
+prebuilt binaries are not reused; `RELEASE_BIN_DIR` is rejected. Build commands use
+a private home and caches without cloud/release credentials. Credential-free
+HTTPS module/network proxy routing remains available.
+
 The archive name records the requested release version. Source records retain
 that version only when its local Git tag points to the selected commit; before
 tagging they use `git:<commit>`. Validation binds every Go payload and the project

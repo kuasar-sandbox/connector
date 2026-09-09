@@ -236,7 +236,16 @@ mkdir -p "$fixture_root/."
 cp -a "$ROOT/examples" "$fixture_root/examples"
 mkdir -p "$fixture_root/."
 cp -a "$ROOT/dist" "$fixture_root/dist"
-fixture_project_sha="$(init_fixture_repo "$fixture_root" LICENSE LICENSE_SCOPE.md LICENSE_SCOPE_zh.md LICENSES .gitignore scripts go.mod main.go examples dist)"
+cat > "$fixture_root/Makefile" <<'EOF'
+.PHONY: build
+build:
+	test "$$GOWORK" = off && test "$$GOFLAGS" = -mod=readonly
+	test -z "$${GH_TOKEN:-}" && test -z "$${AWS_SECRET_ACCESS_KEY:-}"
+	test ! -e ignored-release-input.go
+	mkdir -p bin/x86_64
+	CGO_ENABLED=0 go build -trimpath -buildvcs=true -o bin/x86_64/connector-ctl .
+EOF
+fixture_project_sha="$(init_fixture_repo "$fixture_root" LICENSE LICENSE_SCOPE.md LICENSE_SCOPE_zh.md LICENSES .gitignore scripts go.mod main.go examples dist Makefile)"
 (cd "$fixture_root" && GOWORK=off go build -buildvcs=true -o "$TMP/go-fixture" .)
 release_materials_require_go_revision "$TMP/go-fixture" "$fixture_project_sha"
 printf '// dirty fixture\n' >> "$fixture_root/main.go"
@@ -255,7 +264,15 @@ if (release_materials_require_go_revision "$TMP/unstamped-go-fixture" "$fixture_
 fi
 install -m 0755 "$TMP/go-fixture" "$TMP/bin/connector-ctl"
 
-SOURCE_DATE_EPOCH=1700000000 RELEASE_BIN_DIR="$TMP/bin" \
+printf 'ignored-release-input.go\n' >> "$fixture_root/.git/info/exclude"
+printf 'ignored invalid Go input must not enter the release build\n' > "$fixture_root/ignored-release-input.go"
+if RELEASE_BIN_DIR="$TMP/bin" "$fixture_root/scripts/release.sh" package v1.2.3 x86_64 \
+  "$TMP/prebuilt-override" > "$TMP/prebuilt-override.log" 2>&1; then
+  fail "packager accepted a prebuilt payload override"
+fi
+grep -Fq 'RELEASE_BIN_DIR is not supported' "$TMP/prebuilt-override.log" \
+  || fail "prebuilt override failed for an unrelated reason"
+SOURCE_DATE_EPOCH=1700000000 GH_TOKEN=fixture-private AWS_SECRET_ACCESS_KEY=fixture-private \
   "$fixture_root/scripts/release.sh" package v1.2.3 x86_64 "$TMP/bundle"
 "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/bundle"
 "$ROOT/scripts/test-publisher.sh" "$ROOT/scripts/publish-release.sh" \
@@ -292,7 +309,7 @@ if tar -tzf "$archive" | grep -E '(^|/)release\.json$|(^|/)release/[^/]+\.json$'
   fail "archive contains release metadata JSON"
 fi
 
-SOURCE_DATE_EPOCH=1700000000 RELEASE_BIN_DIR="$TMP/bin" \
+SOURCE_DATE_EPOCH=1700000000 \
   "$fixture_root/scripts/release.sh" package v1.2.3 x86_64 "$TMP/reproducible"
 cmp -s "$archive" "$TMP/reproducible/assets/connector-v1.2.3-linux-x86_64.tar.gz" \
   || fail "identical inputs did not produce an identical archive"
