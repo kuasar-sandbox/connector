@@ -160,6 +160,11 @@ worktree. The validator needs that commit in the local object database; the
 trusted publisher fetches source history but does not execute candidate helpers.
 The build and publish jobs use the same credential-free module/checksum routing
 and local compiler-selection policy, including independent material verification.
+License collection fails on any unreadable subtree or incomplete traversal; a
+readable top-level LICENSE cannot stand in for omitted nested notices. Third-party
+local Go replacements without an authenticated module checksum are not supported
+in official component packages; use a versioned module replacement. Existing
+Kuasar sibling replacements and ordinary source development remain unchanged.
 
 `connector` publishes independent component versions named `vX.Y.Z`. The x86_64 component archive contains `connector-ctl`, deployment files, and the operational helpers selected by the component release contract. Design documents and E2E sources are collected from the selected component tag into the project platform archive.
 Use `make release VERSION=vX.Y.Z` to build and validate the same local bundle layout.

@@ -41,6 +41,7 @@ grep -Fq 'invalid release Go toolchain selection' "$TMP/invalid-toolchain.log" \
   || fail "invalid toolchain selection failed for an unrelated reason"
 
 bash "$ROOT/scripts/test-release-materials.sh"
+bash "$ROOT/scripts/test-release-license-traversal.sh"
 GOWORK=off go test -race "$ROOT/scripts/release-go-toolchain.go" "$ROOT/scripts/release-go-toolchain_test.go"
 
 init_fixture_repo() {
