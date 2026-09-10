@@ -209,6 +209,13 @@ bash -n "$ROOT/scripts/delete-preview.sh" "$ROOT/scripts/validate-release-source
 grep -Fqx 'run-name: Release ${{ inputs.version }} @${{ inputs.source_sha }}' \
   "$ROOT/.github/workflows/release.yml" \
   || fail "release run identity does not pin source_sha"
+workflow="$ROOT/.github/workflows/release.yml"
+[ "$(grep -Fc 'archive_sha256: ${{ steps.release-archive-digest.outputs.archive_sha256 }}' \
+  "$workflow")" -eq 1 ] \
+  || fail "$workflow does not expose exactly one independent build archive digest"
+[ "$(grep -Fc 'RELEASE_ARCHIVE_SHA256: ${{ needs.build.outputs.archive_sha256 }}' \
+  "$workflow")" -eq 1 ] \
+  || fail "$workflow does not pass the independent build digest to publication"
 grep -Fq 'kuasar-preview-binding' "$ROOT/scripts/publish-release.sh" \
   || fail "Preview publisher does not record its build binding"
 for workflow in release.yml delete-preview.yml; do

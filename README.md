@@ -107,6 +107,15 @@ by this run. Never force-stop a pre-existing switch or delete a foreign namespac
 
 ## Release model
 
+The release workflow records the completed archive's SHA-256 as a build-job
+output before uploading it. The publisher receives that independent value as
+`RELEASE_ARCHIVE_SHA256` and checks it before any Tag or Release write; a value
+recalculated from the downloaded bundle is not a substitute. This binds every
+payload and material file to that completed build, even if the bundle's own
+checksums are regenerated. Local packaging and standalone validation do not
+require this publication input. The receipt does not attest compiler provenance
+or isolate untrusted candidate code.
+
 Packaging rebuilds Go payloads in fresh checkouts of the selected Connector commit,
 with `GOWORK=off` and read-only module resolution. Ignored development files and
 prebuilt binaries are not reused; `RELEASE_BIN_DIR` is rejected. Build commands use
