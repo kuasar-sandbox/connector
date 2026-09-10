@@ -112,6 +112,9 @@ ip netns del sw_ns
 ## 发行模型
 
 打包从选定的 Connector commit 建立全新 checkout,以 `GOWORK=off` 和只读 module 解析重新构建 Go 载荷。不复用被忽略的开发文件或预制二进制,拒绝 `RELEASE_BIN_DIR`。构建命令使用私有 home/缓存,不继承云/发布凭据;可保留无凭据的 HTTPS module/network proxy 路由。
+构建保留 `GOSUMDB`(包括无凭据的 HTTPS checksum mirror)与 `GOTOOLCHAIN`,
+不会把发行工作流的 `local` 策略静默改为自动下载工具链。未显式设置时,打包使用
+`sum.golang.org` 和本地 Go 工具链。
 
 归档名称记录请求的发行版本。来源记录仅在本地 Git Tag 指向所选 commit 时保留该版本;打 Tag 前使用 `git:<commit>`。验证器把全部 Go 载荷和项目来源 URL/摘要绑定到同一 commit。发布者传入预期 commit,在任何 Tag 或 Release 写入前拒绝不同来源的 bundle。
 
