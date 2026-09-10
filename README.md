@@ -116,8 +116,8 @@ checksums are regenerated. Local packaging and standalone validation do not
 require this publication input. The receipt does not attest compiler provenance
 or isolate untrusted candidate code.
 
-Go dependency-source verification uses fresh private module/VCS state and an
-enabled checksum database. It clears persisted Go settings, private-module
+Go dependency and toolchain downloads use fresh private module/VCS state, an
+enabled checksum database and `GOAUTH=off`. They clear persisted Go settings, private-module
 bypasses, Git configuration and caller credentials while retaining validated,
 credential-free routing. Uploaded Go record keys must match the exact official
 payload names before any source or toolchain download; path aliases are rejected.
