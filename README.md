@@ -122,6 +122,8 @@ bypasses, Git configuration and caller credentials while retaining validated,
 credential-free routing. Uploaded Go record keys must match the exact official
 payload names before any source or toolchain download; path aliases are rejected.
 These release checks do not change ordinary development module authentication.
+No organization-owned Go module is exempt from module checksum and notice
+validation in this component; it has no separately collected internal Go dependency.
 Source inventories reject duplicate or excessive records before per-row work;
 each metadata table is capped at 16 MiB and the source inventory at 16,384 rows.
 
