@@ -122,6 +122,17 @@ ip netns del sw_ns
 不会把发行工作流的 `local` 策略静默改为自动下载工具链。未显式设置时,打包使用
 `sum.golang.org` 和本地 Go 工具链。
 
+发行打包记录全新构建上下文实际选定的 Go 编译器,在构建前后将其分发输入与匹配的
+`golang.org/toolchain` 归档逐项比较;归档由配置的 checksum database 认证。这覆盖
+编译器、标准库源码及该分发中的其他文件。完整 Go 安装中额外的非构建 `api`、
+`doc`、`misc`、`test` 文件不在认证范围,也不作为发行许可来源;核对时处理标准的
+`go.mod`/`_go.mod` 安装转换。Go 许可/NOTICE 正文来自已验证归档,包括编译器和
+标准库内嵌依赖的材料,保留各自相对路径。独立验证还会
+重新核对其字节、来源 URL 和 module h1。版本字符串或重算 bundle 校验和不能替代
+来源核对。验证要求启用 checksum database 并取得匹配的归档/缓存;即使采用
+`GOTOOLCHAIN=local`,也可能获取核验材料,但不切换构建编译器或静默启用工具链
+自动选择。这些检查以可信构建主机为前提,不证明已失陷主机可信。
+
 归档名称记录请求的发行版本。来源记录仅在本地 Git Tag 指向所选 commit 时保留该版本;打 Tag 前使用 `git:<commit>`。验证器把全部 Go 载荷和项目来源 URL/摘要绑定到同一 commit。发布者传入预期 commit,在任何 Tag 或 Release 写入前拒绝不同来源的 bundle。
 验证要求 Go 载荷为 Linux/amd64,绑定内嵌 eBPF 的来源与许可标识,并把每个部署
 文件和辅助脚本与选定 Git blob 逐字节比较。这些文件从全新 checkout 复制,不取

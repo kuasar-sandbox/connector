@@ -8,6 +8,10 @@ export GOSUMDB=sum.golang.google.cn GOTOOLCHAIN=local
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# Fixture dependency/build caches stay private. The authentic distribution is
+# read through the caller's standard cache; sumdb and ZIP h1 checks still run.
+FIXTURE_GO_DISTRIBUTION_CACHE="$(go env GOMODCACHE)"
+export FIXTURE_GO_DISTRIBUTION_CACHE
 
 fail() {
   echo "test-release: $*" >&2
@@ -37,6 +41,7 @@ grep -Fq 'invalid release Go toolchain selection' "$TMP/invalid-toolchain.log" \
   || fail "invalid toolchain selection failed for an unrelated reason"
 
 bash "$ROOT/scripts/test-release-materials.sh"
+GOWORK=off go test -race "$ROOT/scripts/release-go-toolchain.go" "$ROOT/scripts/release-go-toolchain_test.go"
 
 init_fixture_repo() {
   local directory="$1"
@@ -259,6 +264,12 @@ cp -a "$ROOT/LICENSES" "$fixture_root/LICENSES"
 printf '/bin/\n/build/\n' > "$fixture_root/.gitignore"
 install -m 0755 "$ROOT/scripts/release.sh" "$fixture_root/scripts/release.sh"
 install -m 0755 "$ROOT/scripts/release-materials.sh" "$fixture_root/scripts/release-materials.sh"
+install -m 0644 "$ROOT/scripts/release-go-toolchain.go" "$fixture_root/scripts/release-go-toolchain.go"
+cat >> "$fixture_root/scripts/release-materials.sh" <<'EOF'
+release_materials_download_go_toolchain() {
+  GOMODCACHE="${FIXTURE_GO_DISTRIBUTION_CACHE:?}" _release_materials_download_go_toolchain "$@"
+}
+EOF
 install -m 0755 "$ROOT/scripts/publish-release.sh" "$fixture_root/scripts/publish-release.sh"
 printf 'module release-fixture.invalid\n\ngo 1.24\n' > "$fixture_root/go.mod"
 printf 'package main\nfunc main() {}\n' > "$fixture_root/main.go"
