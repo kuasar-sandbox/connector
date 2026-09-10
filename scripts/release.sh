@@ -223,12 +223,13 @@ validate_bundle() {
   mkdir -p "$extract"
   tar -xzf "$bundle/assets/$archive" -C "$extract"
   check_go_binary "$extract/bin/connector-ctl"
-  release_materials_validate "$extract" "$NAME"
-  release_materials_require_project_source "$extract" "$NAME" 'bin/*,deploy/*,test/connector/*' "$version" \
-    bin/connector-ctl
   local project_sha
   project_sha="$(go version -m "$extract/bin/connector-ctl" | \
     awk -F '\t' '$2 == "build" && $3 ~ /^vcs.revision=/ {print substr($3, 14)}')"
+  release_materials_require_git_licenses "$extract" "$NAME" "$ROOT" "$project_sha" project
+  release_materials_validate "$extract" "$NAME"
+  release_materials_require_project_source "$extract" "$NAME" 'bin/*,deploy/*,test/connector/*' "$version" \
+    bin/connector-ctl
   release_materials_require_source "$extract" "$NAME" 'bin/connector-ctl' 'embedded-ebpf' "$version" \
     "https://github.com/kuasar-sandbox/connector/blob/$project_sha/bpf/switch_kern.c" \
     "git:$project_sha;spdx:GPL-2.0-only"

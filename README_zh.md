@@ -135,6 +135,11 @@ ip netns del sw_ns
 `GOTOOLCHAIN=local`,也可能获取核验材料,但不切换构建编译器或静默启用工具链
 自动选择。这些检查以可信构建主机为前提,不证明已失陷主机可信。
 
+独立验证还从选定 commit 的 Git blob 重建完整项目许可证集合,包括嵌套的
+`LICENSES` 文件,逐项比较发行材料的字节和文件名。即使重算 bundle 两层校验和,
+声明被修改、缺失或额外加入时仍会被拒绝。该过程只读取 Git 对象,不执行候选
+源码,也不获取任意材料 URL。
+
 归档名称记录请求的发行版本。来源记录仅在本地 Git Tag 指向所选 commit 时保留该版本;打 Tag 前使用 `git:<commit>`。验证器把全部 Go 载荷和项目来源 URL/摘要绑定到同一 commit。发布者传入预期 commit,在任何 Tag 或 Release 写入前拒绝不同来源的 bundle。
 验证要求 Go 载荷为 Connector module 的
 `github.com/kuasar-sandbox/connector/cmd/connector-ctl` main package,目标为

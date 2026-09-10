@@ -442,6 +442,30 @@ for copied_file in deploy/connector-vswitch.service deploy/connector-switch.conf
     || fail "$copied_file failed for an unrelated reason"
 done
 
+for mutation in top-level nested missing extra; do
+  candidate="$TMP/project-license-$mutation"
+  cp -a "$TMP/bundle" "$candidate"
+  mkdir "$candidate/root"
+  tar -xzf "$archive" -C "$candidate/root"
+  license_root="$candidate/root/share/licenses/connector/project"
+  case "$mutation" in
+    top-level) printf 'altered project license\n' > "$license_root/LICENSE" ;;
+    nested) printf 'altered nested license\n' > "$license_root/LICENSES/GPL-2.0-only.txt" ;;
+    missing) rm "$license_root/LICENSE_SCOPE.md" ;;
+    extra) printf 'extra unauthenticated notice\n' > "$license_root/NOTICE.extra" ;;
+  esac
+  release_materials_hash_tree "$candidate/root" connector \
+    "$candidate/root/share/sources/connector/MATERIALS.sha256"
+  tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
+    -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
+  (cd "$candidate/assets" && sha256sum "$(basename "$archive")" > SHA256SUMS)
+  if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" > "$candidate/result.log" 2>&1; then
+    fail "validator accepted $mutation project-license mutation with regenerated checksums"
+  fi
+  grep -Fq 'license bytes differ from selected Git source: project' "$candidate/result.log" \
+    || fail "project-license mutation failed for an unrelated reason"
+done
+
 for column in 4 5 6; do
   candidate="$TMP/ebpf-source-$column"
   cp -a "$TMP/bundle" "$candidate"

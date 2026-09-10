@@ -146,6 +146,12 @@ verification material with `GOTOOLCHAIN=local` but does not switch the build
 compiler or silently enable automatic toolchain selection. These checks assume
 the trusted build host and do not attest a compromised host.
 
+Standalone validation also reconstructs the project's complete license set from
+the selected commit's Git blobs, including nested `LICENSES` files, and compares
+every shipped byte and filename. Changed, missing or additional notices are
+rejected even when both bundle checksum layers are regenerated. This only reads
+Git objects; it does not execute candidate source or fetch arbitrary material URLs.
+
 The archive name records the requested release version. Source records retain
 that version only when its local Git tag points to the selected commit; before
 tagging they use `git:<commit>`. Validation binds every Go payload and the project
