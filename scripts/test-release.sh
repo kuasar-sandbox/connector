@@ -215,6 +215,17 @@ grep -Fqx 'run-name: Release ${{ inputs.version }} @${{ inputs.source_sha }}' \
   "$ROOT/.github/workflows/release.yml" \
   || fail "release run identity does not pin source_sha"
 workflow="$ROOT/.github/workflows/release.yml"
+for job in build publish; do
+  for routing in 'GOPROXY: https://goproxy.cn,direct' 'GOSUMDB: sum.golang.google.cn' 'GOTOOLCHAIN: local'; do
+    awk -v job="$job" '
+      $0 == "  " job ":" { inside=1; next }
+      inside && /^  [A-Za-z0-9_-]+:/ { exit }
+      inside && /^    steps:/ { exit }
+      inside { print }
+    ' "$workflow" | grep -Fx "      $routing" >/dev/null \
+      || fail "$workflow $job is missing the verified Go routing policy: $routing"
+  done
+done
 [ "$(grep -Fc 'archive_sha256: ${{ steps.release-archive-digest.outputs.archive_sha256 }}' \
   "$workflow")" -eq 1 ] \
   || fail "$workflow does not expose exactly one independent build archive digest"
@@ -271,10 +282,13 @@ release_materials_download_go_toolchain() {
 }
 EOF
 install -m 0755 "$ROOT/scripts/publish-release.sh" "$fixture_root/scripts/publish-release.sh"
-printf 'module release-fixture.invalid\n\ngo 1.24\n' > "$fixture_root/go.mod"
-printf 'package main\nfunc main() {}\n' > "$fixture_root/main.go"
+printf 'module github.com/kuasar-sandbox/connector\n\ngo 1.24\n' > "$fixture_root/go.mod"
+mkdir -p "$fixture_root/cmd/connector-ctl"
+printf 'package main\nfunc main() {}\n' > "$fixture_root/cmd/connector-ctl/main.go"
 mkdir -p "$fixture_root/."
 cp -a "$ROOT/examples" "$fixture_root/examples"
+# A second real main package in the same clean commit must not identify the CLI.
+printf 'package main\nfunc main() {}\n' > "$fixture_root/examples/tapfd_receiver/main.go"
 mkdir -p "$fixture_root/."
 cp -a "$ROOT/dist" "$fixture_root/dist"
 cat > "$fixture_root/Makefile" <<'EOF'
@@ -285,22 +299,22 @@ build:
 	test -z "$${GH_TOKEN:-}" && test -z "$${AWS_SECRET_ACCESS_KEY:-}"
 	test ! -e ignored-release-input.go
 	mkdir -p bin/x86_64
-	CGO_ENABLED=0 go build -trimpath -buildvcs=true -o bin/x86_64/connector-ctl .
+	CGO_ENABLED=0 go build -trimpath -buildvcs=true -o bin/x86_64/connector-ctl ./cmd/connector-ctl
 EOF
-fixture_project_sha="$(init_fixture_repo "$fixture_root" LICENSE LICENSE_SCOPE.md LICENSE_SCOPE_zh.md LICENSES .gitignore scripts go.mod main.go examples dist Makefile)"
-(cd "$fixture_root" && GOWORK=off go build -buildvcs=true -o "$TMP/go-fixture" .)
+fixture_project_sha="$(init_fixture_repo "$fixture_root" LICENSE LICENSE_SCOPE.md LICENSE_SCOPE_zh.md LICENSES .gitignore scripts go.mod cmd examples dist Makefile)"
+(cd "$fixture_root" && GOWORK=off go build -buildvcs=true -o "$TMP/go-fixture" ./cmd/connector-ctl)
 release_materials_require_go_revision "$TMP/go-fixture" "$fixture_project_sha"
-printf '// dirty fixture\n' >> "$fixture_root/main.go"
-(cd "$fixture_root" && GOWORK=off go build -buildvcs=true -o "$TMP/dirty-go-fixture" .)
+printf '// dirty fixture\n' >> "$fixture_root/cmd/connector-ctl/main.go"
+(cd "$fixture_root" && GOWORK=off go build -buildvcs=true -o "$TMP/dirty-go-fixture" ./cmd/connector-ctl)
 if (release_materials_require_go_revision "$TMP/dirty-go-fixture" "$fixture_project_sha" >/dev/null 2>&1); then
   fail "release accepted a binary built from dirty source"
 fi
-printf 'package main\nfunc main() {}\n' > "$fixture_root/main.go"
+printf 'package main\nfunc main() {}\n' > "$fixture_root/cmd/connector-ctl/main.go"
 if (release_materials_require_go_revision "$TMP/go-fixture" \
   0000000000000000000000000000000000000000 >/dev/null 2>&1); then
   fail "release accepted a binary built from another commit"
 fi
-GO111MODULE=off go build -o "$TMP/unstamped-go-fixture" "$fixture_root/main.go"
+GO111MODULE=off go build -o "$TMP/unstamped-go-fixture" "$fixture_root/cmd/connector-ctl/main.go"
 if (release_materials_require_go_revision "$TMP/unstamped-go-fixture" "$fixture_project_sha" >/dev/null 2>&1); then
   fail "release accepted a binary without source stamping"
 fi
@@ -359,7 +373,7 @@ cmp -s "$archive" "$TMP/reproducible/assets/connector-v1.2.3-linux-x86_64.tar.gz
 git clone --quiet --no-local "$fixture_root" "$TMP/target-source"
 for target in darwin/amd64 linux/arm64; do
   (cd "$TMP/target-source" && GOWORK=off CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" \
-    go build -buildvcs=true -o "$TMP/target-${target//\//-}" .)
+    go build -buildvcs=true -o "$TMP/target-${target//\//-}" ./cmd/connector-ctl)
   candidate="$TMP/wrong-target-${target//\//-}"
   cp -a "$TMP/bundle" "$candidate"
   mkdir "$candidate/root"
@@ -372,6 +386,42 @@ for target in darwin/amd64 linux/arm64; do
     fail "validator accepted a $target payload with regenerated checksums"
   fi
   grep -Fq 'must target linux/amd64' "$candidate/result.log" || fail "$target failed for an unrelated reason"
+done
+
+for target_package in ./examples/tapfd_receiver command-line-arguments; do
+  binary="$TMP/other-main-${target_package##*/}"
+  if [ "$target_package" = command-line-arguments ]; then
+    (cd "$TMP/target-source" && GOWORK=off CGO_ENABLED=0 \
+      go build -buildvcs=true -o "$binary" ./cmd/connector-ctl/main.go)
+  else
+    (cd "$TMP/target-source" && GOWORK=off CGO_ENABLED=0 \
+      go build -trimpath -buildvcs=true -o "$binary" "$target_package")
+    release_materials_require_go_revision "$binary" "$fixture_project_sha"
+  fi
+  candidate="$TMP/wrong-main-${target_package##*/}"
+  cp -a "$TMP/bundle" "$candidate"
+  mkdir "$candidate/root"
+  tar -xzf "$archive" -C "$candidate/root"
+  install -m 0755 "$binary" "$candidate/root/bin/connector-ctl"
+  # Recreate Go metadata and both checksums while retaining the other source
+  # records. The example is from the same clean commit, not a stale binary.
+  release_materials_init "$candidate/metadata-stage" "$candidate/materials" connector
+  release_materials_add_go_binary "$binary" bin/connector-ctl
+  [ ! -s "$candidate/materials/go-modules" ] || fail "unexpected fixture dependency"
+  {
+    printf 'payload\trecord\tname\tversion_or_value\tchecksum\n'
+    LC_ALL=C sort -u "$candidate/materials/go-build-info"
+  } > "$candidate/root/share/sources/connector/GO-BUILD-INFO.tsv"
+  release_materials_hash_tree "$candidate/root" connector \
+    "$candidate/root/share/sources/connector/MATERIALS.sha256"
+  tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
+    -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
+  (cd "$candidate/assets" && sha256sum "$(basename "$archive")" > SHA256SUMS)
+  if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" > "$candidate/result.log" 2>&1; then
+    fail "validator accepted the $target_package main package with regenerated metadata and checksums"
+  fi
+  grep -Fq 'must be the connector-ctl main package' "$candidate/result.log" \
+    || fail "wrong main package failed for an unrelated reason"
 done
 
 for copied_file in deploy/connector-vswitch.service deploy/connector-switch.conf \

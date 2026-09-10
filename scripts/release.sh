@@ -120,6 +120,11 @@ check_go_binary() {
   info="$(go version -m "$file" 2>/dev/null)" \
     || fail "Go build info is missing from $file"
   awk -F '\t' '
+    $2 == "path" { paths++; if ($3 != "github.com/kuasar-sandbox/connector/cmd/connector-ctl") bad=1 }
+    $2 == "mod" { modules++; if ($3 != "github.com/kuasar-sandbox/connector") bad=1 }
+    END { exit bad || paths != 1 || modules != 1 }
+  ' <<< "$info" || fail "Go release payload must be the connector-ctl main package: $file"
+  awk -F '\t' '
     $2 == "build" && $3 ~ /^GOOS=/ { os++; if ($3 != "GOOS=linux") bad=1 }
     $2 == "build" && $3 ~ /^GOARCH=/ { arch++; if ($3 != "GOARCH=amd64") bad=1 }
     END { exit bad || os != 1 || arch != 1 }
