@@ -68,7 +68,7 @@ stage_release_go_source() {
 }
 
 build_release_go_payloads() {
-  local arch="$1" proxy="${GOPROXY:-https://proxy.golang.org,direct}" route variable value
+  local arch="$1" proxy="${GOPROXY:-https://proxy.golang.org}" route variable value
   local sumdb="${GOSUMDB:-sum.golang.org}" sumdb_identity sumdb_url sumdb_extra
   local toolchain="${GOTOOLCHAIN:-local}"
   local -a routes build_env

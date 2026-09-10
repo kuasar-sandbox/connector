@@ -213,12 +213,20 @@ if env PATH="$TMP/source-bin:$PATH" GITHUB_REPOSITORY=kuasar-sandbox/connector F
   fail "release source validator accepted a tag from another version line"
 fi
 bash -n "$ROOT/scripts/delete-preview.sh" "$ROOT/scripts/validate-release-source.sh"
+bounded_workflow=release.yml
+awk '
+  $0 == "  publish:" { inside=1; next }
+  inside && /^  [A-Za-z0-9_-]+:/ { exit }
+  inside && /^    steps:/ { exit }
+  inside { print }
+' "$ROOT/.github/workflows/$bounded_workflow" | grep -Fx '    timeout-minutes: 30' >/dev/null \
+  || fail "$bounded_workflow does not bound privileged publication work"
 grep -Fqx 'run-name: Release ${{ inputs.version }} @${{ inputs.source_sha }}' \
   "$ROOT/.github/workflows/release.yml" \
   || fail "release run identity does not pin source_sha"
 workflow="$ROOT/.github/workflows/release.yml"
 for job in build publish; do
-  for routing in 'GOPROXY: https://goproxy.cn,direct' 'GOSUMDB: sum.golang.google.cn' 'GOTOOLCHAIN: local'; do
+  for routing in 'GOPROXY: https://goproxy.cn' 'GOSUMDB: sum.golang.google.cn' 'GOTOOLCHAIN: local'; do
     awk -v job="$job" '
       $0 == "  " job ":" { inside=1; next }
       inside && /^  [A-Za-z0-9_-]+:/ { exit }
