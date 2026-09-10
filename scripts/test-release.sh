@@ -252,6 +252,7 @@ cp -a "$ROOT/LICENSES" "$fixture_root/LICENSES"
 printf '/bin/\n/build/\n' > "$fixture_root/.gitignore"
 install -m 0755 "$ROOT/scripts/release.sh" "$fixture_root/scripts/release.sh"
 install -m 0755 "$ROOT/scripts/release-materials.sh" "$fixture_root/scripts/release-materials.sh"
+install -m 0755 "$ROOT/scripts/publish-release.sh" "$fixture_root/scripts/publish-release.sh"
 printf 'module release-fixture.invalid\n\ngo 1.24\n' > "$fixture_root/go.mod"
 printf 'package main\nfunc main() {}\n' > "$fixture_root/main.go"
 mkdir -p "$fixture_root/."
@@ -298,10 +299,10 @@ grep -Fq 'RELEASE_BIN_DIR is not supported' "$TMP/prebuilt-override.log" \
 SOURCE_DATE_EPOCH=1700000000 GH_TOKEN=fixture-private AWS_SECRET_ACCESS_KEY=fixture-private \
   "$fixture_root/scripts/release.sh" package v1.2.3 x86_64 "$TMP/bundle"
 "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/bundle"
-"$ROOT/scripts/test-publisher.sh" "$ROOT/scripts/publish-release.sh" \
+"$ROOT/scripts/test-publisher.sh" "$fixture_root/scripts/publish-release.sh" \
   "$TMP/bundle" kuasar-sandbox/connector v1.2.3 \
   "$fixture_project_sha" main
-"$ROOT/scripts/test-publisher.sh" "$ROOT/scripts/publish-release.sh" \
+"$ROOT/scripts/test-publisher.sh" "$fixture_root/scripts/publish-release.sh" \
   "$TMP/bundle" kuasar-sandbox/connector v1.2.3 \
   "$fixture_project_sha" release/v1.2.x
 
@@ -336,6 +337,62 @@ SOURCE_DATE_EPOCH=1700000000 \
   "$fixture_root/scripts/release.sh" package v1.2.3 x86_64 "$TMP/reproducible"
 cmp -s "$archive" "$TMP/reproducible/assets/connector-v1.2.3-linux-x86_64.tar.gz" \
   || fail "identical inputs did not produce an identical archive"
+
+git clone --quiet --no-local "$fixture_root" "$TMP/target-source"
+for target in darwin/amd64 linux/arm64; do
+  (cd "$TMP/target-source" && GOWORK=off CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" \
+    go build -buildvcs=true -o "$TMP/target-${target//\//-}" .)
+  candidate="$TMP/wrong-target-${target//\//-}"
+  cp -a "$TMP/bundle" "$candidate"
+  mkdir "$candidate/root"
+  tar -xzf "$archive" -C "$candidate/root"
+  install -m 0755 "$TMP/target-${target//\//-}" "$candidate/root/bin/connector-ctl"
+  tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
+    -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
+  (cd "$candidate/assets" && sha256sum "$(basename "$archive")" > SHA256SUMS)
+  if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" > "$candidate/result.log" 2>&1; then
+    fail "validator accepted a $target payload with regenerated checksums"
+  fi
+  grep -Fq 'must target linux/amd64' "$candidate/result.log" || fail "$target failed for an unrelated reason"
+done
+
+for copied_file in deploy/connector-vswitch.service deploy/connector-switch.conf \
+  deploy/NetworkManager-connector.conf test/connector/perf_bench.sh test/connector/start_perf_bench.sh; do
+  candidate="$TMP/changed-source-${copied_file//\//-}"
+  cp -a "$TMP/bundle" "$candidate"
+  mkdir "$candidate/root"
+  tar -xzf "$archive" -C "$candidate/root"
+  printf '\n# fixture modified after source selection\n' >> "$candidate/root/$copied_file"
+  tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
+    -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
+  (cd "$candidate/assets" && sha256sum "$(basename "$archive")" > SHA256SUMS)
+  if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" > "$candidate/result.log" 2>&1; then
+    fail "validator accepted changed $copied_file with regenerated checksums"
+  fi
+  grep -Fq 'helper/deployment bytes differ from selected source' "$candidate/result.log" \
+    || fail "$copied_file failed for an unrelated reason"
+done
+
+for column in 4 5 6; do
+  candidate="$TMP/ebpf-source-$column"
+  cp -a "$TMP/bundle" "$candidate"
+  mkdir "$candidate/root"
+  tar -xzf "$archive" -C "$candidate/root"
+  inventory="$candidate/root/share/sources/connector/SOURCES.tsv"
+  awk -F '\t' -v OFS='\t' -v column="$column" \
+    '$2 == "embedded-ebpf" {$column=(column == 6 ? "share/licenses/connector/go-toolchain/'"$go_toolchain"'" : "not-the-selected-ebpf-source")} {print}' \
+    "$inventory" > "$candidate/changed.tsv"
+  mv "$candidate/changed.tsv" "$inventory"
+  release_materials_hash_tree "$candidate/root" connector \
+    "$candidate/root/share/sources/connector/MATERIALS.sha256"
+  tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
+    -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
+  (cd "$candidate/assets" && sha256sum "$(basename "$archive")" > SHA256SUMS)
+  if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" > "$candidate/result.log" 2>&1; then
+    fail "validator accepted embedded eBPF source column $column with regenerated checksums"
+  fi
+  grep -Fq 'embedded-ebpf' "$candidate/result.log" || fail "eBPF source mutation failed for an unrelated reason"
+done
 
 # The archive name is the requested release target; an untagged source record
 # identifies the actual commit and does not pretend that target tag exists.

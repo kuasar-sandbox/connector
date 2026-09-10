@@ -122,6 +122,11 @@ that version only when its local Git tag points to the selected commit; before
 tagging they use `git:<commit>`. Validation binds every Go payload and the project
 source URL/digest to the same commit. The publisher supplies its expected commit
 and rejects a different-source bundle before any Tag or Release write.
+Validation requires Linux/amd64 Go payloads, binds the embedded eBPF source and
+license identity, and compares every deployment file and helper with its selected
+Git blob. Those files are copied from the fresh checkout, not the development
+worktree. The validator needs that commit in the local object database; the
+trusted publisher fetches source history but does not execute candidate helpers.
 
 `connector` publishes independent component versions named `vX.Y.Z`. The x86_64 component archive contains `connector-ctl`, deployment files, and the operational helpers selected by the component release contract. Design documents and E2E sources are collected from the selected component tag into the project platform archive.
 Use `make release VERSION=vX.Y.Z` to build and validate the same local bundle layout.

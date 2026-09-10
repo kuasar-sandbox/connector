@@ -117,6 +117,10 @@ ip netns del sw_ns
 `sum.golang.org` 和本地 Go 工具链。
 
 归档名称记录请求的发行版本。来源记录仅在本地 Git Tag 指向所选 commit 时保留该版本;打 Tag 前使用 `git:<commit>`。验证器把全部 Go 载荷和项目来源 URL/摘要绑定到同一 commit。发布者传入预期 commit,在任何 Tag 或 Release 写入前拒绝不同来源的 bundle。
+验证要求 Go 载荷为 Linux/amd64,绑定内嵌 eBPF 的来源与许可标识,并把每个部署
+文件和辅助脚本与选定 Git blob 逐字节比较。这些文件从全新 checkout 复制,不取
+开发工作区内容。验证器要求本地对象数据库包含该 commit;可信发布端获取源码
+历史,但不执行候选辅助脚本。
 
 `connector` 独立发布 `vX.Y.Z` 组件版本。x86_64 组件归档包含 `connector-ctl`、部署文件和组件发行合同选定的运维辅助脚本。设计文档和 E2E 源码从选定组件 Tag 收集到项目平台归档。用 `make release VERSION=vX.Y.Z` 构建并验证相同的本地 bundle 布局。
 

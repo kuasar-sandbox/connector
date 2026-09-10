@@ -36,9 +36,10 @@ archive_name() {
 
 copy_file() {
   local source="$1" destination="$2"
-  [ -f "$ROOT/$source" ] || fail "missing release input: $ROOT/$source"
+  local checkout="$WORK/go-build/connector"
+  [ -f "$checkout/$source" ] || fail "missing release input: $source"
   mkdir -p "$(dirname "$STAGE/$destination")"
-  install -m 0644 "$ROOT/$source" "$STAGE/$destination"
+  install -m 0644 "$checkout/$source" "$STAGE/$destination"
 }
 
 copy_executable() {
@@ -50,9 +51,10 @@ copy_executable() {
 
 copy_root_executable() {
   local source="$1" destination="$2"
-  [ -x "$ROOT/$source" ] || fail "missing executable release input: $ROOT/$source"
+  local checkout="$WORK/go-build/connector"
+  [ -x "$checkout/$source" ] || fail "missing executable release input: $source"
   mkdir -p "$(dirname "$STAGE/$destination")"
-  install -m 0755 "$ROOT/$source" "$STAGE/$destination"
+  install -m 0755 "$checkout/$source" "$STAGE/$destination"
 }
 
 stage_release_go_source() {
@@ -108,9 +110,30 @@ build_release_go_payloads() {
 }
 
 check_go_binary() {
-  local file="$1"
-  go version -m "$file" >/dev/null 2>&1 \
+  local file="$1" info
+  info="$(go version -m "$file" 2>/dev/null)" \
     || fail "Go build info is missing from $file"
+  awk -F '\t' '
+    $2 == "build" && $3 ~ /^GOOS=/ { os++; if ($3 != "GOOS=linux") bad=1 }
+    $2 == "build" && $3 ~ /^GOARCH=/ { arch++; if ($3 != "GOARCH=amd64") bad=1 }
+    END { exit bad || os != 1 || arch != 1 }
+  ' <<< "$info" || fail "Go release payload must target linux/amd64: $file"
+}
+
+validate_copied_source_files() {
+  local extract="$1" sha="$2" source destination
+  git -C "$ROOT" cat-file -e "$sha^{commit}" 2>/dev/null \
+    || fail "selected source commit is unavailable; fetch that exact commit before validation"
+  while read -r source destination; do
+    git -C "$ROOT" cat-file blob "$sha:$source" | cmp -s - "$extract/$destination" \
+      || fail "release helper/deployment bytes differ from selected source: $destination"
+  done <<'EOF'
+dist/connector-vswitch.service deploy/connector-vswitch.service
+dist/connector-switch.conf deploy/connector-switch.conf
+dist/NetworkManager-connector.conf deploy/NetworkManager-connector.conf
+examples/perf_bench.sh test/connector/perf_bench.sh
+examples/start_perf_bench.sh test/connector/start_perf_bench.sh
+EOF
 }
 
 validate_archive_paths() {
@@ -188,20 +211,26 @@ validate_bundle() {
   rm -rf "$extract"
   mkdir -p "$extract"
   tar -xzf "$bundle/assets/$archive" -C "$extract"
+  check_go_binary "$extract/bin/connector-ctl"
   release_materials_validate "$extract" "$NAME"
   release_materials_require_project_source "$extract" "$NAME" 'bin/*,deploy/*,test/connector/*' "$version" \
     bin/connector-ctl
-  release_materials_require_source "$extract" "$NAME" 'bin/connector-ctl' 'embedded-ebpf' "$version"
+  local project_sha
+  project_sha="$(go version -m "$extract/bin/connector-ctl" | \
+    awk -F '\t' '$2 == "build" && $3 ~ /^vcs.revision=/ {print substr($3, 14)}')"
+  release_materials_require_source "$extract" "$NAME" 'bin/connector-ctl' 'embedded-ebpf' "$version" \
+    "https://github.com/kuasar-sandbox/connector/blob/$project_sha/bpf/switch_kern.c" \
+    "git:$project_sha;spdx:GPL-2.0-only"
   release_materials_require_go "$extract" "$NAME" 'bin/connector-ctl'
   [ -x "$extract/bin/connector-ctl" ] \
     || fail "$archive is missing executable bin/connector-ctl"
-  check_go_binary "$extract/bin/connector-ctl"
   local file
   for file in deploy/connector-vswitch.service deploy/connector-switch.conf \
     deploy/NetworkManager-connector.conf \
     test/connector/perf_bench.sh test/connector/start_perf_bench.sh; do
     [ -f "$extract/$file" ] || fail "$archive is missing $file"
   done
+  validate_copied_source_files "$extract" "$project_sha"
 }
 
 package_release() {

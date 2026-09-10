@@ -340,7 +340,7 @@ release_materials_require_source() {
   local label=""
   case "$name" in
     "Go toolchain") label="go-toolchain/$version" ;;
-    "$unit") label=project ;;
+    "$unit"|embedded-ebpf) label=project ;;
     accelerator|connector|sandboxer) label="$name" ;;
   esac
   [ -z "$label" ] || label="share/licenses/$unit/$label"
