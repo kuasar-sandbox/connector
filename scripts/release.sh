@@ -233,7 +233,7 @@ validate_bundle() {
   release_materials_require_source "$extract" "$NAME" 'bin/connector-ctl' 'embedded-ebpf' "$version" \
     "https://github.com/kuasar-sandbox/connector/blob/$project_sha/bpf/switch_kern.c" \
     "git:$project_sha;spdx:GPL-2.0-only"
-  release_materials_require_go "$extract" "$NAME" 'bin/connector-ctl'
+  release_materials_require_go_key "$extract" "$NAME" 'bin/connector-ctl'
   [ -x "$extract/bin/connector-ctl" ] \
     || fail "$archive is missing executable bin/connector-ctl"
   local file
