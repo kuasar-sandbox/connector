@@ -117,10 +117,9 @@ Packaging records the actual Go versions and effective module replacements.
 Go/module LICENSE and NOTICE files come from the selected compiler installation
 and matching module sources, preserving nested paths. Module resolution uses the
 normal Go cache and routing; downloaded module checksums must match the binaries.
-Only explicitly collected internal sibling dependencies use their own source
-materials; an organization namespace alone does not exempt other modules.
-Unsupported third-party local replacements need versioned module inputs for
-the official package. Existing Kuasar local `replace` directives remain in use.
+An organization namespace alone does not exempt modules from notice collection.
+This component has no internal sibling dependencies. Unsupported local replacements
+need versioned module inputs for the official package.
 
 Materials live under `share/licenses/<component>` and
 `share/sources/<component>`. The latter contains `SOURCES.tsv`,
@@ -139,6 +138,7 @@ target tags. The publisher passes the selected project SHA to validation before
 Tag/Release writes, uses the bundle's `release-notes.md` body, and appends the
 existing source/Preview markers. Trusted source selection, build/publish permission
 separation and the refusal to replace published assets remain required.
+Producer-supplied notes may not contain the publisher's reserved source/Preview markers.
 
 Validation requires the Linux/amd64
 `github.com/kuasar-sandbox/connector/cmd/connector-ctl` main package and the
@@ -146,7 +146,9 @@ matching Connector module. Deployment files and operational helpers are copied
 from the selected source tree. The archive retains the embedded eBPF source
 and license identity, including the project license scope and GPL text.
 Validation rejects unexpected payloads, unsafe paths, links, ownership or modes,
-and materials outside the component namespace.
+and materials outside the component namespace. Source records are limited to
+the Connector project, its embedded eBPF and the Go version used by `connector-ctl`;
+undeclared sources cannot claim extra license material.
 
 `connector` publishes independent component versions named `vX.Y.Z`. The x86_64 component archive contains `connector-ctl`, deployment files, and the operational helpers selected by the component release contract. Design documents and E2E sources are collected from the selected component tag into the project platform archive.
 Use `make release VERSION=vX.Y.Z` to build and validate the same local bundle layout.

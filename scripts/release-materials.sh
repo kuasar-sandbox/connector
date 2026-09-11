@@ -139,8 +139,8 @@ release_materials_add_go_binary() {
   raw="$RELEASE_MATERIALS_WORK/go-version-$(( $(find "$RELEASE_MATERIALS_WORK" -maxdepth 1 -name 'go-version-*' | wc -l) + 1 ))"
   go version -m "$binary" > "$raw" 2>/dev/null \
     || fail "Go build info is missing from $binary"
-  # Official component packages only support the existing Kuasar sibling
-  # replacements. A third-party local directory has no authenticated module h1.
+  # This component has no internal sibling replacements. Local directories
+  # have no versioned module checksum for the official release materials.
   awk -F '\t' '
     $2 == "dep" { module=$3 }
     $2 == "=>" && ($3 ~ /^\// || $3 ~ /^\.\.?\// || $4 == "(devel)" || $4 == "") {
@@ -266,9 +266,12 @@ release_materials_go_source() {
 release_materials_copy_go_licenses() {
   # Collect notices from the compiler actually selected for this build. This
   # records distribution material; it does not authenticate the compiler.
-  local source="${1%/}" toolchain="$2" destination file relative base
+  local source="${1%/}" toolchain="$2" destination file relative base notices
   destination="$RELEASE_MATERIALS_STAGE/share/licenses/$RELEASE_MATERIALS_UNIT/go-toolchain/$toolchain"
   [ -f "$source/LICENSE" ] || fail "selected Go distribution has no LICENSE"
+  notices="$(mktemp "$RELEASE_MATERIALS_WORK/go-notices.XXXXXX")"
+  find "$source/" \( -type f -o -type l \) -print0 | LC_ALL=C sort -z > "$notices" \
+    || fail "cannot enumerate Go notices"
   mkdir -p "$destination"
   while IFS= read -r -d '' file; do
     relative="${file#"$source"/}"
@@ -289,7 +292,7 @@ release_materials_copy_go_licenses() {
     else
       install -m 0644 "$file" "$destination/$relative"
     fi
-  done < <(find "$source/" \( -type f -o -type l \) -print0 | LC_ALL=C sort -z)
+  done < "$notices"
 }
 
 release_materials_hash_tree() {
@@ -449,7 +452,8 @@ release_materials_require_go() {
   ' "$info" || fail "missing or inconsistent Go package record for $payload"
   toolchain="${toolchain%% *}"
   toolchain="${toolchain%%-X:*}"
-  release_materials_require_source "$root" "$unit" "$payload" "Go toolchain" "${toolchain%%-X:*}"
+  release_materials_require_source "$root" "$unit" "$payload" "Go toolchain" "$toolchain" \
+    "https://go.dev/dl/#$toolchain" "-"
   if [[ "$payload" != *:* ]]; then
     (
       local validation_work

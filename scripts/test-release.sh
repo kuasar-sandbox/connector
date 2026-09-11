@@ -482,6 +482,35 @@ if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/nonroot-owner
   fail "validator accepted non-root numeric ownership with regenerated checksums"
 fi
 
+for mutation in undeclared-source wrong-source-payload; do
+  candidate="$TMP/source-claims-$mutation"
+  cp -a "$TMP/bundle" "$candidate"
+  mkdir "$candidate/root"
+  tar -xzf "$archive" -C "$candidate/root"
+  material="share/licenses/connector/injected"
+  mkdir -p "$candidate/root/$material"
+  printf 'unclaimed fixture notice\n' > "$candidate/root/$material/NOTICE"
+  if [ "$mutation" = undeclared-source ]; then
+    payload=bin/connector-ctl
+    source_name=injected
+  else
+    payload=test/connector/perf_bench.sh
+    source_name='embedded-ebpf'
+  fi
+  printf '%s\t%s\tv1.2.3\thttps://example.invalid/source\tgit:%040d\t%s\n' \
+    "$payload" "$source_name" 0 "$material" >> "$candidate/root/share/sources/connector/SOURCES.tsv"
+  release_materials_hash_tree "$candidate/root" connector \
+    "$candidate/root/share/sources/connector/MATERIALS.sha256"
+  tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
+    -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
+  (cd "$candidate/assets" && sha256sum "$(basename "$archive")" > SHA256SUMS)
+  if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" > "$candidate/result.log" 2>&1; then
+    fail "validator accepted $mutation claiming injected license material"
+  fi
+  grep -Fq 'unrecognized connector source inventory record' "$candidate/result.log" \
+    || { sed -n '1,$p' "$candidate/result.log" >&2; fail "$mutation failed for an unrelated reason"; }
+done
+
 # Standalone validation must not need source checkouts, module downloads or a build.
 mkdir -p "$TMP/standalone-tools" "$TMP/standalone-bin"
 cp -a "$fixture_root/scripts" "$TMP/standalone-tools/scripts"

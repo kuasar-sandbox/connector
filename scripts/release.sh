@@ -152,6 +152,13 @@ validate_bundle() {
   local project_sha
   project_sha="$(go version -m "$extract/bin/connector-ctl" | \
     awk -F '\t' '$2 == "build" && $3 ~ /^vcs.revision=/ {print substr($3, 14)}')"
+  awk -F '\t' '
+    NR == 1 { next }
+    $1 == "bin/*,deploy/*,test/connector/*" && $2 == "connector" { next }
+    $1 == "bin/connector-ctl" && ($2 == "embedded-ebpf" || $2 == "Go toolchain") { next }
+    { exit 1 }
+  ' "$extract/share/sources/$NAME/SOURCES.tsv" \
+    || fail "unrecognized connector source inventory record"
   release_materials_validate "$extract" "$NAME"
   release_materials_require_project_source "$extract" "$NAME" 'bin/*,deploy/*,test/connector/*' "$version" \
     bin/connector-ctl
