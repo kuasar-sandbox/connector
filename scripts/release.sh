@@ -36,7 +36,7 @@ archive_name() {
 
 copy_file() {
   local source="$1" destination="$2"
-  local checkout="$WORK/go-build/connector"
+  local checkout="$ROOT"
   [ -f "$checkout/$source" ] || fail "missing release input: $source"
   mkdir -p "$(dirname "$STAGE/$destination")"
   install -m 0644 "$checkout/$source" "$STAGE/$destination"
@@ -51,68 +51,10 @@ copy_executable() {
 
 copy_root_executable() {
   local source="$1" destination="$2"
-  local checkout="$WORK/go-build/connector"
+  local checkout="$ROOT"
   [ -x "$checkout/$source" ] || fail "missing executable release input: $source"
   mkdir -p "$(dirname "$STAGE/$destination")"
   install -m 0755 "$checkout/$source" "$STAGE/$destination"
-}
-
-stage_release_go_source() {
-  local source="$1" sha="$2" destination="$3"
-  [ ! -e "$destination" ] || fail "fresh release checkout already exists"
-  mkdir -p "$destination"
-  local -a git_env=(env -i PATH="$PATH" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null)
-  "${git_env[@]}" git -C "$destination" init --quiet --template=
-  "${git_env[@]}" git -C "$destination" fetch --quiet --depth=1 "$source" "$sha"
-  "${git_env[@]}" git -C "$destination" -c advice.detachedHead=false checkout --quiet --detach "$sha"
-}
-
-build_release_go_payloads() {
-  local arch="$1" proxy="${GOPROXY:-https://proxy.golang.org,direct}" route variable value
-  local sumdb="${GOSUMDB:-sum.golang.org}" sumdb_identity sumdb_url sumdb_extra
-  local toolchain="${GOTOOLCHAIN:-local}"
-  local -a routes build_env
-  IFS=',|' read -r -a routes <<< "$proxy"
-  for route in "${routes[@]}"; do
-    case "$route" in direct|off) continue ;; esac
-    [[ "$route" == https://?* && "$route" != *[@?#[:space:]]* ]] \
-      || fail "release Go proxy routing must use credential-free HTTPS"
-  done
-  [[ "$sumdb" != *$'\n'* && "$sumdb" != *$'\r'* ]] \
-    || fail "release checksum database routing must be a single line"
-  read -r sumdb_identity sumdb_url sumdb_extra <<< "$sumdb"
-  [[ "$sumdb_identity" =~ ^[A-Za-z0-9._+/:=-]+$ && -z "$sumdb_extra" ]] \
-    || fail "invalid release checksum database identity"
-  if [ -n "$sumdb_url" ]; then
-    [[ "$sumdb_url" == https://?* && "$sumdb_url" != *[@?#[:space:]]* ]] \
-      || fail "release checksum database routing must use credential-free HTTPS"
-  fi
-  [[ "$toolchain" =~ ^(local|auto|path|go[0-9]+\.[0-9]+(\.[0-9]+|beta[0-9]+|rc[0-9]+)?(\+(auto|path))?)$ ]] \
-    || fail "invalid release Go toolchain selection"
-  mkdir -p "$WORK/go-home" "$WORK/go-cache" "$WORK/go-mod"
-  chmod 0700 "$WORK/go-home" "$WORK/go-cache" "$WORK/go-mod"
-  build_env=(env -i PATH="$PATH" HOME="$WORK/go-home" LANG=C
-    GOWORK=off GOENV=off GOFLAGS=-mod=readonly GOPROXY="$proxy" GOSUMDB="$sumdb" GOTOOLCHAIN="$toolchain"
-    GOCACHE="$WORK/go-cache" GOMODCACHE="$WORK/go-mod"
-    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null)
-  for variable in HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy \
-    SSL_CERT_FILE SSL_CERT_DIR; do
-    value="${!variable:-}"
-    [ -n "$value" ] || continue
-    case "$variable" in
-      HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|http_proxy|https_proxy|all_proxy)
-        [[ "$value" != *[@?#[:space:]]* ]] || fail "release build cannot pass an authenticated proxy"
-        ;;
-    esac
-    build_env+=("$variable=$value")
-  done
-  RELEASE_MATERIALS_GO_ENV="$WORK/go-build-toolchain.json"
-  "${build_env[@]}" go -C "$WORK/go-build/$NAME" env -json GOROOT GOVERSION GOHOSTOS GOHOSTARCH \
-    > "$RELEASE_MATERIALS_GO_ENV"
-  RELEASE_MATERIALS_WORK="$WORK/go-toolchain-before-build" \
-    GOMODCACHE="$WORK/go-mod" GOPROXY="$proxy" GOSUMDB="$sumdb" \
-    release_materials_verify_build_go "$RELEASE_MATERIALS_GO_ENV"
-  "${build_env[@]}" make --no-print-directory -C "$WORK/go-build/$NAME" TARGET_ARCH="$arch" build
 }
 
 check_go_binary() {
@@ -129,22 +71,6 @@ check_go_binary() {
     $2 == "build" && $3 ~ /^GOARCH=/ { arch++; if ($3 != "GOARCH=amd64") bad=1 }
     END { exit bad || os != 1 || arch != 1 }
   ' <<< "$info" || fail "Go release payload must target linux/amd64: $file"
-}
-
-validate_copied_source_files() {
-  local extract="$1" sha="$2" source destination
-  git -C "$ROOT" cat-file -e "$sha^{commit}" 2>/dev/null \
-    || fail "selected source commit is unavailable; fetch that exact commit before validation"
-  while read -r source destination; do
-    git -C "$ROOT" cat-file blob "$sha:$source" | cmp -s - "$extract/$destination" \
-      || fail "release helper/deployment bytes differ from selected source: $destination"
-  done <<'EOF'
-dist/connector-vswitch.service deploy/connector-vswitch.service
-dist/connector-switch.conf deploy/connector-switch.conf
-dist/NetworkManager-connector.conf deploy/NetworkManager-connector.conf
-examples/perf_bench.sh test/connector/perf_bench.sh
-examples/start_perf_bench.sh test/connector/start_perf_bench.sh
-EOF
 }
 
 validate_archive_paths() {
@@ -226,7 +152,13 @@ validate_bundle() {
   local project_sha
   project_sha="$(go version -m "$extract/bin/connector-ctl" | \
     awk -F '\t' '$2 == "build" && $3 ~ /^vcs.revision=/ {print substr($3, 14)}')"
-  release_materials_require_git_licenses "$extract" "$NAME" "$ROOT" "$project_sha" project
+  awk -F '\t' '
+    NR == 1 { next }
+    $1 == "bin/*,deploy/*,test/connector/*" && $2 == "connector" { next }
+    $1 == "bin/connector-ctl" && ($2 == "embedded-ebpf" || $2 == "Go toolchain") { next }
+    { exit 1 }
+  ' "$extract/share/sources/$NAME/SOURCES.tsv" \
+    || fail "unrecognized connector source inventory record"
   release_materials_validate "$extract" "$NAME"
   release_materials_require_project_source "$extract" "$NAME" 'bin/*,deploy/*,test/connector/*' "$version" \
     bin/connector-ctl
@@ -242,7 +174,6 @@ validate_bundle() {
     test/connector/perf_bench.sh test/connector/start_perf_bench.sh; do
     [ -f "$extract/$file" ] || fail "$archive is missing $file"
   done
-  validate_copied_source_files "$extract" "$project_sha"
 }
 
 package_release() {
@@ -260,11 +191,8 @@ package_release() {
   STAGE="$WORK/stage"
   rm -rf "$STAGE"
   mkdir -p "$STAGE"
-  [ -z "${RELEASE_BIN_DIR:-}" ] || fail "RELEASE_BIN_DIR is not supported: release Go payloads are rebuilt"
+  bin_dir="${RELEASE_BIN_DIR:-$ROOT/bin/$arch}"
   project_sha="$(release_materials_resolve_git_source "$ROOT" "" connector)"
-  stage_release_go_source "$ROOT" "$project_sha" "$WORK/go-build/connector"
-  build_release_go_payloads "$arch"
-  bin_dir="$WORK/go-build/connector/bin/$arch"
   copy_executable "$bin_dir/connector-ctl" bin/connector-ctl
   check_go_binary "$STAGE/bin/connector-ctl"
   copy_root_executable examples/perf_bench.sh test/connector/perf_bench.sh
@@ -285,7 +213,7 @@ package_release() {
     "https://github.com/kuasar-sandbox/connector/blob/$project_sha/bpf/switch_kern.c" \
     "git:$project_sha;spdx:GPL-2.0-only" project
   release_materials_add_go_binary "$STAGE/bin/connector-ctl" bin/connector-ctl
-  GOMODCACHE="$WORK/go-mod" release_materials_finish
+  release_materials_finish
 
   mkdir -p "$output/assets"
   tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$epoch" \

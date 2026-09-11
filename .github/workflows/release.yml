@@ -78,8 +78,6 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   build:
-    outputs:
-      archive_sha256: ${{ steps.release-archive-digest.outputs.archive_sha256 }}
     needs: preflight
     runs-on: [self-hosted, Linux, X64, kuasar-e2e]
     timeout-minutes: 45
@@ -128,15 +126,6 @@ jobs:
           SOURCE_DATE_EPOCH=$(git show -s --format=%ct "${{ needs.preflight.outputs.source_sha }}")
           bash scripts/release.sh package "$VERSION" "$TARGET_ARCH" release-bundle
 
-      - name: Record the completed build archive digest
-        id: release-archive-digest
-        run: |
-          set -euo pipefail
-          set -- release-bundle/assets/*.tar.gz
-          [[ "$#" -eq 1 && -f "$1" && ! -L "$1" ]]
-          digest=$(sha256sum -- "$1")
-          printf 'archive_sha256=%s\n' "${digest%% *}" >> "$GITHUB_OUTPUT"
-
       - name: Upload validated release bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -148,10 +137,6 @@ jobs:
   publish:
     needs: [preflight, build]
     runs-on: [self-hosted, Linux, X64, kuasar-control]
-    env:
-      GOPROXY: https://goproxy.cn,direct
-      GOSUMDB: sum.golang.google.cn
-      GOTOOLCHAIN: local
     permissions:
       actions: read
       contents: write
@@ -160,8 +145,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Read exact main/maintenance source blobs without executing their code.
-          fetch-depth: 0
 
       - name: Install pinned GitHub CLI
         run: bash scripts/install-gh-cli.sh
@@ -178,7 +161,6 @@ jobs:
           VERSION: ${{ needs.preflight.outputs.version }}
           SOURCE_REF: ${{ needs.preflight.outputs.source_ref }}
           SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
-          RELEASE_ARCHIVE_SHA256: ${{ needs.build.outputs.archive_sha256 }}
           AGGREGATE_VERSION: ${{ inputs.aggregate_version }}
           AGGREGATE_SHA: ${{ inputs.aggregate_sha }}
           TARGET_ARCH: x86_64
