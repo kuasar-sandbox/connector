@@ -126,7 +126,7 @@ bench: connector-ctl
 # ---------------------------------------------------------------------------
 # The binary is self-contained (eBPF objects are embedded). The release bundle
 # contains one target archive, checksums and release notes.
-release:
+release: build
 	@mkdir -p $(BUILD_DIR)
 	rm -rf $(BUILD_DIR)/release-bundle
 	SOURCE_DATE_EPOCH="$$(git show -s --format=%ct HEAD)" \
