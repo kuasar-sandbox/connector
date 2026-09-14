@@ -8,17 +8,14 @@ The protocol is self-contained: either side can implement it without knowing the
 
 Reference providers are `connector-ctl vswitch open-port` and `connector-ctl tapfd get` ([open-port](vswitch-operations.md#28-connector-ctl-vswitch-open-port) and [tapfd get](vswitch-operations.md#213-connector-ctl-tapfd-get)). The Go reference library, `github.com/kuasar-sandbox/connector/pkg/tapfd`, implements both sending and receiving. A runnable consumer example is in [`examples/tapfd_receiver/`](../examples/tapfd_receiver/).
 
-<a id="1-概述"></a>
 ## 1. Overview
 
-<a id="11-角色"></a>
 ### 1.1 Roles
 
 - **provider** (sender/helper): opens TAP queue descriptors and sends them over the socket.
 - **consumer** (receiver/VMM): receives the descriptors and configures its network interface from the metadata.
 - **runtime**: consumer-side orchestration that establishes the socket and executes the helper according to section 3.
 
-<a id="12-分层"></a>
 ### 1.2 Layers
 
 ```text
@@ -33,17 +30,14 @@ Layer 1  fd handoff wire protocol (normative, section 2)
 
 Consumers connected directly to a provider (whether the provider connects back or the consumer connects to a persistent provider) need only implement **Layer 1** for descriptor handoff. Consumers acquiring descriptors by executing a child process additionally implement **Layer 2**. The request/status envelope for a persistent provider is defined in section 4.
 
-<a id="2-句柄交接-wire-协议normative"></a>
 ## 2. Descriptor handoff wire protocol (normative)
 
-<a id="21-传输"></a>
 ### 2.1 Transport
 
 - The provider and consumer **MUST** communicate through a connected `AF_UNIX`, `SOCK_STREAM` socket.
 - A successful handoff uses a **single** `sendmsg(2)`/`recvmsg(2)` exchange: descriptor-bearing ancillary data and the metadata payload are in the same message.
 - The direction of socket establishment (which side listens or connects, or whether a `socketpair` is inherited) is outside this layer; see section 3.
 
-<a id="22-fd-传递"></a>
 ### 2.2 Descriptor transfer
 
 - The provider **MUST** carry **at least one** TAP queue descriptor through `SCM_RIGHTS` and declare its count in the payload's `fd=` field. Multiple TAP descriptors in one handoff represent multiple queues; the consumer receives all N descriptors.
@@ -52,7 +46,6 @@ Consumers connected directly to a provider (whether the provider connects back o
 - **Optional network-namespace descriptor:** the provider **MAY** append a netns descriptor **after all TAP descriptors**, with its count declared by `netns_fd=` (0 or 1), for a consumer that needs to enter the TAP's namespace (sections 2.3 and 2.5). Netns descriptors are always at the **end** of the ancillary descriptor list. Thus the total ancillary descriptor count is `fd + netns_fd`.
 - After a successful handoff, the provider **SHOULD** close its local descriptors; the consumer now holds these references. See section 5 for lifetime rules.
 
-<a id="23-元数据-payload"></a>
 ### 2.3 Metadata payload
 
 The payload is one ASCII line of space-separated `key=value` tokens and **MUST** end in a single `NUL` (`0x00`):
@@ -82,7 +75,6 @@ port=1 mac=02:00:00:00:80:01 ip=169.254.1.1 fd=1\0
 
 - **Extensions:** the provider **MAY** add other keys. The consumer **MUST** ignore unrecognized keys. `netns_fd` is optional: consumers request it when they need cross-namespace operations, and the provider decides whether its implementation supplies it (section 2.5).
 
-<a id="24-接收方算法参考"></a>
 ### 2.4 Receiver algorithm (reference)
 
 1. Call `recvmsg` once with a data buffer of at least 512 bytes and an ancillary buffer large enough for the expected descriptors. The latter should accommodate at least eight `int` values for multiple queues plus a trailing netns descriptor.
@@ -94,7 +86,6 @@ port=1 mac=02:00:00:00:80:01 ip=169.254.1.1 fd=1\0
 
 A TAP descriptor is a kernel reference to a TUN queue and remains usable across network namespaces. The consumer does **not** need to reside in the TAP device's netns (section 5).
 
-<a id="25-netns-fd可选"></a>
 ### 2.5 Optional netns descriptor
 
 `netns_fd` is an **optional** feature. When the payload includes `netns_fd=K` (K at least 1, currently limited to 1), the last K ancillary descriptors are open references to the TAP device's network namespace. Providers typically open `/proc/<pid>/ns/net` or `/run/netns/<name>`.
@@ -105,19 +96,16 @@ A TAP descriptor is a kernel reference to a TUN queue and remains usable across 
 - A netns descriptor is also a capability (section 6): it is a reference used to enter the network namespace. Both sides should treat its transfer and possession accordingly.
 - A consumer that does not need the netns descriptor **SHOULD** close it to avoid leaks.
 
-<a id="26-fd-的-tun-flags"></a>
 ### 2.6 TUN flags on transferred descriptors
 
 Transferred descriptors use `IFF_TAP | IFF_NO_PI | IFF_VNET_HDR`. Frames include a virtio-net header, the TAP framing expected by mainstream virtio VMMs such as Cloud Hypervisor, Firecracker and QEMU, so the consumer does not have to adapt the backend. The consumer **SHOULD** set the vnet header length for its virtio-net version (`TUNSETVNETHDRSZ`, usually 12 for `virtio_net_hdr_v1`).
 
 Offload features (TSO/GSO/checksum) are negotiated normally between the consuming VMM and its guest. They are **not** part of this protocol, which imposes no offload convention or restriction.
 
-<a id="3-动态获取契约normative"></a>
 ## 3. Dynamic acquisition contract (normative)
 
 This contract applies when the consumer does not connect to a provider directly, but **executes a provider helper** as a child process to acquire descriptors. The runtime establishes the socket, communicates its location through `TAPFD_SOCKET`, and the helper performs the section 2 handoff through it.
 
-<a id="31-runtimeconsumer-侧职责"></a>
 ### 3.1 Runtime responsibilities (consumer side)
 
 1. Establish a connected `AF_UNIX SOCK_STREAM` socket (section 3.2).
@@ -125,13 +113,11 @@ This contract applies when the consumer does not connect to a provider directly,
 3. Wait for the helper to send **exactly one** section 2 message through that socket. The helper then **MUST** exit with status `0`.
 4. The runtime **MUST** impose a timeout on the entire operation. A nonzero helper exit or timeout **MUST** be treated as failure; the runtime **SHOULD NOT** enable the network interface in that case.
 
-<a id="32-套接字提供方式二选一"></a>
 ### 3.2 Socket provisioning (choose one)
 
 - **R1 — inherited socketpair descriptor (recommended):** the runtime creates a pair with `socketpair(AF_UNIX, SOCK_STREAM)`, passes one end to the helper through descriptor inheritance, and reads the other end. There is no filesystem object or pathname race; lifetime follows the processes.
 - **R2 — listening pathname:** the runtime listens at a Unix socket pathname and the helper connects back. This also accommodates deployments where helper and runtime are not parent and child.
 
-<a id="33-套接字位置的通告tapfd_socket"></a>
 ### 3.3 Advertising the socket: `TAPFD_SOCKET`
 
 The runtime **MUST** advertise the socket in the helper's `TAPFD_SOCKET` environment variable. The helper **MUST** read it and send the handoff through the indicated socket:
@@ -143,12 +129,10 @@ TAPFD_SOCKET=<path>     # R2: filesystem path the helper dials
 
 For the `fd=` prefix, `<N>` is a connected socket descriptor inherited by the helper. Otherwise, the entire value is a pathname that the helper **MUST** connect to. This convention is provider-independent: any helper reading `TAPFD_SOCKET` and implementing section 2 can be driven by any runtime, without hardcoding helper-specific socket arguments into its command.
 
-<a id="34-请求-netns-fdtapfd_want_netns"></a>
 ### 3.4 Requesting a netns descriptor: `TAPFD_WANT_NETNS`
 
 A runtime requiring the TAP's namespace descriptor (section 2.5) **MAY** set `TAPFD_WANT_NETNS` to a truthy value (`1`/`true`/`yes`/`on`, case-insensitive) in the helper's environment. If the helper recognizes it and its TAP resides in a separate netns, it **SHOULD** append that namespace descriptor after the TAP descriptors and set `netns_fd=1`. When the variable is absent, empty or false, the helper **MUST NOT** append a netns descriptor. Setting the variable means the runtime will correctly split the trailing descriptor as specified in section 2.4.
 
-<a id="35-helperprovider-侧职责"></a>
 ### 3.5 Helper responsibilities (provider side)
 
 An executed helper **MUST**:
@@ -160,7 +144,6 @@ An executed helper **MUST**:
 
 If one invocation both allocates an interface and hands off its descriptors, the helper **SHOULD** roll back the allocation on handoff failure, avoiding an allocated-but-undelivered intermediate state. Appendix B lists exit-status conventions.
 
-<a id="4-持久-provider-socketnormative"></a>
 ## 4. Persistent provider socket (normative)
 
 To avoid forking/executing a helper for every handoff, a provider may keep an `AF_UNIX SOCK_STREAM` listener running. The consumer connects, sends one request line, and receives one response on the same connection.
@@ -206,22 +189,18 @@ Recommended error codes are `BAD_REQUEST`, `SWITCH_MISMATCH`, `PORT_INVALID`, `P
 
 `connector-ctl vswitch serve --tapfd-listen /run/kuasar/connector/sw0/tapfd.sock` is the reference provider for this mode. It handles `PREPARE`/`OPEN`/`RELEASE` on the same persistent switch handle, avoiding repeated fork/exec and reopening pinned BPF maps on the hot path.
 
-<a id="5-生命周期与幂等"></a>
 ## 5. Lifetime and idempotency
 
 - **Device and descriptor lifetimes are separate:** a transferred descriptor is one TAP queue reference. The provider **SHOULD** use a persistent TAP (`TUNSETPERSIST`) when it independently manages a device that must survive descriptor closure. Closing consumer descriptors does not remove such a persistent device. For a nonpersistent TAP, including `connector-ctl tapfd get --new`, the device disappears when its last reference closes.
 - **Reacquisition:** consumer exit closes its queue descriptors and detaches those queues. If the provider-managed TAP still exists, the consumer **MAY** request another handoff to obtain new queue descriptors. A nonpersistent TAP that has disappeared must be recreated before another handoff; this protocol does not make device recreation or network-resource allocation idempotent.
 - **Descriptors work across netns boundaries:** the TAP may be in a provider-owned namespace, but a queue descriptor is a kernel reference. The consumer does **not** need to enter that namespace to use it.
 
-<a id="6-安全考量"></a>
 ## 6. Security considerations
 
 - **Socket access grants network access:** a process that can receive from this Unix socket receives TAP queue descriptors. The runtime **SHOULD** strictly restrict socket access, for example using `0600` and restricted parent-directory permissions. R1 (inherited descriptors) exposes no filesystem object and is preferable to R2.
 - **A descriptor is a capability:** its holder can send and receive arbitrary L2 frames on the interface. Treat transfer and possession as granting network access through that interface.
 - **Isolation and anti-spoofing belong to the provider, not the consumer:** the provider's data plane should enforce L2 isolation and source-address protection, for example by rewriting source MACs, forwarding by trusted port identity rather than packet-supplied addresses, and answering ARP. Guest address spoofing must not defeat provider isolation. The consumer should faithfully use the provider's `mac` from section 2.3.
 
-<a id="6-扩展方式"></a>
-<a id="7-扩展方式"></a>
 ## 7. Extensions
 
 The bare metadata frame in section 2 has no explicit version field; it evolves through fixed framing and extension keys. The persistent-provider envelope in section 4 is separately versioned with `TAPFD/1`. The base handoff framing (`SOCK_STREAM`, a single `recvmsg`, `SCM_RIGHTS` and NUL-terminated text) remains unchanged. There are two kinds of extension:
@@ -229,8 +208,6 @@ The bare metadata frame in section 2 has no explicit version field; it evolves t
 - **Text-only keys:** providers add `key=value` fields; consumers **MUST** ignore unknown keys and **MUST NOT** fail solely because of them. These additions need no negotiation.
 - **Keys changing descriptor counts**, such as `netns_fd` (section 2.5): because they change the ancillary descriptor count, providers send the additional descriptors **only when requested by the consumer**. The reference implementation uses `TAPFD_WANT_NETNS` (section 3.4). A requesting consumer must split by `fd + netns_fd` as described in section 2.4; a consumer that did not request the feature receives no extra descriptors. Such keys **MUST** default to appending no descriptors, as with `netns_fd=0`.
 
-<a id="7-交接示例"></a>
-<a id="8-交接示例"></a>
 ## 8. Handoff example
 
 One R2 (listening pathname) handshake:
@@ -267,15 +244,13 @@ if err != nil { log.Fatal(err) }
 
 Without the library, implement section 2.4 directly with `recvmsg(2)` and `SCM_RIGHTS`. The runnable Go example is in [`examples/tapfd_receiver/`](../examples/tapfd_receiver/). The release package's `tap_test.sh` embeds a Python receiver and does not require building that example on site.
 
-<a id="8-see-also"></a>
 ## 9. See also
 
-- [vSwitch operations](vswitch-operations.md): `open-port` and `connector-ctl tapfd get` implement the provider side. [vSwitch design](vswitch.md#67-tap-descriptor-handoff) records implementation tradeoffs.
+- [vSwitch operations](vswitch-operations.md): `open-port` and `connector-ctl tapfd get` implement the provider side. [vSwitch design](vswitch.md#47-tap-descriptor-handoff) records implementation tradeoffs.
 - [`pkg/tapfd`](../pkg/tapfd/): Go reference library. Provider: `OpenTap`/`SendFd`; consumer: `RecvFd`/`RecvFds`/`RecvFdsWithNetns`; connection setup: `ConnectUnix`/`UnixConnFromFd`.
 - [`examples/tapfd_receiver/`](../examples/tapfd_receiver/): runnable consumer example.
 - unix(7), cmsg(3): `SCM_RIGHTS` descriptor passing.
 
-<a id="附录-a元数据-payload-abnf"></a>
 ## Appendix A: metadata payload ABNF
 
 ```abnf
@@ -288,7 +263,6 @@ SP          = %x20
 NUL         = %x00
 ```
 
-<a id="附录-bhelper-退出码约定"></a>
 ## Appendix B: helper exit-status convention
 
 | Status | Meaning |

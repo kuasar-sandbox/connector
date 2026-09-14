@@ -15,6 +15,8 @@ slot 定位来自入口 ifindex、floating IP 或 configured GENEVE locator,不�
 TAP 模式用 SCM_RIGHTS 把队列 fd 交给 Cloud Hypervisor、Firecracker 等 VMM。
 完整 provider/consumer 契约见 [tapfd_zh.md](tapfd_zh.md)。
 
+CLI、配置、构建、部署与故障排查见 [vSwitch 运维](vswitch-operations_zh.md).
+
 ## 1. 概述
 
 ### 1.1 业务问题
@@ -56,7 +58,7 @@ TAP 模式用 SCM_RIGHTS 把队列 fd 交给 Cloud Hypervisor、Firecracker 等 
 - 管理平面(`--mgmt-extract`/`--mgmt-service`)在 `start` 时固化,变更需重建交换机。
 - `--mgmt-extract` CIDR 只定义流量提取范围;管理接口地址、local route、服务监听与
   相关 sysctl 由部署系统负责。
-- `MAX_PORTS = 4096` 在 BPF C 中固定,并与 12-bit slot locator 布局绑定(§6.2)。
+- `MAX_PORTS = 4096` 在 BPF C 中固定,并与 12-bit slot locator 布局绑定(§4.2)。
 - 单机控制面,不做跨宿主机同步;每台宿主一个独立实例。
 
 ### 1.4 部署形态
@@ -77,37 +79,9 @@ flowchart TD
 L4+ 多租户策略管理或连接跟踪/L7 安全网关。
 
 
-<a id="21-子命令总览"></a>
-<a id="210-connector-ctl-vswitch-stats"></a>
-<a id="211-connector-ctl-vswitch-show"></a>
-<a id="212-connector-ctl-vswitch-dhcp"></a>
-<a id="213-connector-ctl-tapfd-get"></a>
-<a id="214-配置文件--config"></a>
-<a id="22-connector-ctl-vswitch-start--serve"></a>
-<a id="23-connector-ctl-vswitch-stop"></a>
-<a id="24-connector-ctl-vswitch-attach"></a>
-<a id="25-connector-ctl-vswitch-detach"></a>
-<a id="26-connector-ctl-vswitch-reserve"></a>
-<a id="27-connector-ctl-vswitch-provision"></a>
-<a id="28-connector-ctl-vswitch-open-port"></a>
-<a id="29-connector-ctl-vswitch-status"></a>
+## 2. 网络架构
 
-## 2. 命令行接口
-
-操作流程与完整示例见 [vSwitch 运维](vswitch-operations_zh.md#2-命令行与配置参考)；底层设计约束仍由本规范定义。
-
-
-<a id="31-系统要求"></a>
-<a id="32-构建"></a>
-<a id="33-systemd-集成"></a>
-<a id="34-首次启动"></a>
-## 3. 部署
-
-操作流程与完整示例见 [vSwitch 运维](vswitch-operations_zh.md#1-部署与前置条件)；底层设计约束仍由本规范定义。
-
-## 4. 网络架构
-
-### 4.1 拓扑与设备命名
+### 2.1 拓扑与设备命名
 
 ```mermaid
 flowchart TD
@@ -130,7 +104,7 @@ veth)/`sw1-m0`(管理端)/`sw1-t7`(持久 tap)。`<sw>-dummy` 是一个无 IP �
 让 filter 在所有端口设备都未挂载时仍存活。所有沙箱端设备共用 `ingress_block=100`,
 BPF 程序经 `skb->ingress_ifindex` 在程序内部分派 slot。
 
-### 4.2 netns 布局
+### 2.2 netns 布局
 
 | netns | 用途 | 包含的设备 |
 | --- | --- | --- |
@@ -139,12 +113,12 @@ BPF 程序经 `skb->ingress_ifindex` 在程序内部分派 slot。
 | `netns_mgmt` | 管理服务所在网络 | 管理网卡(如 `eth0`);可省略——mgmt veth peer 留在调用方/主机 netns |
 | 沙箱 netns | 沙箱自身 | `<sw>-pX`(veth 模式,从 `netns_ports` 移入) |
 
-### 4.3 数据包流向
+### 2.3 数据包流向
 
 `--mgmt-extract` 的 CIDR 写入 slot 目的流量分类条件,不是管理 peer 的接口地址。
 Connector 创建 veth、设置 MAC/MTU、拉起、挂 TC、写 extraction 并安装 floating
 回程路由。接口地址、local route、服务 listener 和 sysctl 由部署负责,确保目标在
-管理 namespace 内本地持有或经路由可达。systemd 示例用 MGMT_ADDRS 显式配址([§1.3](vswitch-operations_zh.md#33-systemd-集成))。
+管理 namespace 内本地持有或经路由可达。systemd 示例用 MGMT_ADDRS 显式配址([§1.3](vswitch-operations_zh.md#13-systemd-集成))。
 
 **沙箱 → 管理服务**(如 169.254.169.254):
 
@@ -205,9 +179,9 @@ slot,检查分配、ifindex、外层 gateway 源 IP 与 VNI,解封装,按端口�
 - slot 身份来自 ingress ifindex、floating 目的算术或 configured locator,不来自沙箱自报源 IP/MAC。
 - 回程使用选定的 fixed/derived port MAC,与设备/VMM 接收配置一致。
 
-## 5. 数据面
+## 3. 数据面
 
-### 5.1 eBPF 程序挂载点
+### 3.1 eBPF 程序挂载点
 
 | 设备 | 挂载点 | 程序 | 功能 |
 | --- | --- | --- | --- |
@@ -217,11 +191,11 @@ slot,检查分配、ifindex、外层 gateway 源 IP 与 VNI,解封装,按端口�
 
 GENEVE 内层同时识别 IPv4 与 IPv6(管理平面与 `slot.inner_ip` 为 IPv4)。
 
-### 5.2 Pinned maps(`/sys/fs/bpf/<sw>/`)
+### 3.2 Pinned maps(`/sys/fs/bpf/<sw>/`)
 
 | map | 类型 | 规格 | nx | mx | transit | 内容 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `slots` | ARRAY + MMAPABLE | 4096 × 108 B value(112 B mmap stride) | R | R | R | per-slot 配置;用户态 mmap 后对 `inner_ip` 做原子 CAS 完成分配/释放(§6.3) |
+| `slots` | ARRAY + MMAPABLE | 4096 × 108 B value(112 B mmap stride) | R | R | R | per-slot 配置;用户态 mmap 后对 `inner_ip` 做原子 CAS 完成分配/释放(§4.3) |
 | `config` | ARRAY | 1 × 40 B | R | R | R | `switch_mac`/`n_ports`/`floating_ip_base`/Geneve locator/`geneve_encap_eth`/`transit_nexthop`/`port_mac` |
 | `metadata` | ARRAY | 1 × 4096 B | – | – | – | JSON 编码的 `SwitchMetadata`,仅用户态读写;新增字段无需重编译 BPF |
 | `stats` | PERCPU_ARRAY | 4096 | W | W | W | per-slot `mgmt_{rx,tx}` + `transit_{rx,tx}` 包/字节计数,沙箱视角;attach 尝试清零(失败不使 attach 失败),detach 保留 |
@@ -234,9 +208,9 @@ GENEVE 内层同时识别 IPv4 与 IPv6(管理平面与 `slot.inner_ip` 为 IPv4
 使用算术或固定 locator 布局,不需要通用 slot-index hash/TLV 搜索;管理服务转换
 仍有独立 hash lookup。
 
-### 5.3 数据面 ABI
+### 3.3 数据面 ABI
 
-直接以字节偏移读写下列 C 结构的 Go 代码全部隔离在 `pkg/internal/`(§11):字段偏移
+直接以字节偏移读写下列 C 结构的 Go 代码全部隔离在 `pkg/internal/`(§9):字段偏移
 变动等同 ABI 变更,Go 与 BPF 两侧必须同步。
 
 ```c
@@ -304,9 +278,9 @@ switch 可继续 Open/status/show、空 options Attach、Detach 与 Stop;非空 
 vni/tlv locator 必须先 stop 并以新版本重建。本实现不为活动 switch 临时创建 map,
 也不替换已挂载 TC program。
 
-## 6. 关键机制
+## 4. 关键机制
 
-### 6.1 MAC 派生
+### 4.1 MAC 派生
 
 交换机使用统一 MAC 命名空间,所有 ARP 代答 MAC 和设备 MAC 都从用户提供的
 `switch_mac` 派生。派生公式 `SS:SS:SS:SS:BB:LL`:
@@ -329,7 +303,7 @@ slot_id 高 4 位放在 byte4 低 4 位,正好支撑
 | `per-port` | 按各自 `slot_id` 派生,每端口唯一 | 测试/需要网关侧按 MAC 区分 |
 | 显式 MAC | 用户指定,所有端口共享 | 特殊兼容需求 |
 
-### 6.2 GENEVE 隧道
+### 4.2 GENEVE 隧道
 
 Connector 部署在沙箱 host,外部 Geneve gateway 负责与外部网络互通。两者只约定
 Geneve framing、slot locator 与返程验证;locator 标识零基 `slot_id=0..4095`,不是用户
@@ -393,12 +367,12 @@ ARP 缓存;内层(仅 Ether-over-GENEVE)目标 MAC 取 `--transit-mac-addr`(未�
 
 抓包命令与字段检查见 [运维 §3.1](vswitch-operations_zh.md#31-geneve-抓包)。
 
-### 6.3 slot 分配与状态机
+### 4.3 slot 分配与状态机
 
 并发 attach 下,BPF map 的 Lookup + Update 是两次 syscall,经典 TOCTOU:两个进程同时
 读到 slot 空闲,后写者覆盖先写者。解决:`slots` map 启用 `BPF_F_MMAPABLE`,用户态把
 整个 array mmap 进进程,对 inner_ip 做 atomic.CompareAndSwapUint32。原子 claim
-本身无需锁;新 switch 的复合控制操作还会持有 flock(§6.4)。
+本身无需锁;新 switch 的复合控制操作还会持有 flock(§4.4)。
 
 | inner_ip | 状态 | 含义 |
 |---|---|---|
@@ -425,9 +399,9 @@ stateDiagram-v2
 
 失败操作尝试撤销自己的 claim/设备移动,不会覆盖其他 owner。CAS 不等于全部
 数据面字段的原子发布,而回滚/设备操作本身也可能失败。调用方应依据操作结果,
-在出错后检查并协调实际状态(§7.4)。
+在出错后检查并协调实际状态(§5.4)。
 
-### 6.4 控制操作互斥
+### 4.4 控制操作互斥
 
 CAS 只保证单 slot 所有权原子;多 slot/多资源的控制操作,以及新 switch 上跨 mmap slot
 与 `geneve_opts` map 的复合更新,经 `flock(LOCK_EX)` 在 bpffs pin 目录
@@ -445,7 +419,7 @@ CAS 只保证单 slot 所有权原子;多 slot/多资源的控制操作,以及�
 `slots` map 的 kernel map ID 与当前 pin path 中的 map ID 比较。同名 switch 若在等待锁时
 已被 `StopReleased` 并重建,旧 context 会失败并要求重新 Open,不会修改已 unpin 的旧 map。
 
-### 6.5 两阶段启动
+### 4.5 两阶段启动
 
 为支持 Type=notify 与较早提供控制面入口,启动拆成两阶段。
 
@@ -473,7 +447,7 @@ port ingress,写设备/管理/transit 字段,再 CAS Reserved→Free。Free/Allo
 应按 [§2.9](vswitch-operations_zh.md#29-connector-ctl-vswitch-status) 检查容量或目标 slot。Reserved slot 可能在后续未 provision 设备检查之前
 就因所有权 CAS 失败而拒绝分配,调用方也须处理这种分配失败。
 
-### 6.6 端口模式:veth 与 tap
+### 4.6 端口模式:veth 与 tap
 
 每个 slot 在 `slot_item.mode` 记录端口类型。该字段纯属用户态元数据,BPF 数据面不读——
 两种模式数据路径完全相同(同样的 TC ingress 程序,同样按 ifindex 路由),差别只在
@@ -495,7 +469,7 @@ port ingress,写设备/管理/transit 字段,再 CAS Reserved→Free。Free/Allo
 `provision`(创建)与 `stop`/`stop --force`(删除)完全拥有;`stop --force-clean` 只
 unpin BPF 资源、不删设备。`--skip-device` 控制允许的设备移动/检查，不会把 attach 变为设备 provision 操作。
 
-### 6.7 tap fd 交接
+### 4.7 tap fd 交接
 
 交接遵循 [tapfd_zh.md](tapfd_zh.md) 的厂商无关协议(`SCM_RIGHTS` + NUL 结尾 `key=value`
 元数据 + `TAPFD_SOCKET` 获取契约),协议规格独立可读,第三方 VMM 据此即可对接。本节
@@ -530,7 +504,7 @@ provision(`ifindex != 0`)、已 attach(inner IP 为真实 IP,故 `ip` 字段总�
 (`RecvFd`/`RecvFds`/`RecvFdsWithNetns`)与源码树示例 `examples/tapfd_receiver/`。
 普通 Unix 字节流 listener 并不等于实现了 SCM_RIGHTS 接收。
 
-### 6.8 MTU 校验
+### 4.8 MTU 校验
 
 GENEVE 封装增加报文长度,必须保证
 `transit_mtu >= port_mtu + base_overhead + wire_options_len`:
@@ -561,16 +535,16 @@ transit device eth1 MTU 1570 is too small for port sw0-n1:
   port MTU 1500 + base GENEVE overhead 64 + options overhead 12 = required MTU 1576
 ```
 
-### 6.9 DHCP 网关推算
+### 4.9 DHCP 网关推算
 
 `--transit-dev-addr=auto` 时,StartReserved 阶段在 transit 设备 up 之后执行 DHCP:
 响应含 Router Option(3)则直接采用;不含网关则推算子网首个可用 IP 作为网关(如
 `192.168.1.100/24` → `192.168.1.1`)并打印提示——处理私有 DHCP 服务器只下发 IP 不
 下发网关的情况。但推算不证明该地址确有 router;网络不符合该假设时应配置显式 gateway。
 
-## 7. 安全与隔离
+## 5. 安全与隔离
 
-### 7.1 威胁模型
+### 5.1 威胁模型
 
 Connector 是 MicroVM 外的纵深防御层,VMM 仍是 Guest 的主要隔离边界。沙箱代码
 可能恶意;Host 控制调用方、管理服务与外部 gateway 必须受部署策略约束。
@@ -581,10 +555,10 @@ Connector 是 MicroVM 外的纵深防御层,VMM 仍是 Guest 的主要隔离边�
 | T2 | 本地直接 sandbox→sandbox 转发 | 无 port→port TC 分支;出向只进入 mgmt/transit,经 gateway/管理服务的访问另需策略。 |
 | T3 | 非预期 GENEVE 回程来源 | 校验 gateway 源 IP、locator、VNI;IP/VNI 匹配不是密码学认证,仍需信任 underlay/gateway。 |
 | T4 | ARP 广播穿越本地端口 | port ARP request 被交换机消费并回复本端口,不桥接给其他 sandbox。 |
-| T5 | 控制进程崩溃导致转发停止 | TC 引用、pins 和完整内核网络资源超越进程生存;serve 可重新 Open(§8.1)。 |
+| T5 | 控制进程崩溃导致转发停止 | TC 引用、pins 和完整内核网络资源超越进程生存;serve 可重新 Open(§6.1)。 |
 | T6 | 并发 attach 重复分配 | mmap CAS 决定 owner,新 switch 复合操作还持有 flock。 |
 
-### 7.2 隔离不变量
+### 5.2 隔离不变量
 
 1. **无直接 port→port 路径**:本地程序没有将一个 sandbox ingress 桥接到另一个的分支。
 2. **交换机拥有 ARP 回复**:消费端口 ARP request,构造回复交回本端口,不向其他端口广播。
@@ -600,7 +574,7 @@ sandbox 投递与 `TC_ACT_OK` 的区别见
 [tc_ingress_mx / tc_ingress_transit](../bpf/switch_kern.c)。namespace 协议栈的
 路由/过滤仍由部署负责。
 
-### 7.3 所需权限
+### 5.3 所需权限
 
 特权测试/部署基线是具有所需能力的 root。精确能力裁剪取决于内核、BPF 策略、
 namespace 所有权和 pin 文件权限;下表描述相关检查,不是已证明的最小能力集合。
@@ -615,7 +589,7 @@ namespace 所有权和 pin 文件权限;下表描述相关检查,不是已证明
 Linux 5.8+ 将部分 BPF 权限分离到 CAP_BPF,但不替代所有 CAP_SYS_ADMIN 检查。
 TC/设备管理仍需对应网络权限。
 
-### 7.4 已知限制
+### 5.4 已知限制
 
 | # | 限制 | 处理 |
 |---|---|---|
@@ -626,11 +600,11 @@ TC/设备管理仍需对应网络权限。
 | L5 | 宽 extraction CIDR 引入非预期管理流量,slot 合计只容纳三个 CIDR。 | 使用 /32 等窄匹配并检查实际 slots。 |
 | L6 | mgmt-service target 不可达,特别是 loopback。 | 校验 VIP/extraction 与 target 唯一性,部署仍需路由/listener/loopback route_localnet。 |
 | L7 | 旧 switch 缺 geneve_opts | no-option port 模式继续支持;vni/tlv/opaque 前 stop/recreate,无在线 map/program 迁移。 |
-| L8 | --mtu 不传播到新 provision 的 TAP/veth 端口 | 检查实际设备 MTU 与完整 underlay budget(§6.8);初始检查或旧版帮助文字不证明端口值已生效。 |
+| L8 | --mtu 不传播到新 provision 的 TAP/veth 端口 | 检查实际设备 MTU 与完整 underlay budget(§4.8);初始检查或旧版帮助文字不证明端口值已生效。 |
 
-## 8. 可靠性
+## 6. 可靠性
 
-### 8.1 资源生命周期与崩溃恢复
+### 6.1 资源生命周期与崩溃恢复
 
 | 资源 | 持久化机制 | 控制面进程崩溃后 |
 | --- | --- | --- |
@@ -645,23 +619,17 @@ TC/设备管理仍需对应网络权限。
 namespace/设备删除、map 损坏、Host 重启或 ABI 不兼容是其他故障,不在此保证内。
 
 
-### 8.2 故障排除
-
-操作流程与完整示例见 [vSwitch 运维](vswitch-operations_zh.md#3-故障排除)；底层设计约束仍由本规范定义。
-
-<a id="91-数据面2-端口拓扑"></a>
-<a id="92-控制面128-端口"></a>
-## 9. 性能特征
+## 7. 性能特征
 
 数据面测量需记录源码/二进制版本、宿主及 Guest kernel、CPU/NUMA 放置、NIC/veth 拓扑、MTU、offload/GRO/GSO、包大小、流数、负载和失败。小包包速与大块 TCP 吞吐衡量不同成本；归因前应区分 BPF、namespace/veth 与隧道开销。
 
-控制面测量需明确 Start/StartReserved/Provision/Attach/Detach/Stop、请求/可用端口数、kernel/RTNL 条件及真实完成信号。就绪由 §6.5 的生命周期顺序与 Conditions 判定，不能依赖固定延迟。
+控制面测量需明确 Start/StartReserved/Provision/Attach/Detach/Stop、请求/可用端口数、kernel/RTNL 条件及真实完成信号。就绪由 §4.5 的生命周期顺序与 Conditions 判定，不能依赖固定延迟。
 
 使用下方维护中的测试入口与 [项目性能方法](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/perf_zh.md)；缺少固定输入与原始证据的历史数字不构成当前容量或时延基线。
 
-## 10. 测试
+## 8. 测试
 
-### 10.1 分层
+### 8.1 分层
 
 | 层 | 文件 | 权限 | 内容 |
 | --- | --- | --- | --- |
@@ -670,7 +638,7 @@ namespace/设备删除、map 损坏、Host 重启或 ABI 不兼容是其他故�
 | 端到端 | `test/e2e/*_test.sh` | root | 完整网络拓扑 + 真实包;`setup`/`test`/`teardown`/`all` 子命令 |
 | 基准 | `examples/perf_bench.sh`、`examples/start_perf_bench.sh` | root + iperf3 | 数据面吞吐/PPS/RTT(不同端口密度)与控制面 Start 耗时 |
 
-### 10.2 eBPF 三层验证
+### 8.2 eBPF 三层验证
 
 1. **结构对齐** — `pkg/internal/bpf/*_integration_test.go` 校验 Go ↔ BPF C 结构内存
    布局(偏移、大小、对齐)。
@@ -679,7 +647,7 @@ namespace/设备删除、map 损坏、Host 重启或 ABI 不兼容是其他故�
    经 `ifindex=0 → slot_id` 的 map 项绕过。
 3. **真实拓扑** — `test/e2e/*_test.sh` 建立完整网络拓扑,用真实 ping/iperf 验证转发。
 
-### 10.3 e2e 套件
+### 8.3 e2e 套件
 
 | 脚本 | 覆盖场景 |
 | --- | --- |
@@ -692,7 +660,7 @@ namespace/设备删除、map 损坏、Host 重启或 ABI 不兼容是其他故�
 手工搭建拓扑与生命周期操作统一见维护中的 [vSwitch 运维指南](vswitch-operations_zh.md)。
 使用 `attach` 返回的实际分配结果，不按沙箱索引推算端口。
 
-## 11. 内部组织
+## 9. 内部组织
 
 | 路径 | 职责 |
 |---|---|
@@ -729,7 +697,7 @@ flowchart TD
 
 pkg/tapfd 除标准库与 golang.org/x/sys 外独立。
 
-## 12. See Also
+## 10. See Also
 
 - [tapfd_zh.md](tapfd_zh.md):完整 provider/consumer fd 交接契约。
 - [sandboxer/docs/sandbox_zh.md](https://github.com/kuasar-sandbox/sandboxer/blob/main/docs/sandbox_zh.md):

@@ -280,7 +280,6 @@ TAPFD/1 ERR code=PORT_UNAVAILABLE message=port_not_attached\n
   代答 ARP 等)。即便 guest 伪造源地址,隔离性仍由 provider 维持;consumer 只需如实
   采用 §2.3 中 provider 给出的 `mac`。
 
-<a id="6-扩展方式"></a>
 ## 7. 扩展方式
 
 §2 的基础元数据帧无显式版本字段,靠"固定帧 + 扩展 key"演进;§4 的持久 provider
@@ -294,7 +293,6 @@ TAPFD/1 ERR code=PORT_UNAVAILABLE message=port_not_attached\n
   consumer 既然请求,就应按 §2.4 的 `fd + netns_fd` 切分;未请求的 consumer 不会收到
   额外 fd。此类 key 缺省值**必须**为"不追加 fd"(如 `netns_fd` 缺省为 0)。
 
-<a id="7-交接示例"></a>
 ## 8. 交接示例
 
 R2(监听路径)一次握手的时序:
@@ -334,10 +332,9 @@ if err != nil { log.Fatal(err) }
 源码树 `examples/tapfd_receiver/`;发布包中的 `tap_test.sh` 使用内嵌 Python receiver,
 不要求现场构建该示例。
 
-<a id="8-see-also"></a>
 ## 9. See Also
 
-- [vSwitch 运维](vswitch-operations_zh.md) — connector 命令参考；`open-port` 与 [`connector-ctl tapfd get`（§2.13）](vswitch-operations_zh.md#213-connector-ctl-tapfd-get) 是本协议的 provider 实现；[vSwitch 设计 §6.7](vswitch_zh.md#67-tap-fd-交接) 记录交接实现取舍。
+- [vSwitch 运维](vswitch-operations_zh.md) — connector 命令参考；`open-port` 与 [`connector-ctl tapfd get`（§2.13）](vswitch-operations_zh.md#213-connector-ctl-tapfd-get) 是本协议的 provider 实现；[vSwitch 设计 §4.7](vswitch_zh.md#47-tap-fd-交接) 记录交接实现取舍。
 - `pkg/tapfd` — Go 参考库:provider 侧 `OpenTap`/`SendFd`,consumer 侧
   `RecvFd`/`RecvFds`/`RecvFdsWithNetns`,建连 `ConnectUnix`/`UnixConnFromFd`。
 - 源码树 `examples/tapfd_receiver/` — 可运行的 consumer 示例。
