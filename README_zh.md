@@ -38,6 +38,8 @@
 
 TAP 交接的规范协议见 [`docs/tapfd_zh.md`](docs/tapfd_zh.md)。
 
+当前 attachment 流量读取与清零/错误语义见 [vSwitch stats](docs/vswitch-operations_zh.md#210-connector-ctl-vswitch-stats). Go Stats API 可批量读取端口,无需逐端口启动 CLI.
+
 ## 构建与测试
 
 ```bash

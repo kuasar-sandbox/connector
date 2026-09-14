@@ -168,6 +168,15 @@ run_tests() {
     echo "========================================="
     echo ""
 
+    # Before other traffic, compare distinct UDP payload sizes with both
+    # sandbox-view counters at the existing service management observation.
+    if python3 "$(dirname "${BASH_SOURCE[0]}")/stats_management.py" \
+        "$SWITCH_BIN" "$SW_NAME" "$SVC_VIP" "$SVC_VPORT" "$SVC_TARGET" "$SVC_TARGET_PORT"; then
+        pass "management stats preserve sandbox RX/TX direction and exact frame bytes"
+    else
+        fail "management stats direction or byte observation mismatch"
+    fi
+
     # --- Test 1: sandbox1 -> mgmt service ---
     echo "[1/7] sandbox1 -> mgmt service (${MGMT_IP})"
     if ip netns exec sandbox1 ping -c 2 -W 2 ${MGMT_IP} &>/dev/null; then

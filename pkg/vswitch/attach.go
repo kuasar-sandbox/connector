@@ -2,6 +2,7 @@ package vswitch
 
 import (
 	"fmt"
+	"sync/atomic"
 
 	"github.com/cilium/ebpf"
 
@@ -88,6 +89,7 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	// state. Reserved is an explicit provision/control state and is never used
 	// as a transient Attach state.
 	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
+		atomic.StoreUint32(&slot.StatsReady, 0)
 		slot.GeneveOptsLen = 0
 		if opts.TransitGatewayIP != nil {
 			slot.TransitGatewayIp = bpf.IPToUint32(opts.TransitGatewayIP)
@@ -135,12 +137,6 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 		}
 	}
 
-	// Reset stats for this slot on attach
-	if err := s.statsMgr.ResetStats(slotID); err != nil {
-		// Stats reset failure is not critical, log and continue
-		// The slot is already allocated, so we don't roll back
-	}
-
 	// Move port device from port namespace to target sandbox namespace.
 	// Tap-mode ports stay in the switch namespace (the sandbox process receives
 	// a file descriptor via 'open-port' instead of a kernel netdev), so the
@@ -178,6 +174,13 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
 		slot.GeneveOptsLen = geneveOptsValue.Len
 	})
+	// Publish the new counter generation only after every attachment field and
+	// fallible operation is complete. Packets captured before this point can
+	// only update the old generation; the BPF lock serializes reset with TC.
+	// A failed reset still does not change attachment success.
+	if s.statsMgr.ResetStats(slotID) == nil {
+		atomic.StoreUint32(&s.mmapSlots.GetSlot(slotID).StatsReady, 1)
+	}
 
 	// Calculate derived values
 	floatingIP := bpf.Uint32ToIP(cfg.FloatingIpBase + slotID)

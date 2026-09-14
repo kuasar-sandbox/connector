@@ -25,6 +25,10 @@ var (
 	// ErrPortNotAttached indicates the port is not attached to any sandbox.
 	ErrPortNotAttached = errors.New("port not attached")
 
+	// ErrStatsUnavailable means a complete observation cannot be associated
+	// with the current switch/attachment, including an unconfirmed reset.
+	ErrStatsUnavailable = errors.New("port stats unavailable")
+
 	// ErrPortsInUse indicates some ports are still allocated and cannot be stopped.
 	ErrPortsInUse = errors.New("ports in use")
 

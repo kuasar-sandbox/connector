@@ -14,6 +14,23 @@ if [ "$(id -u)" -ne 0 ]; then
     privileged=(sudo -n)
 fi
 
+if [ -n "${CANDIDATE_REPOSITORY:-}" ]; then
+    source_root="$(go list -m -f '{{.Dir}}' github.com/kuasar-sandbox/connector)"
+    [ -f "$source_root/go.mod" ] || {
+        echo "connector source integration checkout is missing" >&2
+        exit 1
+    }
+    (
+        cd "$source_root"
+        echo "==> connector source unit, race and real BPF stats regressions"
+        CGO_ENABLED=1 go test -race -count=1 ./pkg/vswitch ./pkg/internal/bpfmap
+        CGO_ENABLED=1 go test -race -tags=integration -count=1 -v \
+            -exec 'sudo -n env REQUIRE_CONNECTOR_STATS=1' \
+            -run 'TestNativeStatsReal|TestVerifyCurrentSwitchWithRealPinnedMaps' ./pkg/vswitch
+        CGO_ENABLED=0 go vet ./...
+    )
+fi
+
 for script in \
     geneve_eth_test.sh \
     mgmt_isolation_test.sh \
