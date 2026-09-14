@@ -4,24 +4,15 @@
 
 Use this guide to build, configure, deploy, inspect and maintain a connector vSwitch. [vswitch.md](vswitch.md) owns forwarding, BPF ABI, identity, isolation, concurrency and resource-lifecycle invariants. [tapfd.md](tapfd.md) remains the independently implementable provider/consumer handoff protocol; using that protocol does not require this vSwitch.
 
-<a id="3-部署"></a>
-
-<a id="3-deployment"></a>
 ## 1. Deployment and prerequisites
 
-<a id="31-系统要求"></a>
-
-<a id="31-system-requirements"></a>
 ### 1.1 System requirements
 
 - Documented kernel baseline: Linux **5.10+**, with the needed TC/BPF features and BTF available at `/sys/kernel/btf/vmlinux`. Verify the actual kernel configuration and privileged tests; a version number alone is insufficient.
 - bpffs mounted at `/sys/fs/bpf`, for example `mount -t bpf bpf /sys/fs/bpf`.
-- Root execution for the privileged BPF/network/namespace paths, with capability requirements discussed in [required privileges](vswitch.md#73-required-privileges).
+- Root execution for the privileged BPF/network/namespace paths, with capability requirements discussed in [required privileges](vswitch.md#53-required-privileges).
 - **Go 1.24+** for building; regenerating BPF bytecode additionally needs **Clang/LLVM 12+**.
 
-<a id="32-构建"></a>
-
-<a id="32-build"></a>
 ### 1.2 Build
 
 ```bash
@@ -38,9 +29,6 @@ make fmt                        # Go formatting and clang-format
 make vmlinux                    # Regenerate bpf/vmlinux.h; requires bpftool
 ```
 
-<a id="33-systemd-集成"></a>
-
-<a id="33-systemd-integration"></a>
 ### 1.3 systemd integration
 
 The [dist directory](../dist/) supplies three templates:
@@ -83,26 +71,18 @@ The shipped ExecStart passes extraction flags; it does **not** automatically pas
 
 **Host-namespace management:** leave `MGMT_NETNS=` empty when metadata or management services run on the host. The resulting `--mgmt-extract=:<dev>:<cidrs>` leaves the veth peer in the caller namespace, and namespace creation skips the empty value. Nonempty MGMT_ADDRS is assigned there; empty means an addressless peer.
 
-<a id="34-首次启动"></a>
-
-<a id="34-first-startup"></a>
 ### 1.4 First startup
 
 1. Install the binary at the template's `/usr/sbin/connector-ctl` path and the selected templates at the locations above. Identify the dedicated transit device with `ip -br link`, then edit `/etc/connector/switch.conf`, including TRANSIT_DEV and TRANSIT_DEV_ADDR.
 2. Put that unused transit device DOWN with `ip link set "$TRANSIT_DEV" down`; startup moves it into switch-netns. Confirm the physical underlay supports the configured encapsulation MTU.
 3. Run `sudo systemctl daemon-reload`, then `sudo systemctl start connector-vswitch` for the supplied **connector-vswitch.service** filename.
-4. Check that `systemctl status connector-vswitch` is active, `connector-ctl vswitch status sw0 --ready` returns zero, and `ip netns list` shows the configured namespaces. READY=1 can precede complete port provisioning ([§6.5](vswitch.md#65-two-phase-startup)).
+4. Check that `systemctl status connector-vswitch` is active, `connector-ctl vswitch status sw0 --ready` returns zero, and `ip netns list` shows the configured namespaces. READY=1 can precede complete port provisioning ([§4.5](vswitch.md#45-two-phase-startup)).
 5. Enable boot startup with `sudo systemctl enable connector-vswitch`.
 
 
-<a id="2-命令行接口"></a>
-
-<a id="2-command-line-interface"></a>
 ## 2. Command-line and configuration reference
 
-Most query and one-shot commands emit JSON; `serve` stays resident and reports health/progress. Run privileged network/BPF operations as root with the required kernel capabilities ([§7.3](vswitch.md#73-required-privileges)).
-
-<a id="21-子命令总览"></a>
+Most query and one-shot commands emit JSON; `serve` stays resident and reports health/progress. Run privileged network/BPF operations as root with the required kernel capabilities ([§5.3](vswitch.md#53-required-privileges)).
 
 ### 2.1 Subcommands
 
@@ -150,27 +130,27 @@ connector-ctl vswitch stop sw1
 
 ### 2.2 `connector-ctl vswitch start` / `serve`
 
-`start` finishes initialization synchronously and exits; `serve` implements resident systemd `Type=notify` operation ([§6.5](vswitch.md#65-two-phase-startup)). `switch_name` can be omitted when provided by `--config` ([§2.14](#214-configuration-file---config)).
+`start` finishes initialization synchronously and exits; `serve` implements resident systemd `Type=notify` operation ([§4.5](vswitch.md#45-two-phase-startup)). `switch_name` can be omitted when provided by `--config` ([§2.14](#214-configuration-file---config)).
 
 | Flag | Required | Meaning |
 |---|---|---|
 | `--netns` | Yes | Existing internal switch namespace. |
-| `--mac-addr` | Yes | Switch MAC base used by MAC derivation ([§6.1](vswitch.md#61-mac-derivation)); the first four bytes are retained. |
+| `--mac-addr` | Yes | Switch MAC base used by MAC derivation ([§4.1](vswitch.md#41-mac-derivation)); the first four bytes are retained. |
 | `--ports` | Yes | Number of ports, 1–4096. |
 | `--floating-ip-base` | Yes | Floating-IP base; increment by zero-based slot ID. |
 | `--port-netns` | For veth provisioning | Initial location of veth peers. TAP does not need it. Reserved-only startup may omit it, but it must be supplied at start if later veth provisioning is planned. |
 | `--mode` | No | Automatic provision mode: `tap` (default) or `veth`. With `--reserved`, it validates the intended startup mode but does not persist a mode override for a future provision invocation. |
 | `--mgmt-extract` | No | Repeatable `<netns>:<dev>:<cidr1>,<cidr2>,...`, within the per-slot extraction limit ([§1.3](vswitch.md#13-boundaries)). CIDRs do not configure interface addresses. Empty namespace (`:<dev>:<cidrs>`) leaves the management peer in the caller/host namespace. |
-| `--mgmt-service` | No | Repeatable `<VIP>:<vport>:<targetIP>:<targetPort>`. VIP must match extraction; target IP/port must be globally unique. Applies to TCP and UDP ([§4.3](vswitch.md#43-packet-paths)). A loopback target needs `route_localnet=1` on the management device. |
+| `--mgmt-service` | No | Repeatable `<VIP>:<vport>:<targetIP>:<targetPort>`. VIP must match extraction; target IP/port must be globally unique. Applies to TCP and UDP ([§2.3](vswitch.md#23-packet-paths)). A loopback target needs `route_localnet=1` on the management device. |
 | `--transit-dev` | No | Uplink moved from the start caller's namespace into the switch. It must be **DOWN** to avoid taking over an active interface. Stop moves it into the stop caller's namespace. |
-| `--transit-dev-addr` | No | `<ip>/<prefix>:<nexthop>` or `auto` for DHCP ([§6.9](vswitch.md#69-dhcp-gateway-inference)). |
-| `--transit-dev-mtu` | No | `auto` or an explicit MTU; default leaves it unchanged and validates ([§6.8](vswitch.md#68-mtu-validation)). |
-| `--geneve-locator` | No | `port` (default), `vni` or `tlv`; encodes zero-based slot ID ([§6.2](vswitch.md#62-geneve-tunnels)). |
+| `--transit-dev-addr` | No | `<ip>/<prefix>:<nexthop>` or `auto` for DHCP ([§4.9](vswitch.md#49-dhcp-gateway-inference)). |
+| `--transit-dev-mtu` | No | `auto` or an explicit MTU; default leaves it unchanged and validates ([§4.8](vswitch.md#48-mtu-validation)). |
+| `--geneve-locator` | No | `port` (default), `vni` or `tlv`; encodes zero-based slot ID ([§4.2](vswitch.md#42-geneve-tunnels)). |
 | `--geneve-port-base` | No | GENEVE UDP destination base for `port` locator; default 50000. |
-| `--geneve-tlv-locator` | For `tlv` | Exact wire `CLASS:TYPE`, for example `0102:81` ([§6.2](vswitch.md#62-geneve-tunnels)). |
+| `--geneve-tlv-locator` | For `tlv` | Exact wire `CLASS:TYPE`, for example `0102:81` ([§4.2](vswitch.md#42-geneve-tunnels)). |
 | `--geneve-encap-eth` | No | Ether-over-GENEVE; default is IP-over-GENEVE. |
-| `--mtu` | No | Requested startup MTU used for management devices and transit-budget checks. Current two-phase provision does not propagate it to new TAP/veth ports; inspect actual port MTU ([§6.8](vswitch.md#68-mtu-validation)). |
-| `--port-mac-addr` | No | `fixed` (default), `per-port`, or an explicit MAC ([§6.1](vswitch.md#61-mac-derivation)). |
+| `--mtu` | No | Requested startup MTU used for management devices and transit-budget checks. Current two-phase provision does not propagate it to new TAP/veth ports; inspect actual port MTU ([§4.8](vswitch.md#48-mtu-validation)). |
+| `--port-mac-addr` | No | `fixed` (default), `per-port`, or an explicit MAC ([§4.1](vswitch.md#41-mac-derivation)). |
 | `--reserved` | No | StartReserved only. The saved switch configuration supplies port-netns, and provision has no independent override; provide `--port-netns` now if later using veth. |
 | `--config` | No | Load JSON configuration ([§2.14](#214-configuration-file---config)). |
 
@@ -230,7 +210,7 @@ Stop uses ReleasePorts then StopReleased: remove owned ports, management/dummy d
 
 ### 2.4 `connector-ctl vswitch attach`
 
-Allocate a port by CAS Free→IP; veth mode can also move the peer into a sandbox namespace. A port that is not yet provisioned cannot be used; callers of asynchronous startup should handle the not-provisioned/no-available-port state and retry according to readiness ([§6.5](vswitch.md#65-two-phase-startup)).
+Allocate a port by CAS Free→IP; veth mode can also move the peer into a sandbox namespace. A port that is not yet provisioned cannot be used; callers of asynchronous startup should handle the not-provisioned/no-available-port state and retry according to readiness ([§4.5](vswitch.md#45-two-phase-startup)).
 
 | Flag | Meaning |
 |---|---|
@@ -239,7 +219,7 @@ Allocate a port by CAS Free→IP; veth mode can also move the peer into a sandbo
 | `--to-netns=NS` | Move the peer into this namespace, veth only. |
 | `--transit-gateway-ip=IP` | GENEVE outer destination IPv4 address. |
 | `--transit-geneve-vni=N` | Configured VNI, subject to the locator's range. |
-| `--transit-geneve-opt=CLASS:TYPE:DATA` | Repeatable outbound opaque option. Hex data length must be a multiple of four bytes; `CLASS:TYPE:` represents empty data ([§6.2](vswitch.md#62-geneve-tunnels)). |
+| `--transit-geneve-opt=CLASS:TYPE:DATA` | Repeatable outbound opaque option. Hex data length must be a multiple of four bytes; `CLASS:TYPE:` represents empty data ([§4.2](vswitch.md#42-geneve-tunnels)). |
 | `--transit-mac-addr=MAC` | Inner Ethernet destination for Ether-over-GENEVE; default broadcast. |
 | `--skip-device` | Skip veth namespace movement and retain slot control updates. Rejected for TAP attachment. |
 | `--open-port` | TAP only: after allocation, send the queue through `TAPFD_SOCKET`. Transfer failure triggers a detach/rollback attempt; verify state before retry if cleanup also fails. |
@@ -261,7 +241,7 @@ Example veth output, showing selected fields:
 }
 ```
 
-In attach/show JSON, `geneve_opts_len` is the **total wire option length**, including an automatic TLV locator, and zero is omitted. The raw slot field of the same name stores only opaque-option bytes ([§5.3](vswitch.md#53-data-plane-abi)).
+In attach/show JSON, `geneve_opts_len` is the **total wire option length**, including an automatic TLV locator, and zero is omitted. The raw slot field of the same name stores only opaque-option bytes ([§3.3](vswitch.md#33-data-plane-abi)).
 
 Combined `attach --open-port` output, selected fields:
 
@@ -297,7 +277,7 @@ TAP detach performs no device move. For veth, `--from-netns` moves the peer back
 
 ### 2.6 `connector-ctl vswitch reserve`
 
-Mark a port Reserved to prevent new attachment, for upgrade/drain or before changing its device kind with provision ([§6.6](vswitch.md#66-port-modes-veth-and-tap)).
+Mark a port Reserved to prevent new attachment, for upgrade/drain or before changing its device kind with provision ([§4.6](vswitch.md#46-port-modes-veth-and-tap)).
 
 | Flag | Required | Meaning |
 |---|---|---|
@@ -439,9 +419,7 @@ connector-ctl tapfd get --new [<tap>]    # Create if absent; kernel chooses an o
 | `--mac=...` | Guest MAC in handoff metadata. |
 | `--ip=...` | Guest inner IP in metadata, with or without a CIDR prefix. |
 
-A TAP created by `--new` is **not persistent**: the handed-off descriptor keeps it alive, and it disappears when all references close. This differs from persistent vswitch TAP ports ([§6.6](vswitch.md#66-port-modes-veth-and-tap)).
-
-<a id="214-配置文件--config"></a>
+A TAP created by `--new` is **not persistent**: the handed-off descriptor keeps it alive, and it disappears when all references close. This differs from persistent vswitch TAP ports ([§4.6](vswitch.md#46-port-modes-veth-and-tap)).
 
 ### 2.14 Configuration file (`--config`)
 
@@ -482,9 +460,6 @@ With `--config`, the positional switch name overrides the file's name, but ordin
 ```
 
 
-<a id="82-故障排除"></a>
-
-<a id="82-troubleshooting"></a>
 ## 3. Troubleshooting
 
 | Symptom | Cause/action |
