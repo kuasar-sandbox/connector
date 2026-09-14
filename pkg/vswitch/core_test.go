@@ -1454,6 +1454,7 @@ func TestStatsPortOutOfRange(t *testing.T) {
 
 func TestStatsEmptyPortsNoAllocatedSlots(t *testing.T) {
 	defer resetDeps()
+	statsLockFixture(t)
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -1490,37 +1491,15 @@ func TestStatsEmptyPortsNoAllocatedSlots(t *testing.T) {
 
 func TestStatsSpecificPorts(t *testing.T) {
 	defer resetDeps()
-
-	bpfPinPathExists = func(name string) (bool, error) {
-		return true, nil
+	s, slots := newGeneveAttachTestContext(&SwitchConfig{N_ports: 4}, true)
+	statsLockFixture(t)
+	for _, slot := range []uint32{0, 1} {
+		slots.TryAllocate(slot, slot+1)
+		slots.GetSlot(slot).StatsReady = 1
 	}
-	bpfLoadPinnedMaps = func(name string) (*bpf.Maps, error) {
-		return &bpf.Maps{}, nil
-	}
-	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
-	}
-	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
-		return &SwitchMetadata{}, nil
-	}
-	// Mock slot and stats data
-	newMmappedSlotsFn = func(slotsMap BPFArrayMap, numSlots uint32) (*MmappedSlots, error) {
-		return newMmappedSlotsForTest(numSlots), nil
-	}
-	newStatsManagerFn = func(statsMap BPFMap, numPorts uint32) *StatsManager {
-		return NewStatsManager(&mockBPFMapWithSlot{}, numPorts)
-	}
-
-	// Query specific ports 1 and 2
-	output, err := Stats("sw0", []int{1, 2})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if output.Switch != "sw0" {
-		t.Errorf("expected switch name sw0, got %s", output.Switch)
-	}
-	if len(output.Ports) != 2 {
-		t.Errorf("expected 2 ports, got %d", len(output.Ports))
+	output, err := s.Stats([]int{1, 2})
+	if err != nil || output.Switch != "sw0" || len(output.Ports) != 2 {
+		t.Fatal("allocated port statistics", output, err)
 	}
 }
 

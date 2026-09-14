@@ -2,6 +2,7 @@ package vswitch
 
 import (
 	"fmt"
+	"sync/atomic"
 
 	"github.com/cilium/ebpf"
 
@@ -88,6 +89,7 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	// state. Reserved is an explicit provision/control state and is never used
 	// as a transient Attach state.
 	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
+		atomic.StoreUint32(&slot.StatsReady, 0)
 		slot.GeneveOptsLen = 0
 		if opts.TransitGatewayIP != nil {
 			slot.TransitGatewayIp = bpf.IPToUint32(opts.TransitGatewayIP)
@@ -135,11 +137,10 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 		}
 	}
 
-	// Reset stats for this slot on attach
-	if err := s.statsMgr.ResetStats(slotID); err != nil {
-		// Stats reset failure is not critical, log and continue
-		// The slot is already allocated, so we don't roll back
-	}
+	// Counter reset does not decide attachment success. Keep its result in the
+	// existing slot so every reader, including another process, can reject old
+	// counters after a failed reset rather than reporting them for a new owner.
+	statsReady := s.statsMgr.ResetStats(slotID) == nil
 
 	// Move port device from port namespace to target sandbox namespace.
 	// Tap-mode ports stay in the switch namespace (the sandbox process receives
@@ -177,6 +178,9 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	// every failure path can release its claim with the hint still at zero.
 	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
 		slot.GeneveOptsLen = geneveOptsValue.Len
+		if statsReady {
+			atomic.StoreUint32(&slot.StatsReady, 1)
+		}
 	})
 
 	// Calculate derived values

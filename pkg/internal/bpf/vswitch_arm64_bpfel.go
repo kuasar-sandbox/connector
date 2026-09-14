@@ -63,7 +63,7 @@ type vswitchSlotItem struct {
 	MgmtCidrs0       vswitchMgmtCidr
 	PadCl0           [8]uint8
 	MgmtCidrsExt     [2]vswitchMgmtCidr
-	PadCl1           [4]uint8
+	StatsReady       uint32
 }
 
 type vswitchSlotStats struct {

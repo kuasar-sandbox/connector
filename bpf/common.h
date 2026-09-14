@@ -151,7 +151,7 @@ struct slot_item {
     // Cache Line 1 (44 bytes) - Extended mgmt_cidrs (cold path)
     // ═══════════════════════════════════════════════════════════
     struct mgmt_cidr mgmt_cidrs_ext[MAX_MGMT_CIDR_EXT]; // offset 64-103 (40B)
-    __u8  _pad_cl1[4];        // offset 104-107 - Align to 4 bytes
+    __u32 stats_ready;        // offset 104-107 - Userspace: current attach reset confirmed
 };  // Total: 108 bytes
 
 // Global switch configuration (kernel-side only, 40 bytes)
