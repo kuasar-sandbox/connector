@@ -4,19 +4,16 @@
 
 本篇提供 connector vSwitch 的构建、配置、部署、检查和维护流程。[vswitch_zh.md](vswitch_zh.md) 统一定义转发、BPF ABI、身份、隔离、并发和资源生命周期不变量。[tapfd_zh.md](tapfd_zh.md) 仍为可独立实现的 provider/consumer 交接协议，使用该协议不要求采用此 vSwitch。
 
-<a id="3-部署"></a>
 ## 1. 部署与前置条件
 
-<a id="31-系统要求"></a>
 ### 1.1 系统要求
 
 - 文档基线为 Linux **5.10+**,需相应 TC/BPF 配置,且 `/sys/kernel/btf/vmlinux`
   可访问。应验证实际内核配置与特权测试,版本号本身不足以保证可用。
 - bpffs 挂载在 `/sys/fs/bpf`(`mount -t bpf bpf /sys/fs/bpf`)。
-- 特权路径以具有所需能力的 root 运行;能力裁剪条件见 [§7.3](vswitch_zh.md#73-所需权限)。
+- 特权路径以具有所需能力的 root 运行;能力裁剪条件见 [§5.3](vswitch_zh.md#53-所需权限)。
 - 构建:**Go 1.24+**;重新生成 eBPF 字节码额外需 **Clang/LLVM 12+**。
 
-<a id="32-构建"></a>
 ### 1.2 构建
 
 ```bash
@@ -33,7 +30,6 @@ make fmt                        # Go formatting 与 clang-format
 make vmlinux                    # 重新生成 bpf/vmlinux.h(需 bpftool)
 ```
 
-<a id="33-systemd-集成"></a>
 ### 1.3 systemd 集成
 
 `dist/` 提供三个模板:
@@ -86,7 +82,6 @@ peer 保持无 IPv4 地址。该逻辑按 `MGMT_NETNS` 自动在 host netns 或 
 第一个 `ExecStartPre` 也会自动跳过空值,无需手动创建 mgmt netns。`MGMT_ADDRS` 非空时
 地址直接配置在 host 侧 peer;为空时该 peer 保持无地址。
 
-<a id="34-首次启动"></a>
 ### 1.4 首次启动
 
 1. 将 binary 安装到模板使用的 `/usr/sbin/connector-ctl`,并按上表安装所选模板。
@@ -98,15 +93,14 @@ peer 保持无 IPv4 地址。该逻辑按 `MGMT_NETNS` 自动在 host netns 或 
    这是随附 **connector-vswitch.service** 文件对应的服务名。
 4. 检查 `systemctl status connector-vswitch` 为 active,
    `connector-ctl vswitch status sw0 --ready` 返回 0,`ip netns list` 包含配置的命名空间。
-   READY=1 可能早于所有端口 provision 完成([§6.5](vswitch_zh.md#65-两阶段启动))。
+   READY=1 可能早于所有端口 provision 完成([§4.5](vswitch_zh.md#45-两阶段启动))。
 5. `sudo systemctl enable connector-vswitch` 启用开机启动。
 
 
-<a id="2-命令行接口"></a>
 ## 2. 命令行与配置参考
 
 多数查询和一次性命令输出 JSON;`serve` 常驻并报告健康/进度。BPF、设备与 namespace
-操作以具有所需能力的 root 运行,见 [§7.3](vswitch_zh.md#73-所需权限)。
+操作以具有所需能力的 root 运行,见 [§5.3](vswitch_zh.md#53-所需权限)。
 
 ### 2.1 子命令总览
 
@@ -154,28 +148,28 @@ connector-ctl vswitch stop sw1
 
 ### 2.2 `connector-ctl vswitch start` / `serve`
 
-`start` 同步完成全部初始化后退出;`serve` 用于 systemd `Type=notify` 长驻([§6.5](vswitch_zh.md#65-两阶段启动))。
+`start` 同步完成全部初始化后退出;`serve` 用于 systemd `Type=notify` 长驻([§4.5](vswitch_zh.md#45-两阶段启动))。
 `switch_name` 可省略,从 `--config` 文件([§2.14](#214-配置文件--config))读取。
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
 | `--netns` | ✓ | 交换机内部 netns(必须已存在) |
-| `--mac-addr` | ✓ | 虚拟 MAC base,前 4 字节用于派生所有 MAC([§6.1](vswitch_zh.md#61-mac-派生)) |
+| `--mac-addr` | ✓ | 虚拟 MAC base,前 4 字节用于派生所有 MAC([§4.1](vswitch_zh.md#41-mac-派生)) |
 | `--ports` | ✓ | 端口数(1–4096) |
 | `--floating-ip-base` | ✓ | floating IP 基地址(按 slot_id 递增) |
 | `--port-netns` | veth 模式 ✓ | 端口设备初始 netns;tap 模式或 `--reserved` 下可省 |
 | `--mode` | – | 自动 provision 的端口类型:`tap`(默认)或 `veth`;配合 `--reserved` 时仅作参数校验提示,不持久化 |
 | `--mgmt-extract` | – | 管理平面提取匹配 `<netns>:<dev>:<cidr1>,<cidr2>,...`,可重复(每 slot 最多 3 条路由);CIDR 不会被配置为接口地址;`<netns>` 留空(`:<dev>:<cidrs>`)则 mgmt veth peer 留在调用方/主机 netns |
-| `--mgmt-service` | – | 管理服务地址转换 `<VIP>:<vport>:<targetIP>:<targetPort>`,可重复;VIP 须落在某条 `--mgmt-extract` 路由内,`(targetIP,targetPort)` 须全局唯一,TCP/UDP 均转换([§4.3](vswitch_zh.md#43-数据包流向));loopback target 需 mgmt 设备 `route_localnet=1` |
+| `--mgmt-service` | – | 管理服务地址转换 `<VIP>:<vport>:<targetIP>:<targetPort>`,可重复;VIP 须落在某条 `--mgmt-extract` 路由内,`(targetIP,targetPort)` 须全局唯一,TCP/UDP 均转换([§2.3](vswitch_zh.md#23-数据包流向));loopback target 需 mgmt 设备 `route_localnet=1` |
 | `--transit-dev` | – | 外部上行设备,start 时从调用 netns 移入 switch netns;必须处于 **DOWN**(防止接管在用网卡) |
-| `--transit-dev-addr` | – | `<ip>/<prefix>:<nexthop>` 或 `auto`(DHCP,[§6.9](vswitch_zh.md#69-dhcp-网关推算)) |
-| `--transit-dev-mtu` | – | `auto` 或具体数值;默认不修改,仅校验([§6.8](vswitch_zh.md#68-mtu-校验)) |
-| `--geneve-locator` | – | `port`(默认)、`vni` 或 `tlv`,定义外部网关如何定位零基 `slot_id`([§6.2](vswitch_zh.md#62-geneve-隧道)) |
+| `--transit-dev-addr` | – | `<ip>/<prefix>:<nexthop>` 或 `auto`(DHCP,[§4.9](vswitch_zh.md#49-dhcp-网关推算)) |
+| `--transit-dev-mtu` | – | `auto` 或具体数值;默认不修改,仅校验([§4.8](vswitch_zh.md#48-mtu-校验)) |
+| `--geneve-locator` | – | `port`(默认)、`vni` 或 `tlv`,定义外部网关如何定位零基 `slot_id`([§4.2](vswitch_zh.md#42-geneve-隧道)) |
 | `--geneve-port-base` | – | 仅 `port` locator 使用的 GENEVE UDP 端口基值(默认 50000) |
-| `--geneve-tlv-locator` | `tlv` locator ✓ | 精确 wire `CLASS:TYPE`,例如 `0102:81`([§6.2](vswitch_zh.md#62-geneve-隧道)) |
+| `--geneve-tlv-locator` | `tlv` locator ✓ | 精确 wire `CLASS:TYPE`,例如 `0102:81`([§4.2](vswitch_zh.md#42-geneve-隧道)) |
 | `--geneve-encap-eth` | – | 启用 Ether-over-GENEVE(默认 IP-over-GENEVE) |
-| `--mtu` | – | 请求的启动 MTU,用于管理设备与初始 transit budget 检查;当前两阶段 provision 不把它传给新 TAP/veth 端口,须检查实际端口 MTU([§6.8](vswitch_zh.md#68-mtu-校验)) |
-| `--port-mac-addr` | – | `fixed`(默认)/`per-port`/具体 MAC([§6.1](vswitch_zh.md#61-mac-派生)) |
+| `--mtu` | – | 请求的启动 MTU,用于管理设备与初始 transit budget 检查;当前两阶段 provision 不把它传给新 TAP/veth 端口,须检查实际端口 MTU([§4.8](vswitch_zh.md#48-mtu-校验)) |
+| `--port-mac-addr` | – | `fixed`(默认)/`per-port`/具体 MAC([§4.1](vswitch_zh.md#41-mac-派生)) |
 | `--reserved` | – | 仅做 StartReserved,不自动 ProvisionPorts。port-netns 由 start 写入交换机配置、`provision` 无独立 flag 覆盖,故计划用 veth 端口时 start 仍需给 `--port-netns` |
 | `--config` | – | 从 JSON 文件读取以上参数([§2.14](#214-配置文件--config)) |
 
@@ -240,7 +234,7 @@ unpin maps,把 transit 移入 **stop 调用方的 namespace**。若要还给原 
 
 ### 2.4 `connector-ctl vswitch attach`
 
-分配端口：CAS Free→IP；veth 模式可同时把端口设备移入沙箱 netns。未 provision 的端口不可使用；异步启动期间，调用方应处理尚未 provision、分配失败或无可用端口的状态，并按[就绪条件（§6.5）](vswitch_zh.md#65-两阶段启动)重试。
+分配端口：CAS Free→IP；veth 模式可同时把端口设备移入沙箱 netns。未 provision 的端口不可使用；异步启动期间，调用方应处理尚未 provision、分配失败或无可用端口的状态，并按[就绪条件（§4.5）](vswitch_zh.md#45-两阶段启动)重试。
 
 | 参数 | 说明 |
 | --- | --- |
@@ -249,7 +243,7 @@ unpin maps,把 transit 移入 **stop 调用方的 namespace**。若要还给原 
 | `--to-netns=NS` | 把端口设备移入目标 netns(仅 veth 模式) |
 | `--transit-gateway-ip=IP` | GENEVE 外层目标 IP |
 | `--transit-geneve-vni=N` | GENEVE VNI |
-| `--transit-geneve-opt=CLASS:TYPE:DATA` | 单向出站 opaque GENEVE option,可重复;十六进制 data 长度须为 4 字节整数倍,空 data 写作 `CLASS:TYPE:`([§6.2](vswitch_zh.md#62-geneve-隧道)) |
+| `--transit-geneve-opt=CLASS:TYPE:DATA` | 单向出站 opaque GENEVE option,可重复;十六进制 data 长度须为 4 字节整数倍,空 data 写作 `CLASS:TYPE:`([§4.2](vswitch_zh.md#42-geneve-隧道)) |
 | `--transit-mac-addr=MAC` | Ether-over-GENEVE 内层目标 MAC(省略则广播) |
 | `--skip-device` | 跳过 veth namespace 移动,仍进行 slot/map 控制更新;tap attachment 拒绝 |
 | `--open-port` | tap 模式:分配后经 TAPFD_SOCKET 递交 fd;失败时尝试 detach/回滚,清理也失败时须先核对状态再重试 |
@@ -272,7 +266,7 @@ unpin maps,把 transit 移入 **stop 调用方的 namespace**。若要还给原 
 ```
 
 attach/show JSON 的 `geneve_opts_len` 为 locator 加 opaque options 的总 wire 字节数,
-0 时省略。原始 slot 同名字段只存 opaque bytes,两者不同([§5.3](vswitch_zh.md#53-数据面-abi))。
+0 时省略。原始 slot 同名字段只存 opaque bytes,两者不同([§3.3](vswitch_zh.md#33-数据面-abi))。
 
 `attach --open-port` 输出示例(选定字段):
 
@@ -312,7 +306,7 @@ Free slot 不会被数据面使用,下一次 Attach 在发布新 hint 前完整�
 ### 2.6 `connector-ctl vswitch reserve`
 
 把端口标记为 Reserved,阻止后续 attach;用于升级/排空,或为 `provision --mode` 切换
-端口类型做准备([§6.6](vswitch_zh.md#66-端口模式veth-与-tap))。
+端口类型做准备([§4.6](vswitch_zh.md#46-端口模式veth-与-tap))。
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
@@ -472,7 +466,7 @@ connector-ctl tapfd get --new [<tap>]    # 不存在则创建;省略名时内核
 | `--ip=...` | 写入元数据的 guest inner IP(裸地址或 CIDR) |
 
 经 `--new` 创建的 tap **不是**持久设备:交接出去的 fd 维持其存活,所有引用关闭后设备
-随之消失(对比 vswitch 端口的持久 tap,[§6.6](vswitch_zh.md#66-端口模式veth-与-tap))。
+随之消失(对比 vswitch 端口的持久 tap,[§4.6](vswitch_zh.md#46-端口模式veth-与-tap))。
 
 ### 2.14 配置文件(`--config`)
 
@@ -517,7 +511,6 @@ ABI 只有三个位置,当前 provision 达上限便停止写入。JSON 解析�
 已进入数据面;部署检查应读取实际 slots。
 
 
-<a id="82-故障排除"></a>
 ## 3. 故障排除
 
 | 症状 | 原因 / 处理 |

@@ -1,7 +1,5 @@
 [English](vswitch.md) | [简体中文](vswitch_zh.md)
 
-<a id="vswitch--ebpf-虚拟交换机"></a>
-
 # vswitch — eBPF virtual switch
 
 An eBPF/TC virtual switch providing isolated management and external-network paths for up to **4096 configured sandbox ports** on one host. The CLI is `connector-ctl vswitch`; the same binary also provides `connector-ctl tapfd get` for TAP descriptor handoff. The compiled port capacity is not a guarantee that every host/workload sustains 4096 active MicroVMs.
@@ -10,11 +8,9 @@ The forwarding path runs in kernel TC ingress programs. One-shot configuration c
 
 In TAP mode, `SCM_RIGHTS` passes the queue descriptor to a VMM such as Cloud Hypervisor or Firecracker. The independent provider/consumer contract is in [tapfd.md](tapfd.md).
 
-<a id="1-概述"></a>
+CLI, configuration, build, deployment and troubleshooting are covered by [vSwitch operations](vswitch-operations.md).
 
 ## 1. Overview
-
-<a id="11-业务问题"></a>
 
 ### 1.1 Problem
 
@@ -27,8 +23,6 @@ Forwarding decisions are concentrated in [bpf/switch_kern.c](../bpf/switch_kern.
 - One dedicated forwarding implementation to review, rather than a policy assembled across bridge forwarding tables and multiple firewall chains.
 - Per-CPU counters and bpftool inspection.
 
-<a id="12-设计原则"></a>
-
 ### 1.2 Design principles
 
 1. **Local isolation:** no direct port-to-port forwarding branch; ARP replies and output MAC addresses are controlled by the switch.
@@ -38,8 +32,6 @@ Forwarding decisions are concentrated in [bpf/switch_kern.c](../bpf/switch_kern.
 5. **Observability:** per-port, per-direction, management/transit packet and byte counters; status uses Kubernetes-style Conditions.
 6. **systemd integration:** `Type=notify`, watchdog keepalives and reopening pinned resources after restart.
 
-<a id="13-边界"></a>
-
 ### 1.3 Boundaries
 
 - One transit uplink device. Upstream networking owns ECMP or link bonding.
@@ -47,10 +39,8 @@ Forwarding decisions are concentrated in [bpf/switch_kern.c](../bpf/switch_kern.
 - No connection tracking, stateful NAT table or L7 filtering. Management IP/port rewriting is static and stateless.
 - `--mgmt-extract` / `--mgmt-service` are fixed at start; changing them requires switch recreation.
 - Extraction CIDRs classify traffic only. Deployment owns management-interface addresses, local routes, service listeners and relevant sysctls.
-- `MAX_PORTS=4096` is compiled into BPF and tied to the 12-bit slot-locator layout (§6.2).
+- `MAX_PORTS=4096` is compiled into BPF and tied to the 12-bit slot-locator layout (§4.2).
 - Control is local to a host; there is no cross-host state synchronization.
-
-<a id="14-部署形态"></a>
 
 ### 1.4 Deployment shape
 
@@ -68,49 +58,9 @@ flowchart TD
 This fits a single-host MicroVM platform using Firecracker, Cloud Hypervisor or QEMU/KVM where each VM needs controlled egress and configured port capacity stays within 4096. It is not a distributed SDN control plane, a fine-grained L4+ multi-tenant policy manager or a connection-tracking/L7 security gateway.
 
 
-<a id="2-命令行接口"></a>
-<a id="21-subcommands"></a>
-<a id="21-子命令总览"></a>
-<a id="210-connector-ctl-vswitch-stats"></a>
-<a id="211-connector-ctl-vswitch-show"></a>
-<a id="212-connector-ctl-vswitch-dhcp"></a>
-<a id="213-connector-ctl-tapfd-get"></a>
-<a id="214-configuration-file---config"></a>
-<a id="214-配置文件--config"></a>
-<a id="22-connector-ctl-vswitch-start--serve"></a>
-<a id="23-connector-ctl-vswitch-stop"></a>
-<a id="24-connector-ctl-vswitch-attach"></a>
-<a id="25-connector-ctl-vswitch-detach"></a>
-<a id="26-connector-ctl-vswitch-reserve"></a>
-<a id="27-connector-ctl-vswitch-provision"></a>
-<a id="28-connector-ctl-vswitch-open-port"></a>
-<a id="29-connector-ctl-vswitch-status"></a>
+## 2. Network architecture
 
-## 2. Command-line interface
-
-Operational procedures and complete examples are in [vSwitch operations](vswitch-operations.md#2-command-line-and-configuration-reference). The underlying design constraints remain in this specification.
-
-
-<a id="3-部署"></a>
-<a id="31-system-requirements"></a>
-<a id="31-系统要求"></a>
-<a id="32-build"></a>
-<a id="32-构建"></a>
-<a id="33-systemd-integration"></a>
-<a id="33-systemd-集成"></a>
-<a id="34-first-startup"></a>
-<a id="34-首次启动"></a>
-## 3. Deployment
-
-Operational procedures and complete examples are in [vSwitch operations](vswitch-operations.md#1-deployment-and-prerequisites). The underlying design constraints remain in this specification.
-
-<a id="4-网络架构"></a>
-
-## 4. Network architecture
-
-<a id="41-拓扑与设备命名"></a>
-
-### 4.1 Topology and device names
+### 2.1 Topology and device names
 
 ```mermaid
 flowchart TD
@@ -129,9 +79,7 @@ flowchart TD
 
 Device names follow `<switch>-{p,n,m,t}<id>`: `sw1-p7` is the sandbox veth peer, `sw1-n7` its switch peer, `sw1-m0` the switch-side management device, and `sw1-t7` a persistent TAP. The addressless `<sw>-dummy` anchors the BPF filter on shared TC block 100, keeping it referenced even before any port device attaches; StartReserved creates it and Stop removes it. Port ingress devices share `ingress_block=100`; `skb->ingress_ifindex` identifies the slot. Management/transit ingress use their corresponding programs.
 
-<a id="42-netns-布局"></a>
-
-### 4.2 Namespace layout
+### 2.2 Namespace layout
 
 | Namespace | Purpose | Devices |
 |---|---|---|
@@ -140,11 +88,9 @@ Device names follow `<switch>-{p,n,m,t}<id>`: `sw1-p7` is the sandbox veth peer,
 | `netns_mgmt` | Management service networking. | Management peer, such as eth0. Optional: an empty namespace leaves it in the caller/host namespace. |
 | Sandbox namespace | A sandbox's veth peer. | `<sw>-pX`, moved from port-netns. TAP mode instead hands a queue descriptor to the VMM. |
 
-<a id="43-数据包流向"></a>
+### 2.3 Packet paths
 
-### 4.3 Packet paths
-
-CIDRs from `--mgmt-extract` populate each slot's destination classifiers; they do not assign addresses to the management peer. Connector creates the pair, sets MAC/MTU, brings it up, attaches TC, records extraction matches and installs floating-IP return routes. Deployment supplies interface addresses, local routes, service listeners and sysctls, ensuring the selected destination is local or otherwise reachable in the management namespace. The service template uses MGMT_ADDRS for explicit address assignment ([§1.3](vswitch-operations.md#33-systemd-integration)).
+CIDRs from `--mgmt-extract` populate each slot's destination classifiers; they do not assign addresses to the management peer. Connector creates the pair, sets MAC/MTU, brings it up, attaches TC, records extraction matches and installs floating-IP return routes. Deployment supplies interface addresses, local routes, service listeners and sysctls, ensuring the selected destination is local or otherwise reachable in the management namespace. The service template uses MGMT_ADDRS for explicit address assignment ([§1.3](vswitch-operations.md#13-systemd-integration)).
 
 **Sandbox → management service**, for example 169.254.169.254:
 
@@ -188,13 +134,9 @@ Two invariants govern slot selection and delivery:
 - Slot identity comes from ingress ifindex, floating destination arithmetic or the configured locator, not from a sandbox-claimed source IP/MAC.
 - Return delivery uses the selected fixed/derived port MAC, matching the device/VMM receive configuration.
 
-<a id="5-数据面"></a>
+## 3. Data plane
 
-## 5. Data plane
-
-<a id="51-ebpf-程序挂载点"></a>
-
-### 5.1 eBPF attachment points
+### 3.1 eBPF attachment points
 
 | Device | Attachment | Program | Function |
 |---|---|---|---|
@@ -204,13 +146,11 @@ Two invariants govern slot selection and delivery:
 
 GENEVE inner traffic can be IPv4 or IPv6; management translation and slot.inner_ip are IPv4.
 
-<a id="52-pinned-mapssysfsbpf"></a>
-
-### 5.2 Pinned maps (`/sys/fs/bpf/<sw>/`)
+### 3.2 Pinned maps (`/sys/fs/bpf/<sw>/`)
 
 | Map | Type | Shape | nx | mx | transit | Contents |
 |---|---|---|---|---|---|---|
-| `slots` | ARRAY + MMAPABLE | 4096 × 108-byte value, 112-byte mmap stride. | R | R | R | Slot configuration; userspace CAS on inner_ip allocates/releases ownership (§6.3). |
+| `slots` | ARRAY + MMAPABLE | 4096 × 108-byte value, 112-byte mmap stride. | R | R | R | Slot configuration; userspace CAS on inner_ip allocates/releases ownership (§4.3). |
 | `config` | ARRAY | 1 × 40 bytes. | R | R | R | Switch MAC, port count, floating base, GENEVE locator/encapsulation, transit nexthop and port MAC. |
 | `metadata` | ARRAY | 1 × 4096 bytes. | — | — | — | JSON SwitchMetadata for userspace only; additive fields do not alter BPF layout. |
 | `stats` | PERCPU_ARRAY | 4096 entries per CPU. | W | W | W | Management/transit receive/transmit packet/byte counters. Attach attempts a reset; a reset error is nonfatal. Detach retains counters. |
@@ -221,11 +161,9 @@ GENEVE inner traffic can be IPv4 or IPv6; management translation and slot.inner_
 
 New switches create/pin the service maps even when no service mapping is configured. Slot lookup on inbound traffic uses arithmetic or the fixed locator layout, without a generic inbound slot-index hash or TLV search. Management-service translation still has its separate hash maps.
 
-<a id="53-数据面-abi"></a>
+### 3.3 Data-plane ABI
 
-### 5.3 Data-plane ABI
-
-Go code that directly reads/writes these C structures by byte offset is isolated in `pkg/internal/` (§11). Changing an offset is an ABI change and requires synchronized Go and BPF updates.
+Go code that directly reads/writes these C structures by byte offset is isolated in `pkg/internal/` (§9). Changing an offset is an ABI change and requires synchronized Go and BPF updates.
 
 ```c
 struct slot_item {                          // 108 bytes, cache-line layout
@@ -284,13 +222,9 @@ Program paths check packet bounds and slot validity before use: Ethernet and rel
 
 A new switch always creates and pins geneve_opts. Opening a legacy pinned switch treats that map as optional **only on ENOENT**; other load errors mean damage. Zero bytes in the old config's trailing padding decode as the legacy `port` locator. Thus old switches remain usable for Open/status/show, empty-option Attach, Detach and Stop. Nonempty opaque options or vni/tlv locator require stop and recreation with the new implementation. No map is added to an active old switch and no attached TC program is replaced in place.
 
-<a id="6-关键机制"></a>
+## 4. Key mechanisms
 
-## 6. Key mechanisms
-
-<a id="61-mac-派生"></a>
-
-### 6.1 MAC derivation
+### 4.1 MAC derivation
 
 ARP and derived device MACs share a namespace based on switch_mac, with format `SS:SS:SS:SS:BB:LL`:
 
@@ -308,9 +242,7 @@ Port IDs are zero-based slot IDs, `0x000..0xFFF`; management IDs are `0x7FF0+mgm
 | `per-port` | Derive from each actual slot ID. | Tests or gateway-side MAC distinction. |
 | Explicit MAC | Same user-supplied address on all ports. | Specific compatibility requirements. |
 
-<a id="62-geneve-隧道"></a>
-
-### 6.2 GENEVE tunnels
+### 4.2 GENEVE tunnels
 
 Connector runs on the sandbox host; an external GENEVE gateway provides access to external networks. Their contract covers framing, slot location and return validation. Locators encode **zero-based slot_id=0..4095**, not the CLI's one-based `port=slot_id+1`. Opaque option semantics belong to the caller and gateway: Connector does not define tenant/sandbox/policy schemas or interpret their data.
 
@@ -352,11 +284,9 @@ For outer L2 delivery, bpf_redirect_neigh uses the kernel neighbor subsystem; th
 
 Packet-capture commands and field inspection belong to [Operations §3.1](vswitch-operations.md#31-geneve-packet-capture).
 
-<a id="63-slot-分配与状态机"></a>
+### 4.3 Slot allocation and state machine
 
-### 6.3 Slot allocation and state machine
-
-Separate BPF Lookup and Update syscalls permit a TOCTOU race: two processes can observe a free slot and overwrite each other. The slots array uses BPF_F_MMAPABLE; userspace maps it and uses atomic.CompareAndSwapUint32 on inner_ip for atomic ownership. The atomic claim itself needs no lock, while new-switch compound operations also use flock (§6.4).
+Separate BPF Lookup and Update syscalls permit a TOCTOU race: two processes can observe a free slot and overwrite each other. The slots array uses BPF_F_MMAPABLE; userspace maps it and uses atomic.CompareAndSwapUint32 on inner_ip for atomic ownership. The atomic claim itself needs no lock, while new-switch compound operations also use flock (§4.4).
 
 | inner_ip | State | Meaning |
 |---|---|---|
@@ -381,11 +311,9 @@ stateDiagram-v2
 | Reserve | Free→Reserved; force can replace Allocated. | CAS to 0xFFFFFFFF. |
 | Provision complete | Reserved→Free. | CAS(inner_ip, 0xFFFFFFFF, 0). |
 
-Failed operations attempt to undo their own claim or device movement, without overwriting a different owner. A CAS claim is not an atomic publication of every data-plane field, and rollback/device operations can themselves fail. Callers must use operation results and inspect/reconcile state after an error (§7.4).
+Failed operations attempt to undo their own claim or device movement, without overwriting a different owner. A CAS claim is not an atomic publication of every data-plane field, and rollback/device operations can themselves fail. Callers must use operation results and inspect/reconcile state after an error (§5.4).
 
-<a id="64-控制操作互斥"></a>
-
-### 6.4 Control-operation serialization
+### 4.4 Control-operation serialization
 
 CAS protects one slot's ownership. Multi-resource operations and new-switch updates spanning mmap slots plus geneve_opts use `flock(LOCK_EX)` on `/sys/fs/bpf/<sw>/`:
 
@@ -399,9 +327,7 @@ CAS protects one slot's ownership. Multi-resource operations and new-switch upda
 
 After acquiring flock and before CAS, new-switch Attach/Detach/Reserve compare the opened slots map's kernel ID with the map currently pinned at that name. If the switch was stopped/recreated while the operation waited, the old context fails and must be reopened; it does not mutate an unpinned obsolete map.
 
-<a id="65-两阶段启动"></a>
-
-### 6.5 Two-phase startup
+### 4.5 Two-phase startup
 
 Startup is split to support Type=notify and early control-plane availability.
 
@@ -419,9 +345,7 @@ Startup is split to support Type=notify and early control-plane availability.
 
 Dependent services can start after READY=1, before every port is provisioned. They must handle temporary unavailability and retry; readiness of the systemd process is not proof that all ports are Free. The `Ready` Condition also excludes Reserved slots from device checks, so inspect capacity or the selected slot as described in [§2.9](vswitch-operations.md#29-connector-ctl-vswitch-status). A Reserved slot can reject the ownership CAS before the later unprovisioned-device check; callers must handle that allocation failure too.
 
-<a id="66-端口模式veth-与-tap"></a>
-
-### 6.6 Port modes: veth and TAP
+### 4.6 Port modes: veth and TAP
 
 Each slot records its kind in slot_item.mode. This is userspace metadata; BPF does not read it. Both kinds enter the same port TC program and select their slot by ifindex. Their control and descriptor lifecycles differ:
 
@@ -438,9 +362,7 @@ For a Reserved slot, `provision --mode=<new>` creates the new-kind device before
 
 Attach/detach do not create or delete port devices. Provision creates them; normal/forced Stop removes owned devices. Force-clean only unpins maps and can leave devices/filter references. `--skip-device` controls permitted movement/checks; it does not turn attachment into a device-provisioning operation.
 
-<a id="67-tap-fd-交接"></a>
-
-### 6.7 TAP descriptor handoff
+### 4.7 TAP descriptor handoff
 
 [tapfd.md](tapfd.md) independently defines the vendor-neutral SCM_RIGHTS, NUL-terminated key=value metadata and TAPFD_SOCKET contract. This section records Connector's provider choices.
 
@@ -460,9 +382,7 @@ If requested through TAPFD_WANT_NETNS, append the switch namespace descriptor af
 
 **Consumers:** third parties can implement tapfd.md §2. The repository supplies [pkg/tapfd](../pkg/tapfd/) with RecvFd, RecvFds and RecvFdsWithNetns, and [examples/tapfd_receiver](../examples/tapfd_receiver/). A generic Unix byte-stream listener alone does not implement descriptor reception.
 
-<a id="68-mtu-校验"></a>
-
-### 6.8 MTU validation
+### 4.8 MTU validation
 
 The implementation uses the following encapsulation budget:
 
@@ -490,19 +410,13 @@ transit device eth1 MTU 1570 is too small for port sw0-n1:
   port MTU 1500 + base GENEVE overhead 64 + options overhead 12 = required MTU 1576
 ```
 
-<a id="69-dhcp-网关推算"></a>
-
-### 6.9 DHCP gateway inference
+### 4.9 DHCP gateway inference
 
 For transit auto-addressing, StartReserved runs DHCP after bringing transit up. Router Option 3 is used when present. Otherwise the implementation infers the subnet's first usable address, for example 192.168.1.100/24 → 192.168.1.1, and logs that fallback. This supports DHCP servers that omit a router, but the heuristic does not prove a router actually exists there; configure an explicit gateway when the network differs.
 
-<a id="7-安全与隔离"></a>
+## 5. Security and isolation
 
-## 7. Security and isolation
-
-<a id="71-威胁模型"></a>
-
-### 7.1 Threat model
+### 5.1 Threat model
 
 Connector is a defense-in-depth layer outside the MicroVM; the VMM remains the primary guest isolation boundary. Sandbox code may be malicious. Host control-plane callers, management services and the external gateway must be governed by deployment policy.
 
@@ -512,12 +426,10 @@ Connector is a defense-in-depth layer outside the MicroVM; the VMM remains the p
 | T2 | Direct local sandbox-to-sandbox forwarding. | No port-to-port TC branch; local outbound paths are management or transit. Gateway/management-mediated access needs its own policy. |
 | T3 | Unexpected GENEVE return source. | Verify configured outer gateway IP, locator and VNI. IP/VNI matching is not cryptographic peer authentication; the underlay/gateway remains trusted. |
 | T4 | ARP broadcast crosses local ports. | Switch handles port ARP requests and returns replies locally instead of bridging requests to another sandbox port. |
-| T5 | Control-process crash stops forwarding. | TC references, pinned maps and intact network resources outlive the process; serve can reopen them (§8.1). |
+| T5 | Control-process crash stops forwarding. | TC references, pinned maps and intact network resources outlive the process; serve can reopen them (§6.1). |
 | T6 | Concurrent attach claims one slot twice. | mmap CAS gives one owner; compound new-switch updates also hold flock. |
 
-<a id="72-隔离不变量"></a>
-
-### 7.2 Isolation invariants
+### 5.2 Isolation invariants
 
 1. **No direct port-to-port path:** the dedicated local forwarding program has no branch bridging one sandbox ingress to another sandbox ingress.
 2. **Switch-owned ARP replies:** port ARP requests are consumed and answered back to that port, not broadcast to other ports.
@@ -529,9 +441,7 @@ These are local data-plane properties. They do not authorize arbitrary traffic t
 
 The distinction between sandbox delivery and `TC_ACT_OK` follows [tc_ingress_mx / tc_ingress_transit](../bpf/switch_kern.c). Namespace-stack routing and filtering remain deployment responsibilities.
 
-<a id="73-所需权限"></a>
-
-### 7.3 Required privileges
+### 5.3 Required privileges
 
 The supported privileged test/deployment baseline is root with the required capabilities. Exact reduced-capability execution depends on kernel, BPF policy, namespace ownership and pin-file permissions; this table describes relevant operations rather than a proven minimal capability set:
 
@@ -544,9 +454,7 @@ The supported privileged test/deployment baseline is root with the required capa
 
 Linux 5.8+ separates some BPF privileges into CAP_BPF, but this does not replace every CAP_SYS_ADMIN check. TC/device administration still needs the relevant network privileges.
 
-<a id="74-已知限制"></a>
-
-### 7.4 Known limitations
+### 5.4 Known limitations
 
 | ID | Limitation | Handling |
 |---|---|---|
@@ -557,15 +465,11 @@ Linux 5.8+ separates some BPF privileges into CAP_BPF, but this does not replace
 | L5 | Broad extraction CIDRs admit unintended management traffic; the slot stores only three CIDRs total. | Prefer narrow routes such as /32 and inspect the actual programmed slots. |
 | L6 | Unreachable management-service target, especially loopback. | Validate VIP/extraction and target uniqueness; deployment still supplies routing/listeners and route_localnet for loopback. |
 | L7 | Legacy switch lacks geneve_opts. | Existing no-option port-mode operations remain supported; stop/recreate before vni/tlv or opaque options. No online map/program migration. |
-| L8 | Requested --mtu is not propagated into newly provisioned TAP/veth ports. | Check actual device MTUs and the full underlay budget (§6.8); initial startup validation and CLI help from older versions are not proof of the port value. |
+| L8 | Requested --mtu is not propagated into newly provisioned TAP/veth ports. | Check actual device MTUs and the full underlay budget (§4.8); initial startup validation and CLI help from older versions are not proof of the port value. |
 
-<a id="8-可靠性"></a>
+## 6. Reliability
 
-## 8. Reliability
-
-<a id="81-资源生命周期与崩溃恢复"></a>
-
-### 8.1 Resource lifecycle and crash recovery
+### 6.1 Resource lifecycle and crash recovery
 
 | Resource | Lifetime mechanism | After control-process exit |
 |---|---|---|
@@ -577,31 +481,17 @@ Linux 5.8+ separates some BPF privileges into CAP_BPF, but this does not replace
 After a serve crash, systemd Restart=on-failure launches a process that reopens compatible pinned state, skips already Free/Allocated ports during provisioning and resumes control/provider service. Existing forwarding can continue during this **process-only** restart. Deleted namespaces/devices, damaged maps, host reboot or incompatible ABI are different failures and are not covered by that guarantee.
 
 
-<a id="82-故障排除"></a>
-### 8.2 Troubleshooting
-
-Operational procedures and complete examples are in [vSwitch operations](vswitch-operations.md#3-troubleshooting). The underlying design constraints remain in this specification.
-
-<a id="9-性能特征"></a>
-<a id="91-data-plane-two-port-topology"></a>
-<a id="91-数据面2-端口拓扑"></a>
-<a id="92-control-plane-128-ports-unless-stated"></a>
-<a id="92-控制面128-端口"></a>
-## 9. Performance characteristics
+## 7. Performance characteristics
 
 Data-plane measurements must record source/binary revision, host and guest kernel, CPU/NUMA placement, NIC and veth topology, MTU, offloads/GRO/GSO, packet sizes, flows, offered load and failures. Small-packet packet-rate and bulk-TCP throughput measure different costs. Isolate BPF, namespace/veth and tunnel work before attributing overhead.
 
-Control-plane measurements must identify Start/StartReserved/Provision/Attach/Detach/Stop, requested and available ports, kernel/RTNL conditions and their actual completion signals. Determine readiness from the lifecycle ordering and Conditions in §6.5, not elapsed delays.
+Control-plane measurements must identify Start/StartReserved/Provision/Attach/Detach/Stop, requested and available ports, kernel/RTNL conditions and their actual completion signals. Determine readiness from the lifecycle ordering and Conditions in §4.5, not elapsed delays.
 
 Use the maintained test entry points below and the [project performance methodology](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/perf.md). Historical figures without pinned inputs and raw evidence are not a current capacity or latency baseline.
 
-<a id="10-测试"></a>
+## 8. Tests
 
-## 10. Tests
-
-<a id="101-分层"></a>
-
-### 10.1 Layers
+### 8.1 Layers
 
 | Layer | Files | Privilege | Coverage |
 |---|---|---|---|
@@ -610,17 +500,13 @@ Use the maintained test entry points below and the [project performance methodol
 | End-to-end | [test/e2e](../test/e2e/) `*_test.sh`. | Root. | Real topology/packets; setup/test/teardown/all script modes where provided. |
 | Benchmarks | [perf_bench.sh](../examples/perf_bench.sh), [start_perf_bench.sh](../examples/start_perf_bench.sh). | Root and iperf3. | Throughput/PPS/RTT at varying port counts and control-plane startup timing. |
 
-<a id="102-ebpf-三层验证"></a>
-
-### 10.2 Three levels of BPF validation
+### 8.2 Three levels of BPF validation
 
 1. **Layout:** integration tests under pkg/internal/bpf verify Go/C offsets, sizes and alignment.
 2. **BPF_PROG_TEST_RUN:** construct packets, execute the program and assert actions/output bytes. Where ingress_ifindex cannot be supplied conveniently, tests map ifindex=0 to the test slot for tc_ingress_nx.
 3. **Real topology:** test/e2e scripts create networks and use actual ping/iperf traffic.
 
-<a id="103-e2e-套件"></a>
-
-### 10.3 E2E suites
+### 8.3 E2E suites
 
 | Script | Coverage |
 |---|---|
@@ -632,9 +518,7 @@ Use the maintained test entry points below and the [project performance methodol
 
 For manual topology construction and lifecycle operations, use the maintained [vSwitch operations guide](vswitch-operations.md). Consume the actual allocation returned by `attach`; do not infer a port from a sandbox index.
 
-<a id="11-内部组织"></a>
-
-## 11. Internal organization
+## 9. Internal organization
 
 | Path | Role |
 |---|---|
@@ -668,7 +552,7 @@ flowchart TD
 
 pkg/tapfd is self-contained apart from the standard library and golang.org/x/sys.
 
-## 12. See also
+## 10. See also
 
 - [tapfd.md](tapfd.md): full provider/consumer descriptor-handoff contract.
 - [sandboxer/docs/sandbox.md](https://github.com/kuasar-sandbox/sandboxer/blob/main/docs/sandbox.md): sandbox-ctl consumption through TAPFD helpers.

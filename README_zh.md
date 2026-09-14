@@ -25,8 +25,6 @@
 
 节点本地的轻量 Egress 策略面作为[拟议扩展](https://github.com/kuasar-sandbox/connector/issues/9)跟踪,不是基础 vSwitch 已交付的功能。
 
-<a id="组成"></a>
-
 ## 主要接口
 
 | 路径 | 用途 |
@@ -39,8 +37,6 @@
 | `dist/` | systemd unit 与配置模板 |
 
 TAP 交接的规范协议见 [`docs/tapfd_zh.md`](docs/tapfd_zh.md)。
-
-<a id="构建"></a>
 
 ## 构建与测试
 
@@ -61,8 +57,6 @@ sudo make test-e2e              # 特权网络 owner suite
 - 仅重新生成 BPF 对象时需要 Clang 12 或更新版本。
 
 仓库包含预生成 BPF 对象,普通构建不需要 Clang。特权测试被跳过不等于网络验证完成。特权 E2E 必须在隔离的候选环境中运行,并清理本次运行拥有的全部 TAP、namespace、route、rule、BPF map 和 pin path。
-
-<a id="快速开始"></a>
 
 ## 最小本地示例
 
