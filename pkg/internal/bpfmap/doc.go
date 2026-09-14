@@ -13,7 +13,7 @@
 //   - cas.go   : atomic CAS operations on SlotItem.InnerIP (allocate, release,
 //     reserve, unreserve) plus IsSlotFreeOrReserved / IsSlotAllocated
 //     classifiers
-//   - stats.go : StatsManager wrapping the per-CPU stats map
+//   - stats.go : StatsManager wrapping the kernel-locked stats map
 //   - mac.go   : per-port / per-mgmt-plane MAC derivation tied to slot_id encoding
 //   - types.go : BPFMap / BPFArrayMap interfaces used for mocking
 package bpfmap

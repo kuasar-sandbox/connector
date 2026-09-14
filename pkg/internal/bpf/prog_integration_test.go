@@ -80,6 +80,11 @@ func testSetupMaps(t *testing.T, objs *bpf.Objects) {
 		t.Fatalf("failed to setup slot: %v", err)
 	}
 
+	// Initialize the counter instance after all slot fields are ready, matching Attach.
+	if err := objs.Maps.Stats.Update(slotKey, &vswitch.SlotStats{Generation: 1}, ebpf.UpdateLock); err != nil {
+		t.Fatal(err)
+	}
+
 	// Setup ifindex -> slot_id mapping
 	// Use ifindex=0 to match BPF_PROG_TEST_RUN default skb->ingress_ifindex
 	ifindex := uint32(0)
@@ -647,15 +652,12 @@ func TestStatsUpdate(t *testing.T) {
 	testSetupMaps(t, objs)
 
 	// Read initial stats
-	var initialStats []vswitch.SlotStats
-	if err := objs.Maps.Stats.Lookup(uint32(testSlotID), &initialStats); err != nil {
+	var initialStats vswitch.SlotStats
+	if err := objs.Maps.Stats.LookupWithFlags(uint32(testSlotID), &initialStats, ebpf.LookupLock); err != nil {
 		t.Fatalf("failed to read initial stats: %v", err)
 	}
 
-	var initialMgmtRx uint64
-	for _, s := range initialStats {
-		initialMgmtRx += s.MgmtRxPackets
-	}
+	initialMgmtRx := initialStats.MgmtRxPackets
 
 	// Send packet from mgmt service to floating IP (updates mgmt_rx stats)
 	// This uses tc_ingress_mx which derives slot from floating IP in packet
@@ -674,15 +676,12 @@ func TestStatsUpdate(t *testing.T) {
 	}
 
 	// Read updated stats
-	var updatedStats []vswitch.SlotStats
-	if err := objs.Maps.Stats.Lookup(uint32(testSlotID), &updatedStats); err != nil {
+	var updatedStats vswitch.SlotStats
+	if err := objs.Maps.Stats.LookupWithFlags(uint32(testSlotID), &updatedStats, ebpf.LookupLock); err != nil {
 		t.Fatalf("failed to read updated stats: %v", err)
 	}
 
-	var updatedMgmtRx uint64
-	for _, s := range updatedStats {
-		updatedMgmtRx += s.MgmtRxPackets
-	}
+	updatedMgmtRx := updatedStats.MgmtRxPackets
 
 	// Stats should have increased
 	if updatedMgmtRx <= initialMgmtRx {

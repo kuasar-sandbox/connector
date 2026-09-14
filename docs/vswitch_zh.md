@@ -32,7 +32,7 @@ CLI、配置、构建、部署与故障排查见 [vSwitch 运维](vswitch-operat
 - 包转发在内核中完成,没有用户态数据包中继;不保证完整 Guest/VMM/网络路径零拷贝或零上下文切换。
 - 程序由 TC 引用保留,map 由 bpffs pin 保留;底层资源完整时,控制进程退出不删除它们。
 - 专用转发实现可集中评审,无需把行为分散在 bridge FDB 与多条防火墙链中推理。
-- per-CPU 计数器与 bpftool 检查。
+- 内核锁保护的计数器与 bpftool 检查。
 
 ### 1.2 设计原则
 
@@ -198,7 +198,7 @@ GENEVE 内层同时识别 IPv4 与 IPv6(管理平面与 `slot.inner_ip` 为 IPv4
 | `slots` | ARRAY + MMAPABLE | 4096 × 108 B value(112 B mmap stride) | R | R | R | per-slot 配置;用户态 mmap 后对 `inner_ip` 做原子 CAS 完成分配/释放(§4.3) |
 | `config` | ARRAY | 1 × 40 B | R | R | R | `switch_mac`/`n_ports`/`floating_ip_base`/Geneve locator/`geneve_encap_eth`/`transit_nexthop`/`port_mac` |
 | `metadata` | ARRAY | 1 × 4096 B | – | – | – | JSON 编码的 `SwitchMetadata`,仅用户态读写;新增字段无需重编译 BPF |
-| `stats` | PERCPU_ARRAY | 4096 | W | W | W | per-slot `mgmt_{rx,tx}` + `transit_{rx,tx}` 包/字节计数,沙箱视角;attach 在 `slots.stats_ready` 中确认清零;清零失败不使 attach 失败,但 Stats 不发布保留的旧计数;detach 保留存储值,不作为当前 attachment 发布 |
+| `stats` | ARRAY | 4096 × 80 B | W | W | W | per-slot `mgmt_{rx,tx}` + `transit_{rx,tx}` 包/字节计数,沙箱视角;attach 在 `slots.stats_ready` 中确认清零;清零失败不使 attach 失败,但 Stats 不发布保留的旧计数;detach 保留存储值,不作为当前 attachment 发布 |
 | `ifindex_to_slot` | HASH | – | R | – | – | 入口 ifindex → slot_id 反查,仅出方向无法用 IP/UDP 推导时使用 |
 | `geneve_opts` | ARRAY | 4096 × 68 B | R | – | – | per-slot 完整序列化 opaque options;TLV locator 不存入此 map |
 | `mgmt_svc_fwd` | HASH | 静态 service entries | R | – | – | `{VIP,vport,proto}→{targetIP,targetPort}`,每条 service 按 TCP/UDP 各一条 |
@@ -208,9 +208,11 @@ GENEVE 内层同时识别 IPv4 与 IPv6(管理平面与 `slot.inner_ip` 为 IPv4
 使用算术或固定 locator 布局,不需要通用 slot-index hash/TLV 搜索;管理服务转换
 仍有独立 hash lookup。
 
-Stats 在现有 pin 目录 control flock 上取得非阻塞共享锁,并核验当前 pinned slots map ID. Attach/detach/reserve 和交换机替换复用原有排他侧. 控制操作占用、map 被替换、清零未确认或 map 读取失败时,整个请求批次返回错误. 多个共享读取可以并发. 显式查询 Free/Reserved 端口返回 `ErrPortNotAttached`;省略端口列表时仅选择 Allocated 槽. 确认清零后的 0 是有效观测;清零失败仍允许 attach 成功,但在后续成功 attach 前返回 `ErrStatsUnavailable`. 不新增第二份归属表.
+Stats 在现有 pin 目录 control flock 上取得非阻塞共享锁,并在计数读取前后核验当前 pinned slots map ID,因此绕过 flock 的 force cleanup 也会使本次读取失败. Attach/detach/reserve 和交换机替换复用原有排他侧. 控制操作占用、map 被替换、清零未确认或 map 读取失败时,整个请求批次返回错误. 多个共享读取可以并发. 显式查询 Free/Reserved 端口返回 `ErrPortNotAttached`;省略端口列表时仅选择 Allocated 槽. 确认清零后的 0 是有效观测;清零失败仍允许 attach 成功,但在后续成功 attach 前返回 `ErrStatsUnavailable`. 不新增第二份归属表.
 
-清零标记使用 offset 104 原有的四个 padding 字节,slot 仍为 108 字节,mmap stride 仍为 112 字节. BPF 计数指令不读取该标记. 读取需要当前控制代码,且本次 attachment 已确认清零. 缺少现有 `geneve_opts` map 的交换机没有共同的归属锁,不能提供这种一致 Stats 读取;采集前应重建该交换机. datapath 和 Create 成功条件不变.
+清零标记使用 offset 104 原有的四个 padding 字节,slot 仍为 108 字节,mmap stride 仍为 112 字节. 分配在发布新 owner 的 CAS 前清除此标记,即使进程紧接着退出也不会沿用旧 readiness. `stats` 改为每槽一个 80 字节 ARRAY value,包含 `bpf_spin_lock` 和内部 64-bit 计数代次. TC 在读取 attachment 字段前取得代次,更新计数时在同一内核锁内验证代次. Attach 完成全部字段与可能失败的设备操作后,通过 `BPF_F_LOCK` 同时清零并推进代次;此前已经执行的旧包不能把旧值写回新计数. 查询也使用 `BPF_F_LOCK`,保证每对包数/字节数的一致读取. 代次耗尽或重置失败仅使统计不可用,不改变 Attach 的成功条件.
+
+此 map ABI 要求重新创建使用旧 PERCPU_ARRAY 的交换机;不会热替换旧 map 或添加兼容统计路径. 缺少 `geneve_opts` 的旧交换机仍沿用原有生命周期能力,但不能提供一致 Stats. 计数代次不作为沙箱身份、公开字段或生命周期账本发布. 转发、NAT、GENEVE 和设备交付规则保持现有语义.
 
 ### 3.3 数据面 ABI
 
@@ -260,7 +262,10 @@ struct geneve_opts_value {                  // 68 字节
     __u8  data[64];                         // option header + opaque data
 };
 
-struct slot_stats {                         // per-CPU
+struct slot_stats {                         // 80 bytes, one locked instance per slot
+    struct bpf_spin_lock lock;
+    __u32 _pad;
+    __u64 generation;                       // internal counter instance; not a public identity
     __u64 mgmt_rx_packets, mgmt_rx_bytes;
     __u64 mgmt_tx_packets, mgmt_tx_bytes;
     __u64 transit_rx_packets, transit_rx_bytes;
@@ -658,13 +663,13 @@ GOWORK=off go test -tags=integration -exec 'sudo -n env REQUIRE_CONNECTOR_STATS=
    经 `ifindex=0 → slot_id` 的 map 项绕过。
 3. **真实拓扑** — `test/e2e/*_test.sh` 建立完整网络拓扑,用真实 ping/iperf 验证转发。
 
-`TestNativeStatsRealResetReuseAndReadOnlyFailure` 使用真实 pinned per-CPU BPF map 和独立打开的 reader,并通过内核强制只读的 FD 验证 reset 失败. `TestNativeStatsRealConcurrentOwnership` 覆盖共享读取与 attach/detach 并发. 源码集成 CI 在 `REQUIRE_CONNECTOR_STATS=1`、race 和特权执行下运行这些用例;缺少能力会失败,不会把 skip 作为通过证据.
+`TestNativeStatsRealResetReuseAndReadOnlyFailure` 使用真实 pinned locked BPF map 和独立打开的 reader,并通过内核强制只读的 FD 验证 reset 失败. `TestNativeStatsRealConcurrentOwnership` 覆盖共享读取与 attach/detach 并发. 其它同组真实内核用例覆盖读中 force cleanup/替换、owner CAS 后 SIGKILL,以及共用生产 BPF helper 的迟到 TC 写入和四路并发执行流与重置并发. `mgmt_isolation_test.sh` 还以四条真实 FloatingIP UDP 流反复 detach/attach 20 次,逐次要求通信恢复并核验非对称包数/字节数关系. 源码集成 CI 在 `REQUIRE_CONNECTOR_STATS=1`、race 和特权执行下运行这些用例;缺少能力会失败,不会把 skip 作为通过证据.
 
 ### 8.3 e2e 套件
 
 | 脚本 | 覆盖场景 |
 | --- | --- |
-| `mgmt_isolation_test.sh` | 管理平面连通、沙箱间隔离、真实 FloatingIP service NAT,以及 `stats_management.py` 的非对称 UDP 包数/字节方向断言 |
+| `mgmt_isolation_test.sh` | 管理平面连通、沙箱间隔离、真实 FloatingIP service NAT,以及 `stats_management.py` 的非对称 UDP 包数/字节方向断言及四流并发下的 20 次 slot 重用 |
 | `geneve_eth_test.sh` | legacy port locator 的 Ether-over-GENEVE 经 Linux gateway bridge |
 | `geneve_ip_test.sh` | IP-over-GENEVE 双 switch,由 `run_all.sh` 分别覆盖 port/vni/tlv locator、双向连通与 transit stats |
 | `provision_test.sh` | 两阶段启动 + Reserved 修复 + show |

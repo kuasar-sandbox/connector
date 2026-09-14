@@ -137,11 +137,6 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 		}
 	}
 
-	// Counter reset does not decide attachment success. Keep its result in the
-	// existing slot so every reader, including another process, can reject old
-	// counters after a failed reset rather than reporting them for a new owner.
-	statsReady := s.statsMgr.ResetStats(slotID) == nil
-
 	// Move port device from port namespace to target sandbox namespace.
 	// Tap-mode ports stay in the switch namespace (the sandbox process receives
 	// a file descriptor via 'open-port' instead of a kernel netdev), so the
@@ -178,10 +173,14 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	// every failure path can release its claim with the hint still at zero.
 	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
 		slot.GeneveOptsLen = geneveOptsValue.Len
-		if statsReady {
-			atomic.StoreUint32(&slot.StatsReady, 1)
-		}
 	})
+	// Publish the new counter generation only after every attachment field and
+	// fallible operation is complete. Packets captured before this point can
+	// only update the old generation; the BPF lock serializes reset with TC.
+	// A failed reset still does not change attachment success.
+	if s.statsMgr.ResetStats(slotID) == nil {
+		atomic.StoreUint32(&s.mmapSlots.GetSlot(slotID).StatsReady, 1)
+	}
 
 	// Calculate derived values
 	floatingIP := bpf.Uint32ToIP(cfg.FloatingIpBase + slotID)

@@ -71,10 +71,23 @@ func (m *mockStatsMap) Lookup(key, valueOut interface{}) error {
 			return nil
 		}
 	}
-	return syscall.ENOENT // standard error for missing key
+	if out, ok := valueOut.(*SlotStats); ok {
+		*out = SlotStats{}
+		return nil
+	}
+	return syscall.EINVAL
+}
+
+func (m *mockStatsMap) LookupWithFlags(key, out any, flags ebpf.MapLookupFlags) error {
+	if flags != ebpf.LookupLock {
+		return syscall.EINVAL
+	}
+	return m.Lookup(key, out)
 }
 
 func (m *mockStatsMap) Update(key, value interface{}, flags ebpf.MapUpdateFlags) error {
+	copy := *value.(*SlotStats)
+	m.stats[key.(uint32)] = &copy
 	return nil
 }
 
@@ -1493,9 +1506,12 @@ func TestStatsSpecificPorts(t *testing.T) {
 	defer resetDeps()
 	s, slots := newGeneveAttachTestContext(&SwitchConfig{N_ports: 4}, true)
 	statsLockFixture(t)
+	values := newMockStatsMap()
+	s.statsMgr = NewStatsManager(values, 4)
 	for _, slot := range []uint32{0, 1} {
 		slots.TryAllocate(slot, slot+1)
 		slots.GetSlot(slot).StatsReady = 1
+		values.stats[slot] = &SlotStats{Generation: 1}
 	}
 	output, err := s.Stats([]int{1, 2})
 	if err != nil || output.Switch != "sw0" || len(output.Ports) != 2 {

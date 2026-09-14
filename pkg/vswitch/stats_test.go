@@ -29,10 +29,16 @@ type resettableStatsMap struct {
 func (m *resettableStatsMap) Lookup(_ interface{}, out interface{}) error {
 	stats, ok := out.(*SlotStats)
 	if !ok {
-		return syscall.EINVAL // Exercise the existing single-value map adaptation.
+		return syscall.EINVAL // The locked array has one value per slot.
 	}
 	*stats = m.value
 	return nil
+}
+func (m *resettableStatsMap) LookupWithFlags(key, out any, flags ebpf.MapLookupFlags) error {
+	if flags != ebpf.LookupLock {
+		return syscall.EINVAL
+	}
+	return m.Lookup(key, out)
 }
 func (m *resettableStatsMap) Update(_ interface{}, value interface{}, _ ebpf.MapUpdateFlags) error {
 	if m.resetErr != nil {
@@ -58,7 +64,7 @@ func TestStatsResetValidityAcrossDetachAndReuse(t *testing.T) {
 	if err != nil || len(output.Ports) != 1 || output.Ports[0].MgmtRxBytes != 0 || output.Ports[0].TransitTxBytes != 0 || slots.GetSlot(0).StatsReady != 1 {
 		t.Fatal("confirmed reset did not publish valid zero", output, err)
 	}
-	values.value = SlotStats{MgmtRxPackets: 11, MgmtRxBytes: 9007199254740993, MgmtTxPackets: 12, MgmtTxBytes: 22,
+	values.value = SlotStats{Generation: 1, MgmtRxPackets: 11, MgmtRxBytes: 9007199254740993, MgmtTxPackets: 12, MgmtTxBytes: 22,
 		TransitRxPackets: 31, TransitRxBytes: 41, TransitTxPackets: 32, TransitTxBytes: 42}
 	output, err = s.Stats([]int{1})
 	if err != nil || output.Ports[0].MgmtRxBytes != 9007199254740993 || output.Ports[0].TransitRxBytes != 41 {
@@ -135,5 +141,23 @@ func TestStatsSkipsReservedAndRejectsUnconfirmedLegacy(t *testing.T) {
 	slots.GetSlot(1).StatsReady = 1
 	if output, err := s.Stats([]int{2}); output != nil || !errors.Is(err, ErrStatsUnavailable) {
 		t.Fatal("legacy unsynchronized ownership accepted", output, err)
+	}
+}
+
+func TestStatsGenerationExhaustionDoesNotFailAttach(t *testing.T) {
+	defer resetDeps()
+	s, slots := newGeneveAttachTestContext(&SwitchConfig{N_ports: 1}, true)
+	statsLockFixture(t)
+	writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error { return nil }
+	values := &resettableStatsMap{value: SlotStats{Generation: ^uint64(0), MgmtRxBytes: 91}}
+	s.statsMgr = NewStatsManager(values, 1)
+	if _, err := s.Attach(AttachOptions{Port: 1, InnerIP: net.ParseIP("169.254.0.21"), SkipDevice: true}); err != nil {
+		t.Fatal("counter generation changed attach success", err)
+	}
+	if slots.GetSlot(0).StatsReady != 0 || values.value.Generation != ^uint64(0) || values.value.MgmtRxBytes != 91 {
+		t.Fatal("generation wrapped or failed reset mutated counters", values.value)
+	}
+	if result, err := s.Stats([]int{1}); result != nil || !errors.Is(err, ErrStatsUnavailable) {
+		t.Fatal("exhausted generation published a current observation", result, err)
 	}
 }

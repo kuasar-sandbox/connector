@@ -442,7 +442,10 @@ func (s *switchContext) Stats(ports []int) (*StatsOutput, error) {
 		}
 		st, err := s.statsMgr.GetStats(sid)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", ErrStatsUnavailable, err)
+		}
+		if st.Generation == 0 {
+			return nil, fmt.Errorf("port %d: %w: counter instance is uninitialized", sid+1, ErrStatsUnavailable)
 		}
 		// Use GetPortMAC to get fixed or per-port derived MAC
 		portMAC := GetPortMAC(cfg.SwitchMac[:], cfg.PortMac[:], sid)
@@ -460,6 +463,12 @@ func (s *switchContext) Stats(ports []int) (*StatsOutput, error) {
 			TransitTxPackets: st.TransitTxPackets,
 			TransitTxBytes:   st.TransitTxBytes,
 		})
+	}
+
+	// ForceCleanup can unpin maps without taking the directory flock. A
+	// removed or replaced map set must invalidate the entire observation.
+	if err := verifyCurrentSwitchFn(s); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrStatsUnavailable, err)
 	}
 
 	return out, nil

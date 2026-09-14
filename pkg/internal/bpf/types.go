@@ -25,7 +25,7 @@ var (
 	_ [104]byte = [unsafe.Offsetof(SlotItem{}.StatsReady)]byte{}
 	_ [40]byte  = [unsafe.Sizeof(SwitchConfig{})]byte{}
 	_ [68]byte  = [unsafe.Sizeof(GeneveOptsValue{})]byte{}
-	_ [64]byte  = [unsafe.Sizeof(SlotStats{})]byte{}
+	_ [80]byte  = [unsafe.Sizeof(SlotStats{})]byte{}
 	_ [20]byte  = [unsafe.Sizeof(MgmtCIDR{})]byte{}
 	_ [8]byte   = [unsafe.Sizeof(SvcKey{})]byte{}
 	_ [8]byte   = [unsafe.Sizeof(SvcVal{})]byte{}

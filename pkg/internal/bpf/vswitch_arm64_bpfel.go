@@ -67,7 +67,13 @@ type vswitchSlotItem struct {
 }
 
 type vswitchSlotStats struct {
-	_                structs.HostLayout
+	_    structs.HostLayout
+	Lock struct {
+		_   structs.HostLayout
+		Val uint32
+	}
+	Pad              uint32
+	Generation       uint64
 	MgmtRxPackets    uint64
 	MgmtRxBytes      uint64
 	MgmtTxPackets    uint64

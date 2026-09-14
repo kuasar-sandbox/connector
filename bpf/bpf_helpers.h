@@ -31,6 +31,9 @@ static long (*bpf_csum_diff)(__be32 *from, __u32 from_size, __be32 *to, __u32 to
 static long (*bpf_fib_lookup)(void *ctx, struct bpf_fib_lookup *params, int plen, __u32 flags) = (void *) 69;
 static long (*bpf_redirect_neigh)(__u32 ifindex, void *params, int plen, __u64 flags) = (void *) 152;
 
+static long (*bpf_spin_lock)(struct bpf_spin_lock *lock) = (void *) 93;
+static long (*bpf_spin_unlock)(struct bpf_spin_lock *lock) = (void *) 94;
+
 // Map definition macro for newer libbpf style
 #define __uint(name, val) int (*name)[val]
 #define __type(name, val) typeof(val) *name

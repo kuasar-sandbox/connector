@@ -153,7 +153,7 @@ GENEVE inner traffic can be IPv4 or IPv6; management translation and slot.inner_
 | `slots` | ARRAY + MMAPABLE | 4096 × 108-byte value, 112-byte mmap stride. | R | R | R | Slot configuration; userspace CAS on inner_ip allocates/releases ownership (§4.3). |
 | `config` | ARRAY | 1 × 40 bytes. | R | R | R | Switch MAC, port count, floating base, GENEVE locator/encapsulation, transit nexthop and port MAC. |
 | `metadata` | ARRAY | 1 × 4096 bytes. | — | — | — | JSON SwitchMetadata for userspace only; additive fields do not alter BPF layout. |
-| `stats` | PERCPU_ARRAY | 4096 entries per CPU. | W | W | W | Management/transit receive/transmit packet/byte counters. Attach confirms a reset in `slots.stats_ready`; reset failure is nonfatal for attach but prevents Stats from publishing retained counters. Detach retains stored counters without publishing them as a current attachment. |
+| `stats` | ARRAY | 4096 × 80 bytes. | W | W | W | Management/transit receive/transmit packet/byte counters. Attach confirms a reset in `slots.stats_ready`; reset failure is nonfatal for attach but prevents Stats from publishing retained counters. Detach retains stored counters without publishing them as a current attachment. |
 | `ifindex_to_slot` | HASH | Ingress-device mapping. | R | — | — | ifindex→slot lookup on outbound port ingress. |
 | `geneve_opts` | ARRAY | 4096 × 68 bytes. | R | — | — | Complete serialized opaque options; automatic TLV locator is not stored here. |
 | `mgmt_svc_fwd` | HASH | Static service entries. | R | — | — | `{VIP,vport,proto}` → `{targetIP,targetPort}`, TCP and UDP entries per service. |
@@ -161,9 +161,11 @@ GENEVE inner traffic can be IPv4 or IPv6; management translation and slot.inner_
 
 New switches create/pin the service maps even when no service mapping is configured. Slot lookup on inbound traffic uses arithmetic or the fixed locator layout, without a generic inbound slot-index hash or TLV search. Management-service translation still has its separate hash maps.
 
-Stats takes a nonblocking shared lock on the existing pin-directory control flock and verifies the current pinned slots map ID. Attach/detach/reserve and switch replacement use its existing exclusive side. A busy control operation, replaced map, unconfirmed reset or failed map read produces an error for the entire requested batch. Shared readers can proceed concurrently. Explicit free/reserved ports return `ErrPortNotAttached`; an omitted port list selects only allocated slots. A confirmed reset makes zero valid; reset failure leaves attach successful and reports `ErrStatsUnavailable` until a later successful attach. No second ownership table is introduced.
+Stats takes a nonblocking shared lock on the existing pin-directory control flock and verifies the current pinned slots map ID before and after reading counters, so force cleanup that bypasses flock also invalidates the observation. Attach/detach/reserve and switch replacement use its existing exclusive side. A busy control operation, replaced map, unconfirmed reset or failed map read produces an error for the entire requested batch. Shared readers can proceed concurrently. Explicit free/reserved ports return `ErrPortNotAttached`; an omitted port list selects only allocated slots. A confirmed reset makes zero valid; reset failure leaves attach successful and reports `ErrStatsUnavailable` until a later successful attach. No second ownership table is introduced.
 
-The reset flag uses the former four padding bytes at offset 104; the slot remains 108 bytes with a 112-byte mmap stride. BPF counting instructions do not read it. Readers need current control code and an attachment whose reset was confirmed. A switch without the existing `geneve_opts` map has no common ownership lock and cannot provide this coherent Stats read; rebuild it before collecting traffic. The datapath and Create success conditions remain unchanged.
+The reset flag uses the former four padding bytes at offset 104; the slot remains 108 bytes with a 112-byte mmap stride. Allocation clears readiness before the owner CAS, so immediate process death cannot retain the previous readiness. The `stats` map becomes an ARRAY with one 80-byte value per slot, including `bpf_spin_lock` and an internal 64-bit counter generation. TC captures that generation before reading attachment fields, then checks it under the same kernel lock when updating counters. After all attachment fields and fallible device operations complete, Attach uses `BPF_F_LOCK` to reset counters and advance generation atomically. An old packet already executing cannot write retained values into the new instance. Queries use `BPF_F_LOCK` for coherent packet/byte pairs. Generation exhaustion or reset failure makes statistics unavailable without changing Attach success.
+
+This map ABI requires recreating switches that use the old PERCPU_ARRAY. Maps are not hot-swapped and there is no compatibility statistics path. Legacy switches without `geneve_opts` retain their existing lifecycle operations but cannot provide coherent Stats. Counter generation is not published as sandbox identity, a public field or a lifecycle ledger. Existing forwarding, NAT, GENEVE and device handoff semantics are preserved.
 
 ### 3.3 Data-plane ABI
 
@@ -212,7 +214,10 @@ struct geneve_opts_value {                  // 68 bytes
     __u8  data[64];                         // option header + opaque data
 };
 
-struct slot_stats {                         // per-CPU
+struct slot_stats {                         // 80 bytes, one locked instance per slot
+    struct bpf_spin_lock lock;
+    __u32 _pad;
+    __u64 generation;                       // internal counter instance; not a public identity
     __u64 mgmt_rx_packets, mgmt_rx_bytes;
     __u64 mgmt_tx_packets, mgmt_tx_bytes;
     __u64 transit_rx_packets, transit_rx_bytes;
@@ -517,13 +522,13 @@ GOWORK=off go test -tags=integration -exec 'sudo -n env REQUIRE_CONNECTOR_STATS=
 2. **BPF_PROG_TEST_RUN:** construct packets, execute the program and assert actions/output bytes. Where ingress_ifindex cannot be supplied conveniently, tests map ifindex=0 to the test slot for tc_ingress_nx.
 3. **Real topology:** test/e2e scripts create networks and use actual ping/iperf traffic.
 
-`TestNativeStatsRealResetReuseAndReadOnlyFailure` uses actual pinned per-CPU BPF maps and an independently opened reader, including a kernel-enforced read-only FD to prove reset failure. `TestNativeStatsRealConcurrentOwnership` exercises shared reads against attach/detach. Source integration CI runs these with `REQUIRE_CONNECTOR_STATS=1`, race detection and privileged execution; missing capability is a failure, not accepted skipped coverage.
+`TestNativeStatsRealResetReuseAndReadOnlyFailure` uses actual pinned locked BPF maps and an independently opened reader, including a kernel-enforced read-only FD to prove reset failure. `TestNativeStatsRealConcurrentOwnership` exercises shared reads against attach/detach. Other real kernel cases in that group cover force cleanup/replacement during a read, SIGKILL immediately after the ownership CAS, and the production BPF helper rejecting late TC writes while four execution streams race resets. `mgmt_isolation_test.sh` also keeps four actual FloatingIP UDP streams across 20 detach/attach cycles, requiring communication to resume and verifying asymmetric packet/byte pairs after each reuse. Source integration CI runs these with `REQUIRE_CONNECTOR_STATS=1`, race detection and privileged execution; missing capability is a failure, not accepted skipped coverage.
 
 ### 8.3 E2E suites
 
 | Script | Coverage |
 |---|---|
-| mgmt_isolation_test.sh | Management connectivity, local sandbox isolation, actual FloatingIP service NAT and asymmetric UDP packet/byte direction via `stats_management.py`. |
+| mgmt_isolation_test.sh | Management connectivity, local sandbox isolation, actual FloatingIP service NAT and asymmetric UDP packet/byte direction and 20 slot reuses under four live streams via `stats_management.py`. |
 | geneve_eth_test.sh | Legacy port locator with Ether-over-GENEVE through a Linux gateway bridge. |
 | geneve_ip_test.sh | IP-over-GENEVE between switches; run_all covers port/vni/tlv locators, bidirectional connectivity and transit counters. |
 | provision_test.sh | Two-phase startup, Reserved-slot repair and show. |

@@ -181,6 +181,9 @@ struct switch_config {
 // tx = traffic sent by sandbox
 // mgmt = management plane traffic, transit = external/GENEVE traffic
 struct slot_stats {
+    struct bpf_spin_lock lock;
+    __u32 _pad;
+    __u64 generation; // Internal counter instance, advanced under the control lock
     __u64 mgmt_rx_packets;
     __u64 mgmt_rx_bytes;
     __u64 mgmt_tx_packets;
