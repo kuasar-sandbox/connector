@@ -198,7 +198,7 @@ GENEVE 内层同时识别 IPv4 与 IPv6(管理平面与 `slot.inner_ip` 为 IPv4
 | `slots` | ARRAY + MMAPABLE | 4096 × 108 B value(112 B mmap stride) | R | R | R | per-slot 配置;用户态 mmap 后对 `inner_ip` 做原子 CAS 完成分配/释放(§4.3) |
 | `config` | ARRAY | 1 × 40 B | R | R | R | `switch_mac`/`n_ports`/`floating_ip_base`/Geneve locator/`geneve_encap_eth`/`transit_nexthop`/`port_mac` |
 | `metadata` | ARRAY | 1 × 4096 B | – | – | – | JSON 编码的 `SwitchMetadata`,仅用户态读写;新增字段无需重编译 BPF |
-| `stats` | PERCPU_ARRAY | 4096 | W | W | W | per-slot `mgmt_{rx,tx}` + `transit_{rx,tx}` 包/字节计数,沙箱视角;attach 尝试清零(失败不使 attach 失败),detach 保留 |
+| `stats` | PERCPU_ARRAY | 4096 | W | W | W | per-slot `mgmt_{rx,tx}` + `transit_{rx,tx}` 包/字节计数,沙箱视角;attach 在 `slots.stats_ready` 中确认清零;清零失败不使 attach 失败,但 Stats 不发布保留的旧计数;detach 保留存储值,不作为当前 attachment 发布 |
 | `ifindex_to_slot` | HASH | – | R | – | – | 入口 ifindex → slot_id 反查,仅出方向无法用 IP/UDP 推导时使用 |
 | `geneve_opts` | ARRAY | 4096 × 68 B | R | – | – | per-slot 完整序列化 opaque options;TLV locator 不存入此 map |
 | `mgmt_svc_fwd` | HASH | 静态 service entries | R | – | – | `{VIP,vport,proto}→{targetIP,targetPort}`,每条 service 按 TCP/UDP 各一条 |
@@ -207,6 +207,10 @@ GENEVE 内层同时识别 IPv4 与 IPv6(管理平面与 `slot.inner_ip` 为 IPv4
 新 switch 即使没有 service 配置也会创建并 pin 两张 service map。入站 slot 定位
 使用算术或固定 locator 布局,不需要通用 slot-index hash/TLV 搜索;管理服务转换
 仍有独立 hash lookup。
+
+Stats 在现有 pin 目录 control flock 上取得非阻塞共享锁,并核验当前 pinned slots map ID. Attach/detach/reserve 和交换机替换复用原有排他侧. 控制操作占用、map 被替换、清零未确认或 map 读取失败时,整个请求批次返回错误. 多个共享读取可以并发. 显式查询 Free/Reserved 端口返回 `ErrPortNotAttached`;省略端口列表时仅选择 Allocated 槽. 确认清零后的 0 是有效观测;清零失败仍允许 attach 成功,但在后续成功 attach 前返回 `ErrStatsUnavailable`. 不新增第二份归属表.
+
+清零标记使用 offset 104 原有的四个 padding 字节,slot 仍为 108 字节,mmap stride 仍为 112 字节. BPF 计数指令不读取该标记. 读取需要当前控制代码,且本次 attachment 已确认清零. 缺少现有 `geneve_opts` map 的交换机没有共同的归属锁,不能提供这种一致 Stats 读取;采集前应重建该交换机. datapath 和 Create 成功条件不变.
 
 ### 3.3 数据面 ABI
 
@@ -230,7 +234,7 @@ struct slot_item {                          // 108 字节,cache-line 优化
     __u8  _pad_cl0[8];                      // offset 56
     // ── cache line 1 (cold path) ────────────────────────────────
     struct mgmt_cidr mgmt_cidrs_ext[MAX_MGMT_CIDR_EXT]; // offset 64 (40B)
-    __u8  _pad_cl1[4];                      // offset 104
+    __u32 stats_ready;                      // offset 104 — userspace confirmed current-attach reset
 };   // 108 字节;mmap 后按 8 对齐 → 112 字节/槽 → 4096 槽 = 448 KiB
 
 struct switch_config {                      // 40 字节
@@ -627,6 +631,13 @@ namespace/设备删除、map 损坏、Host 重启或 ABI 不兼容是其他故�
 
 使用下方维护中的测试入口与 [项目性能方法](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/perf_zh.md)；缺少固定输入与原始证据的历史数字不构成当前容量或时延基线。
 
+小型 `BenchmarkNativeTrafficStats` benchmark 从真实 pinned map 读取 1/16/64 个已 attach 端口,报告分配量和 FD/goroutine 增量. 在具备 BPF 能力的宿主运行;结果是本机测量值,不设置机器相关通过阈值:
+
+```bash
+GOWORK=off go test -tags=integration -exec 'sudo -n env REQUIRE_CONNECTOR_STATS=1' \
+  -run '^$' -bench BenchmarkNativeTrafficStats -benchtime=300ms -count=3 ./pkg/vswitch
+```
+
 ## 8. 测试
 
 ### 8.1 分层
@@ -647,11 +658,13 @@ namespace/设备删除、map 损坏、Host 重启或 ABI 不兼容是其他故�
    经 `ifindex=0 → slot_id` 的 map 项绕过。
 3. **真实拓扑** — `test/e2e/*_test.sh` 建立完整网络拓扑,用真实 ping/iperf 验证转发。
 
+`TestNativeStatsRealResetReuseAndReadOnlyFailure` 使用真实 pinned per-CPU BPF map 和独立打开的 reader,并通过内核强制只读的 FD 验证 reset 失败. `TestNativeStatsRealConcurrentOwnership` 覆盖共享读取与 attach/detach 并发. 源码集成 CI 在 `REQUIRE_CONNECTOR_STATS=1`、race 和特权执行下运行这些用例;缺少能力会失败,不会把 skip 作为通过证据.
+
 ### 8.3 e2e 套件
 
 | 脚本 | 覆盖场景 |
 | --- | --- |
-| `mgmt_isolation_test.sh` | 管理平面连通 + 沙箱间隔离不变量 |
+| `mgmt_isolation_test.sh` | 管理平面连通、沙箱间隔离、真实 FloatingIP service NAT,以及 `stats_management.py` 的非对称 UDP 包数/字节方向断言 |
 | `geneve_eth_test.sh` | legacy port locator 的 Ether-over-GENEVE 经 Linux gateway bridge |
 | `geneve_ip_test.sh` | IP-over-GENEVE 双 switch,由 `run_all.sh` 分别覆盖 port/vni/tlv locator、双向连通与 transit stats |
 | `provision_test.sh` | 两阶段启动 + Reserved 修复 + show |

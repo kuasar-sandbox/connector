@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"testing"
@@ -18,7 +19,7 @@ import (
 
 // This uses pinned kernel maps, mmap slot publication and directory flocks.
 // Required source CI must execute it; a skip is only for unprivileged local runs.
-func nativeStatsFixture(t *testing.T) *switchContext {
+func nativeStatsFixture(t testing.TB) *switchContext {
 	t.Helper()
 	if os.Geteuid() != 0 {
 		if os.Getenv("REQUIRE_CONNECTOR_STATS") == "1" {
@@ -42,7 +43,7 @@ func nativeStatsFixture(t *testing.T) *switchContext {
 	if err := objects.PinMaps(name); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &SwitchConfig{N_ports: 2, FloatingIpBase: bpf.IPToUint32(net.ParseIP("198.18.0.1"))}
+	cfg := &SwitchConfig{N_ports: 64, FloatingIpBase: bpf.IPToUint32(net.ParseIP("198.18.0.1"))}
 	if err := objects.Maps.Config.Update(uint32(0), cfg, ebpf.UpdateAny); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +131,9 @@ func TestNativeStatsRealConcurrentOwnership(t *testing.T) {
 	var readers sync.WaitGroup
 	stop := make(chan struct{})
 	for range 4 {
-		readers.Go(func() {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
 			for {
 				select {
 				case <-stop:
@@ -150,7 +153,7 @@ func TestNativeStatsRealConcurrentOwnership(t *testing.T) {
 					return
 				}
 			}
-		})
+		}()
 	}
 	defer func() { close(stop); readers.Wait() }()
 	for range 40 {
@@ -160,5 +163,39 @@ func TestNativeStatsRealConcurrentOwnership(t *testing.T) {
 		if err := s.Detach(DetachOptions{Port: 1, SkipDevice: true}); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func BenchmarkNativeTrafficStats(b *testing.B) {
+	for _, count := range []int{1, 16, 64} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			s := nativeStatsFixture(b)
+			ports := make([]int, count)
+			for i := range ports {
+				ports[i] = i + 1
+				if _, err := s.Attach(AttachOptions{Port: i + 1, InnerIP: net.ParseIP("169.254.0.21"), SkipDevice: true}); err != nil {
+					b.Fatal(err)
+				}
+			}
+			fdBefore, err := os.ReadDir("/proc/self/fd")
+			if err != nil {
+				b.Fatal(err)
+			}
+			goroutines := runtime.NumGoroutine()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if _, err := s.Stats(ports); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.StopTimer()
+			fdAfter, err := os.ReadDir("/proc/self/fd")
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.ReportMetric(float64(len(fdAfter)-len(fdBefore)), "fd_delta")
+			b.ReportMetric(float64(runtime.NumGoroutine()-goroutines), "goroutine_delta")
+		})
 	}
 }
