@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Component version in vX.Y.Z or vX.Y.Z-preview.YYYYMMDD form
+        description: Component version in vX.Y.Z or vX.Y.Z-preview.YYYYMMDD[.N] form
         required: true
         type: string
       source_ref:

@@ -16,8 +16,8 @@ fail() {
 }
 
 validate_version() {
-  [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-preview\.[0-9]{8})?$ ]] \
-    || fail "version must match vX.Y.Z or vX.Y.Z-preview.YYYYMMDD"
+  [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-preview\.[0-9]{8}(\.[1-9][0-9]*)?)?$ ]] \
+    || fail "version must match vX.Y.Z or vX.Y.Z-preview.YYYYMMDD[.N]"
 }
 
 normalize_arch() {
