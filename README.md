@@ -38,6 +38,8 @@ A node-local lightweight Egress policy plane is tracked as a [proposed extension
 
 The normative TAP handoff protocol is documented in [`docs/tapfd.md`](docs/tapfd.md).
 
+Current attachment traffic reads and reset/error semantics are documented in [vSwitch stats](docs/vswitch-operations.md#210-connector-ctl-vswitch-stats). The Go Stats API reads multiple ports without per-port CLI processes.
+
 ## Build and test
 
 ```bash

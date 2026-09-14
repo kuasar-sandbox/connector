@@ -9,6 +9,7 @@
 #include "vmlinux.h"
 #include "bpf_helpers.h"
 #include "common.h"
+#include "stats.h"
 
 
 // Map definitions
@@ -36,12 +37,7 @@ struct {
     __uint(value_size, METADATA_MAX_SIZE);
 } metadata SEC(".maps");
 
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, MAX_PORTS);
-    __type(key, __u32);
-    __type(value, struct slot_stats);
-} stats SEC(".maps");
+
 
 // Reverse lookup: ifindex -> slot_id (for sw-nX devices)
 struct {
@@ -127,43 +123,6 @@ static __always_inline __u16 ip_checksum(void *data, int len)
         sum = csum_add(sum, p[i]);
     }
     return csum_fold(sum);
-}
-
-// Helper: update stats
-static __always_inline void update_stats_mgmt_tx(__u32 slot_id, __u32 pkt_len)
-{
-    struct slot_stats *s = bpf_map_lookup_elem(&stats, &slot_id);
-    if (s) {
-        s->mgmt_tx_packets++;
-        s->mgmt_tx_bytes += pkt_len;
-    }
-}
-
-static __always_inline void update_stats_mgmt_rx(__u32 slot_id, __u32 pkt_len)
-{
-    struct slot_stats *s = bpf_map_lookup_elem(&stats, &slot_id);
-    if (s) {
-        s->mgmt_rx_packets++;
-        s->mgmt_rx_bytes += pkt_len;
-    }
-}
-
-static __always_inline void update_stats_transit_tx(__u32 slot_id, __u32 pkt_len)
-{
-    struct slot_stats *s = bpf_map_lookup_elem(&stats, &slot_id);
-    if (s) {
-        s->transit_tx_packets++;
-        s->transit_tx_bytes += pkt_len;
-    }
-}
-
-static __always_inline void update_stats_transit_rx(__u32 slot_id, __u32 pkt_len)
-{
-    struct slot_stats *s = bpf_map_lookup_elem(&stats, &slot_id);
-    if (s) {
-        s->transit_rx_packets++;
-        s->transit_rx_bytes += pkt_len;
-    }
 }
 
 // Helper: send ARP reply with a specified reply MAC
@@ -293,6 +252,7 @@ int tc_ingress_nx(struct __sk_buff *skb)
 
     // Get slot config
     struct slot_item *slot = bpf_map_lookup_elem(&slots, &slot_id);
+    __u64 generation = stats_generation(slot_id);
     if (!slot || is_slot_free(slot->inner_ip))
         return TC_ACT_OK;
 
@@ -446,7 +406,7 @@ int tc_ingress_nx(struct __sk_buff *skb)
             __bpf_memcpy(eth->h_dest, mgmt_dev_mac, 6);
             __bpf_memcpy(eth->h_source, switch_mac, 6);
 
-            update_stats_mgmt_tx(slot_id, pkt_len);
+            update_stats_mgmt_tx(slot_id, generation, pkt_len);
             return bpf_redirect(mgmt_ifindex, 0);
         }
     }
@@ -686,7 +646,7 @@ int tc_ingress_nx(struct __sk_buff *skb)
         }
     }
 
-    update_stats_transit_tx(slot_id, pkt_len);
+    update_stats_transit_tx(slot_id, generation, pkt_len);
 
     // Use bpf_redirect_neigh to handle L2 neighbor resolution automatically.
     // If transit_nexthop is set, provide explicit nexthop to avoid FIB lookup
@@ -767,6 +727,7 @@ int tc_ingress_mx(struct __sk_buff *skb)
 
     // Get slot config
     struct slot_item *slot = bpf_map_lookup_elem(&slots, &slot_id);
+    __u64 generation = stats_generation(slot_id);
     if (!slot || is_slot_free(slot->inner_ip) || slot->ifindex == 0)
         return TC_ACT_OK;
 
@@ -872,7 +833,7 @@ int tc_ingress_mx(struct __sk_buff *skb)
     __bpf_memcpy(eth->h_source, switch_mac, 6);
 
     __u32 pkt_len = skb->len;
-    update_stats_mgmt_rx(slot_id, pkt_len);
+    update_stats_mgmt_rx(slot_id, generation, pkt_len);
 
     return bpf_redirect(target_ifindex, 0);
 }
@@ -996,6 +957,7 @@ int tc_ingress_transit(struct __sk_buff *skb)
 
     // Get slot config and perform the common authenticated return checks.
     struct slot_item *slot = bpf_map_lookup_elem(&slots, &slot_id);
+    __u64 generation = stats_generation(slot_id);
     if (!slot || is_slot_free(slot->inner_ip) || slot->ifindex == 0)
         return TC_ACT_OK;
 
@@ -1056,7 +1018,7 @@ int tc_ingress_transit(struct __sk_buff *skb)
     else
         eth->h_proto = inner_proto;
 
-    update_stats_transit_rx(slot_id, pkt_len);
+    update_stats_transit_rx(slot_id, generation, pkt_len);
 
     return bpf_redirect(target_ifindex, 0);
 }

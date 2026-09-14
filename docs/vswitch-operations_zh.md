@@ -419,6 +419,10 @@ per-port 流量计数,从沙箱视角:mgmt/transit × rx/tx × packets/bytes。
 }
 ```
 
+`rx` 表示送往沙箱,`tx` 表示来自沙箱. packets 是既有 BPF 观测点的包计数,不是应用请求数或速率. management bytes 使用端口/management ingress 观测到的以太网帧长度. transit TX 使用原始帧长度;transit RX 扣除外层 GENEVE 头并保留以太网头. 这是观测字节数,不是物理链路开销总和. management 和 transit 保持分开,不把重叠观测相加成统一总流量.
+
+`pkg/vswitch.Stats(name, ports)` 和 `Interface.Stats(ports)` 提供同一份按端口列表读取的能力,不启动 CLI 子进程. 消费方应按交换机组织当前绑定并限制批量大小. 生命周期锁占用、交换机替换、map 读取失败或 attach 清零未确认时,整个读取失败,不能替换为 0 或旧样本. Free/Reserved 端口不属于当前观测. detach 不擦除 map,但其计数不能作为 live attachment 查询. reset 失败不使 attach 失败,该 attachment 的 Stats 保持不可用;重新 attach 且清零成功后发布有效的 0 计数. 新计数 ARRAY 使用内核锁与内部代次隔离并发 TC 写入;旧 PERCPU_ARRAY 交换机须重建后才能采集. 读取前后均核验当前 map 身份,force cleanup 也会使读中样本失效.
+
 ### 2.11 `connector-ctl vswitch show`
 
 - `show slots <name> [slot_id]` — dump slot 表为 JSON(单槽或全部)。

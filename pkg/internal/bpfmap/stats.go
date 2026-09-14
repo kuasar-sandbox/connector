@@ -2,69 +2,55 @@ package bpfmap
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/cilium/ebpf"
 )
 
-// StatsManager handles per-CPU stats map operations.
+// StatsManager reads and resets the kernel-locked per-slot counter map.
+// Ownership changes serialize through the existing switch control flock.
 type StatsManager struct {
 	statsMap BPFMap
 	numPorts uint32
 }
 
-// NewStatsManager creates a stats manager. The statsMap should be the BPF
-// per-CPU array map keyed by slot_id.
 func NewStatsManager(statsMap BPFMap, numPorts uint32) *StatsManager {
-	return &StatsManager{
-		statsMap: statsMap,
-		numPorts: numPorts,
-	}
+	return &StatsManager{statsMap: statsMap, numPorts: numPorts}
 }
 
-// GetStats reads a slot's traffic statistics. For per-CPU maps this returns
-// the sum across all CPUs; for non-per-CPU (test mocks), returns the value
-// directly.
+// GetStats takes the same BPF spin lock as TC, so packet/byte pairs and the
+// counter generation are one coherent observation. Older per-CPU maps cannot
+// satisfy this contract and must be recreated with the current switch program.
 func (sm *StatsManager) GetStats(slotID uint32) (*SlotStats, error) {
-	var perCPUStats []SlotStats
-	if err := sm.statsMap.Lookup(slotID, &perCPUStats); err != nil {
-		// Fallback: single value (non-per-CPU)
-		var stats SlotStats
-		if err := sm.statsMap.Lookup(slotID, &stats); err != nil {
-			return nil, fmt.Errorf("failed to read stats for slot %d: %w", slotID, err)
-		}
-		return &stats, nil
+	if slotID >= sm.numPorts {
+		return nil, fmt.Errorf("stats slot %d out of range", slotID)
 	}
-
-	total := &SlotStats{}
-	for _, s := range perCPUStats {
-		total.MgmtRxPackets += s.MgmtRxPackets
-		total.MgmtRxBytes += s.MgmtRxBytes
-		total.MgmtTxPackets += s.MgmtTxPackets
-		total.MgmtTxBytes += s.MgmtTxBytes
-		total.TransitRxPackets += s.TransitRxPackets
-		total.TransitRxBytes += s.TransitRxBytes
-		total.TransitTxPackets += s.TransitTxPackets
-		total.TransitTxBytes += s.TransitTxBytes
+	locked, ok := sm.statsMap.(interface {
+		LookupWithFlags(any, any, ebpf.MapLookupFlags) error
+	})
+	if !ok {
+		return nil, fmt.Errorf("stats map does not support locked reads")
 	}
-	return total, nil
+	var stats SlotStats
+	if err := locked.LookupWithFlags(slotID, &stats, ebpf.LookupLock); err != nil {
+		return nil, fmt.Errorf("failed to read stats for slot %d: %w", slotID, err)
+	}
+	return &stats, nil
 }
 
-// ResetStats zeroes the stats for a slot. Per-CPU maps require a slice with
-// one element per CPU; we read first to discover the slice length, zero it
-// out, and write back.
+// ResetStats atomically replaces the counter instance. TC captures generation
+// before reading attachment fields and rejects late writes from an old instance.
+// Call only under the ownership lock, after publishing all attachment fields.
 func (sm *StatsManager) ResetStats(slotID uint32) error {
-	var perCPUStats []SlotStats
-	if err := sm.statsMap.Lookup(slotID, &perCPUStats); err != nil {
-		var zero SlotStats
-		if err := sm.statsMap.Update(slotID, &zero, ebpf.UpdateAny); err != nil {
-			return fmt.Errorf("failed to reset stats for slot %d: %w", slotID, err)
-		}
-		return nil
+	previous, err := sm.GetStats(slotID)
+	if err != nil {
+		return err
 	}
-	for i := range perCPUStats {
-		perCPUStats[i] = SlotStats{}
+	if previous.Generation == math.MaxUint64 {
+		return fmt.Errorf("stats generation exhausted for slot %d", slotID)
 	}
-	if err := sm.statsMap.Update(slotID, perCPUStats, ebpf.UpdateAny); err != nil {
+	zero := SlotStats{Generation: previous.Generation + 1}
+	if err := sm.statsMap.Update(slotID, &zero, ebpf.UpdateLock); err != nil {
 		return fmt.Errorf("failed to reset stats for slot %d: %w", slotID, err)
 	}
 	return nil

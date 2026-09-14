@@ -21,6 +21,8 @@ typedef __u16 __sum16;
 #define __packed __attribute__((packed))
 #endif
 
+struct bpf_spin_lock { __u32 val; };
+
 // Ethernet header
 struct ethhdr {
     unsigned char h_dest[6];

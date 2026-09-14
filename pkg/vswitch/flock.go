@@ -29,6 +29,10 @@ var (
 // The directory must already exist (created by StartReserved via os.Mkdir).
 // It ensures bpffs is mounted and returns ErrSwitchNotExist if the directory is missing.
 func AcquireControlLock(switchName string) (*ControlLock, error) {
+	return acquireSwitchLock(switchName, syscall.LOCK_EX)
+}
+
+func acquireSwitchLock(switchName string, operation int) (*ControlLock, error) {
 	if err := bpfEnsureBPFFS(); err != nil {
 		return nil, fmt.Errorf("failed to ensure bpffs: %w", err)
 	}
@@ -43,11 +47,26 @@ func AcquireControlLock(switchName string) (*ControlLock, error) {
 	// LOCK_EX blocks until lock is available. This is safe because flock is
 	// automatically released when the holding process exits (kernel guarantee),
 	// so a crashed holder cannot leave a stale lock.
-	if err := syscallFlock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := syscallFlock(int(f.Fd()), operation); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("failed to acquire flock on %s: %w", lockPath, err)
 	}
 	return &ControlLock{f: f}, nil
+}
+
+// Stats must not wait behind a slow Attach, device move or switch teardown.
+// Reuse the same directory flock and current-map identity check; shared reads
+// can run together, and contention returns an unavailable observation.
+func acquireStatsLock(s *switchContext) (*ControlLock, error) {
+	lock, err := acquireSwitchLock(s.name, syscall.LOCK_SH|syscall.LOCK_NB)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrStatsUnavailable, err)
+	}
+	if err := verifyCurrentSwitchFn(s); err != nil {
+		lock.Release()
+		return nil, fmt.Errorf("%w: %w", ErrStatsUnavailable, err)
+	}
+	return lock, nil
 }
 
 // acquireCurrentSwitchControlLock locks the switch and then verifies that the

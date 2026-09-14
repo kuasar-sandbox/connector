@@ -381,6 +381,10 @@ Per-port counters from the sandbox's viewpoint: management/transit × receive/tr
 }
 ```
 
+`rx` means delivery toward the sandbox; `tx` means traffic from it. Packets are counted at the existing BPF observation points, not as application requests or rates. Management bytes use the observed Ethernet frame length at port/management ingress. Transit TX uses the original frame length; transit RX subtracts the outer GENEVE headers and retains the Ethernet header. These are observed bytes, not a sum of physical-link overheads. Management and transit remain separate; do not add overlapping observations into a universal traffic total.
+
+`pkg/vswitch.Stats(name, ports)` and `Interface.Stats(ports)` provide the same bounded-by-port-list read without starting CLI subprocesses. Consumers should group current bindings per switch and bound batch size. A busy lifecycle lock, replaced switch, failed map read or unconfirmed attach reset fails the whole read; never substitute zeros or retained samples. Free/reserved ports are not current observations. Detach does not erase the map, but its counters cannot be queried as a live attachment. Reset failure does not fail attach; Stats remains unavailable for that attachment. Reattach with a successful reset publishes valid zero counters. The new counter ARRAY uses a kernel lock and internal generation to isolate concurrent TC writes; recreate old PERCPU_ARRAY switches before collecting. Map identity is checked before and after reading, including invalidation by force cleanup during a read.
+
 ### 2.11 `connector-ctl vswitch show`
 
 - `show slots <name> [slot_id]`: dump one zero-based slot or the complete slot table as JSON.

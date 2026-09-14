@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync/atomic"
 
 	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
 	"github.com/kuasar-sandbox/connector/pkg/netlink"
@@ -396,21 +397,28 @@ func Stats(switchName string, ports []int) (*StatsOutput, error) {
 // Returns port statistics using the pre-loaded context.
 func (s *switchContext) Stats(ports []int) (*StatsOutput, error) {
 	cfg := s.cfg
+	for _, port := range ports {
+		if port < 1 || uint64(port) > uint64(cfg.N_ports) {
+			return nil, fmt.Errorf("port %d out of range (max %d)", port, cfg.N_ports)
+		}
+	}
+	lock, err := acquireStatsLock(s)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Release()
 
 	// Determine which slots to query
 	var slotIDs []uint32
 	if len(ports) > 0 {
 		for _, p := range ports {
 			sid := uint32(p - 1)
-			if sid >= cfg.N_ports {
-				return nil, fmt.Errorf("port %d out of range (max %d)", p, cfg.N_ports)
-			}
 			slotIDs = append(slotIDs, sid)
 		}
 	} else {
 		// All allocated ports
 		for i := uint32(0); i < cfg.N_ports; i++ {
-			if s.mmapSlots.GetInnerIP(i) != 0 {
+			if IsSlotAllocated(s.mmapSlots.GetInnerIP(i)) {
 				slotIDs = append(slotIDs, i)
 			}
 		}
@@ -423,15 +431,27 @@ func (s *switchContext) Stats(ports []int) (*StatsOutput, error) {
 
 	for _, sid := range slotIDs {
 		slot := s.mmapSlots.GetSlot(sid)
+		innerIP := s.mmapSlots.GetInnerIP(sid)
+		if !IsSlotAllocated(innerIP) {
+			return nil, fmt.Errorf("port %d: %w", sid+1, ErrPortNotAttached)
+		}
+		// Only switches with the existing options map serialize every ownership
+		// change with this lock. Older contexts cannot prove a coherent read.
+		if s.maps == nil || s.maps.GeneveOpts == nil || atomic.LoadUint32(&slot.StatsReady) != 1 {
+			return nil, fmt.Errorf("port %d: %w: current attachment reset is not confirmed", sid+1, ErrStatsUnavailable)
+		}
 		st, err := s.statsMgr.GetStats(sid)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", ErrStatsUnavailable, err)
+		}
+		if st.Generation == 0 {
+			return nil, fmt.Errorf("port %d: %w: counter instance is uninitialized", sid+1, ErrStatsUnavailable)
 		}
 		// Use GetPortMAC to get fixed or per-port derived MAC
 		portMAC := GetPortMAC(cfg.SwitchMac[:], cfg.PortMac[:], sid)
 		out.Ports = append(out.Ports, PortStatsOutput{
 			Port:             sid + 1,
-			InnerIP:          bpf.Uint32ToIP(slot.InnerIp).String(),
+			InnerIP:          bpf.Uint32ToIP(innerIP).String(),
 			FloatingIP:       bpf.Uint32ToIP(cfg.FloatingIpBase + sid).String(),
 			PortMAC:          portMAC.String(),
 			MgmtRxPackets:    st.MgmtRxPackets,
@@ -443,6 +463,12 @@ func (s *switchContext) Stats(ports []int) (*StatsOutput, error) {
 			TransitTxPackets: st.TransitTxPackets,
 			TransitTxBytes:   st.TransitTxBytes,
 		})
+	}
+
+	// ForceCleanup can unpin maps without taking the directory flock. A
+	// removed or replaced map set must invalidate the entire observation.
+	if err := verifyCurrentSwitchFn(s); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrStatsUnavailable, err)
 	}
 
 	return out, nil
