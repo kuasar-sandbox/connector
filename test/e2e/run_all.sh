@@ -9,6 +9,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     exit 1
 }
 
+bash "$SCRIPT_DIR/notify_helpers_test.sh"
+
 privileged=()
 if [ "$(id -u)" -ne 0 ]; then
     privileged=(sudo -n)
