@@ -46,9 +46,9 @@ NOTIFY_PID=""
 NOTIFY_TMP_DIR=""
 
 cleanup_owned_processes() {
-    stop_owned_process "${SERVE_PID:-}"
+    stop_owned_process "${SERVE_PID:-}" || true
     SERVE_PID=""
-    stop_owned_process "${NOTIFY_PID:-}"
+    stop_owned_process "${NOTIFY_PID:-}" || true
     NOTIFY_PID=""
     if [ -n "${NOTIFY_TMP_DIR:-}" ]; then
         rm -rf "$NOTIFY_TMP_DIR"
@@ -661,14 +661,22 @@ test_a1_serve_lifecycle() {
 
     # Graceful shutdown
     kill -TERM "$SERVE_PID" 2>/dev/null || true
-    if wait "$SERVE_PID" 2>/dev/null; then
+    if wait_owned_process "$SERVE_PID"; then
         pass "A1: serve exited cleanly"
     else
-        pass "A1: serve process terminated"
+        fail "A1: serve did not terminate cleanly within its shutdown bound"
     fi
     SERVE_PID=""
-    stop_owned_process "$NOTIFY_PID"
+    if ! finish_notify_receiver "$notify_sock" "$NOTIFY_PID"; then
+        fail "A1: receiver did not finish collecting notifications"
+        stop_owned_process "$NOTIFY_PID" || true
+    fi
     NOTIFY_PID=""
+    if has_single_ready_notification "$notify_data"; then
+        pass "A1: complete stream starts with exactly one READY=1"
+    else
+        fail "A1: invalid final notification order/count (got: $(cat "$notify_data" 2>/dev/null || echo none))"
+    fi
 
     stop_switch
     rm -rf "$NOTIFY_TMP_DIR"
