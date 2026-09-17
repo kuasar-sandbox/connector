@@ -16,6 +16,9 @@ if [ "$(id -u)" -ne 0 ]; then
     privileged=(sudo -n)
 fi
 
+echo "==> connector missing-switch-namespace isolation regression"
+"${privileged[@]}" env BIN="$BIN" bash "$SCRIPT_DIR/missing_switch_netns_test.sh"
+
 if [ -n "${CANDIDATE_REPOSITORY:-}" ]; then
     source_root="$(go list -m -f '{{.Dir}}' github.com/kuasar-sandbox/connector)"
     [ -f "$source_root/go.mod" ] || {
