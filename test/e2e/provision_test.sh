@@ -13,6 +13,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=notify_helpers.sh
+source "$SCRIPT_DIR/notify_helpers.sh"
+
 if [ -n "${SWITCH_BIN:-}" ]; then
     : # Use environment variable
 elif [ -x "bin/connector-ctl" ]; then
@@ -38,6 +42,28 @@ fail() {
 
 SW_NAME="sw1"
 SERVE_PID=""
+NOTIFY_PID=""
+NOTIFY_TMP_DIR=""
+
+cleanup_owned_processes() {
+    stop_owned_process "${SERVE_PID:-}"
+    SERVE_PID=""
+    stop_owned_process "${NOTIFY_PID:-}"
+    NOTIFY_PID=""
+    if [ -n "${NOTIFY_TMP_DIR:-}" ]; then
+        rm -rf "$NOTIFY_TMP_DIR"
+        NOTIFY_TMP_DIR=""
+    fi
+}
+
+handle_signal() {
+    local status="$1"
+    cleanup_owned_processes
+    exit "$status"
+}
+
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
 
 # --- JSON helpers (python3, no jq dependency) ---
 
@@ -132,17 +158,11 @@ setup() {
 
 teardown() {
     echo "==> Teardown..."
-    # Kill any lingering serve process
-    if [ -n "${SERVE_PID:-}" ] && kill -0 "$SERVE_PID" 2>/dev/null; then
-        kill "$SERVE_PID" 2>/dev/null || true
-        wait "$SERVE_PID" 2>/dev/null || true
-    fi
-    pkill -f "connector-ctl vswitch serve ${SW_NAME}" 2>/dev/null || true
+    cleanup_owned_processes
     ${SWITCH_BIN} stop ${SW_NAME} --force --force-clean || [ $? = 3 ]
     for ns in sandbox1 sw_ns port_ns; do
         ip netns del "$ns" 2>/dev/null || true
     done
-    rm -f /tmp/test-notify-data /tmp/test-notify-*.sock 2>/dev/null || true
     echo "==> Teardown complete."
 }
 
@@ -568,29 +588,17 @@ test_d2_stop_force() {
 test_a1_serve_lifecycle() {
     echo "[A1] serve lifecycle + sd_notify"
 
-    # Create unixgram socket to receive sd_notify
-    local notify_sock="/tmp/test-notify-$$.sock"
-    rm -f "$notify_sock" /tmp/test-notify-data
-
-    python3 -c "
-import socket, time
-s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-s.bind('${notify_sock}')
-s.settimeout(0.5)
-deadline = time.time() + 60
-with open('/tmp/test-notify-data', 'a') as f:
-    while time.time() < deadline:
-        try:
-            data = s.recv(1024)
-        except socket.timeout:
-            continue
-        except OSError:
-            break
-        f.write(data.decode(errors='replace') + '\n')
-        f.flush()
-s.close()
-" &
-    local notify_pid=$!
+    NOTIFY_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/connector-notify.XXXXXX")
+    local notify_sock="$NOTIFY_TMP_DIR/notify.sock"
+    local notify_data="$NOTIFY_TMP_DIR/data"
+    local notify_ready="$NOTIFY_TMP_DIR/ready"
+    start_notify_receiver "$notify_sock" "$notify_data" "$notify_ready"
+    NOTIFY_PID=$NOTIFY_RECEIVER_PID
+    if ! wait_notify_receiver_ready "$notify_ready" "$NOTIFY_PID" 5; then
+        fail "A1: sd_notify receiver failed to bind"
+        cleanup_owned_processes
+        return
+    fi
 
     # Start serve in background
     NOTIFY_SOCKET="${notify_sock}" ${SWITCH_BIN} serve ${SW_NAME} \
@@ -607,19 +615,15 @@ s.close()
         pass "A1: switch became ready"
     else
         fail "A1: switch did not become ready"
-        kill "$SERVE_PID" 2>/dev/null || true
-        kill "$notify_pid" 2>/dev/null || true
-        wait "$SERVE_PID" 2>/dev/null || true
-        wait "$notify_pid" 2>/dev/null || true
+        cleanup_owned_processes
         stop_switch
-        rm -f "$notify_sock" /tmp/test-notify-data
         return
     fi
 
     # Check sd_notify received READY=1
     local ready_notify=0
     for _ in $(seq 1 50); do
-        if [ -f /tmp/test-notify-data ] && grep -q "READY=1" /tmp/test-notify-data; then
+        if has_single_ready_notification "$notify_data"; then
             ready_notify=1
             break
         fi
@@ -628,7 +632,7 @@ s.close()
     if [ "$ready_notify" -eq 1 ]; then
         pass "A1: sd_notify READY=1 received"
     else
-        fail "A1: sd_notify READY=1 not received (got: $(cat /tmp/test-notify-data 2>/dev/null || echo 'none'))"
+        fail "A1: expected exactly one sd_notify READY=1 (got: $(cat "$notify_data" 2>/dev/null || echo 'none'))"
     fi
 
     # All 4 slots should be Free (provisioned)
@@ -663,11 +667,12 @@ s.close()
         pass "A1: serve process terminated"
     fi
     SERVE_PID=""
-    kill "$notify_pid" 2>/dev/null || true
-    wait "$notify_pid" 2>/dev/null || true
+    stop_owned_process "$NOTIFY_PID"
+    NOTIFY_PID=""
 
     stop_switch
-    rm -f "$notify_sock" /tmp/test-notify-data
+    rm -rf "$NOTIFY_TMP_DIR"
+    NOTIFY_TMP_DIR=""
 }
 
 test_a2_serve_start_equivalence() {
