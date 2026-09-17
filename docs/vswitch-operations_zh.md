@@ -223,6 +223,8 @@ management 接口已持有这些地址。
 
 ### 2.3 `connector-ctl vswitch stop`
 
+若配置的交换机命名空间已经无法通过名称访问，stop 仅释放遗留 slot 记录并 unpin 交换机，不会把其中保存的接口编号用于调用者命名空间，也不会删除调用者链路或从调用者命名空间迁出 transit 设备。配置名有意留空时仍在调用者命名空间清理；其他命名空间查询错误正常返回。删除命名空间名称不证明已无进程持有原命名空间，仍需单独检查保留的命名空间和孤儿设备。
+
 内部分为 ReleasePorts 与 StopReleased:删除所属端口、管理/dummy 设备和 TC 引用,
 unpin maps,把 transit 移入 **stop 调用方的 namespace**。若要还给原 Host netns,
 须从那里执行 stop;实现并不保存并自动恢复另一个 origin namespace。

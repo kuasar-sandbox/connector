@@ -201,6 +201,8 @@ Example `start` output (illustrative configured values, not the result of the pr
 
 ### 2.3 `connector-ctl vswitch stop`
 
+If the configured switch namespace is no longer addressable by name, stop releases stale slot bookkeeping and unpins the switch without applying its saved interface indices to the caller namespace. It does not delete caller links or try to move a transit device from there. A deliberately empty namespace setting retains caller-namespace cleanup; other namespace lookup errors are returned. Removing a namespace name does not prove that no process still holds the old namespace: inspect any retained namespace and orphaned devices separately.
+
 Stop uses ReleasePorts then StopReleased: remove owned ports, management/dummy devices and TC references, unpin BPF maps, and move transit into the **stop caller's namespace**. To return it to the original host namespace, invoke stop there; the implementation does not restore a separately remembered origin namespace.
 
 | Flag | Meaning |

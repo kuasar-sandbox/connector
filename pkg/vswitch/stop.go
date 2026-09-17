@@ -290,7 +290,10 @@ func stopGetSwitchNs(ctx *switchContext) (*netns.NetNS, func(int) error, error) 
 			if !errors.Is(nsErr, netns.ErrNotExist) {
 				return nil, nil, fmt.Errorf("get switch netns %s: %w", switchNsName, nsErr)
 			}
-			switchNs = nil
+			// These ifindices belong to the missing named namespace, not
+			// the caller. Release stale bookkeeping without touching caller
+			// devices that happen to reuse the same namespace-local indices.
+			return nil, func(int) error { return nil }, nil
 		}
 	}
 	delLinkByIndex := func(ifindex int) error {
