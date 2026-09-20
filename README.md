@@ -42,6 +42,8 @@ Current attachment traffic reads and reset/error semantics are documented in [vS
 
 ## Build and test
 
+Builds use environment-provided Go and inherit its `GOROOT` and `GOTOOLCHAIN` selection. Release automation requires a working `gh` with `api --slurp` support on `PATH`; the project does not install, replace, or authenticate these environment tools against fixed binary digests.
+
 ```bash
 make build                      # bin/<arch>/connector-ctl; pure Go control plane
 make build TARGET_ARCH=aarch64  # cross-compile; amd64/arm64 aliases are accepted
