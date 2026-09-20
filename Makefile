@@ -134,6 +134,7 @@ release: build
 		$(BUILD_DIR)/release-bundle
 
 test-release:
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-environment-tools.py
 	bash scripts/test-release.sh
 
 release-clean:

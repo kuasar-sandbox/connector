@@ -42,6 +42,8 @@ TAP 交接的规范协议见 [`docs/tapfd_zh.md`](docs/tapfd_zh.md)。
 
 ## 构建与测试
 
+构建使用环境提供的 Go，并继承 `GOROOT`、`GOTOOLCHAIN` 等工具链选择；发布自动化需要环境在 `PATH` 中提供支持 `api --slurp` 的 `gh`。项目不下载、替换或按固定二进制摘要认证这些环境工具。
+
 ```bash
 make build                      # bin/<arch>/connector-ctl;纯 Go 控制面
 make build TARGET_ARCH=aarch64  # 交叉编译;接受 amd64/arm64 别名
