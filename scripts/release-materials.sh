@@ -315,8 +315,8 @@ release_materials_finish() {
       toolchain_root="$(jq -er '.GOROOT' "$RELEASE_MATERIALS_GO_ENV")"
       installed_toolchain="$(jq -er '.GOVERSION' "$RELEASE_MATERIALS_GO_ENV")"
     else
-      toolchain_root="$(GOWORK=off GOENV=off GOTOOLCHAIN=local command go env GOROOT)"
-      installed_toolchain="$(GOWORK=off GOENV=off GOTOOLCHAIN=local command go env GOVERSION)"
+      toolchain_root="$(GOWORK=off command go -C "${ROOT:-$PWD}" env GOROOT)"
+      installed_toolchain="$(GOWORK=off command go -C "${ROOT:-$PWD}" env GOVERSION)"
     fi
     [ "$installed_toolchain" = "$toolchain" ] \
       || fail "resolved Go toolchain $installed_toolchain does not match $toolchain"
