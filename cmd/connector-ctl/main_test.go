@@ -1528,6 +1528,7 @@ func TestServeConsecutiveErrorsBelowThreshold(t *testing.T) {
 		}
 		if sigCh != nil {
 			sigCh <- syscall.SIGTERM
+			sigCh = nil
 		}
 		return newReadyStatus("sw0", 4, 0, 4, 0), nil
 	}
@@ -1594,6 +1595,7 @@ func TestServeErrorRecoveryResetsCounter(t *testing.T) {
 		if afterProv%3 == 0 {
 			if afterProv >= 6 && sigCh != nil {
 				sigCh <- syscall.SIGTERM
+				sigCh = nil
 			}
 			return newReadyStatus("sw0", 4, 0, 4, 0), nil
 		}
@@ -1624,6 +1626,7 @@ func TestServeErrorsCountButDurationNot(t *testing.T) {
 		}
 		if callCount >= 5 && sigCh != nil {
 			sigCh <- syscall.SIGTERM
+			sigCh = nil
 		}
 		return nil, errors.New("pin dir missing")
 	}
