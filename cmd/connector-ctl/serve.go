@@ -149,7 +149,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	defer statusTicker.Stop()
 
 	var wdC <-chan time.Time
-	if wdInterval, ok := daemon.WatchdogEnabled(); ok {
+	if wdInterval, ok := watchdogEnabled(); ok {
 		wdTicker := time.NewTicker(wdInterval)
 		defer wdTicker.Stop()
 		wdC = wdTicker.C

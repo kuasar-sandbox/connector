@@ -1258,11 +1258,11 @@ func TestServeSuccess(t *testing.T) {
 
 	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
 		go func() {
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(30 * time.Millisecond)
 			c <- syscall.SIGTERM
 		}()
 	}
-	serveWatchInterval = 100 * time.Millisecond
+	serveWatchInterval = 10 * time.Millisecond
 
 	err := runServe(nil, []string{"sw0"})
 	if err != nil {
@@ -1310,11 +1310,11 @@ func TestServeProvisionError(t *testing.T) {
 
 	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
 		go func() {
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 			c <- syscall.SIGTERM
 		}()
 	}
-	serveWatchInterval = 100 * time.Millisecond
+	serveWatchInterval = 10 * time.Millisecond
 
 	// provision error arrives via provDone channel → osExit(1)
 	_ = runServe(nil, []string{"sw0"})
@@ -1511,7 +1511,7 @@ func setupServeRunLoop(t *testing.T) {
 		return &vswitch.ProvisionOutput{Provisioned: 4, Total: 4, Available: 4}, nil
 	}
 
-	serveWatchInterval = 50 * time.Millisecond
+	serveWatchInterval = 5 * time.Millisecond
 }
 
 func TestServeConsecutiveErrorsBelowThreshold(t *testing.T) {
@@ -1540,7 +1540,7 @@ func TestServeConsecutiveErrorsBelowThreshold(t *testing.T) {
 
 	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
 		go func() {
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 			c <- syscall.SIGTERM
 		}()
 	}
@@ -1582,7 +1582,7 @@ func TestServeConsecutiveErrorsExceedThreshold(t *testing.T) {
 
 	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
 		go func() {
-			time.Sleep(2 * time.Second)
+			time.Sleep(100 * time.Millisecond)
 			c <- syscall.SIGTERM
 		}()
 	}
@@ -1617,7 +1617,7 @@ func TestServeErrorRecoveryResetsCounter(t *testing.T) {
 
 	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
 		go func() {
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 			c <- syscall.SIGTERM
 		}()
 	}
@@ -1650,7 +1650,7 @@ func TestServeErrorsCountButDurationNot(t *testing.T) {
 
 	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
 		go func() {
-			time.Sleep(300 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 			c <- syscall.SIGTERM
 		}()
 	}
@@ -1682,12 +1682,12 @@ func TestServeSendsWatchdog(t *testing.T) {
 	}
 	defer listener.Close()
 
-	t.Setenv("WATCHDOG_USEC", "2000000") // 2s → keepalive every 1s
+	watchdogEnabled = func() (time.Duration, bool) { return 20 * time.Millisecond, true }
 	t.Setenv("NOTIFY_SOCKET", socketPath)
 
 	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
 		go func() {
-			time.Sleep(1500 * time.Millisecond)
+			time.Sleep(60 * time.Millisecond)
 			c <- syscall.SIGTERM
 		}()
 	}
@@ -1735,7 +1735,7 @@ func TestServeNoWatchdogWithoutEnv(t *testing.T) {
 
 	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
 		go func() {
-			time.Sleep(300 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 			c <- syscall.SIGTERM
 		}()
 	}

@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/kuasar-sandbox/connector/pkg/daemon"
 	"github.com/kuasar-sandbox/connector/pkg/dhcp"
 	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
@@ -36,8 +37,9 @@ var (
 	vswitchLoadConfigFile = vswitch.LoadConfigFile
 
 	// serve dependencies
-	signalNotify = signal.Notify
-	timeNow      = time.Now
+	signalNotify    = signal.Notify
+	timeNow         = time.Now
+	watchdogEnabled = daemon.WatchdogEnabled
 
 	// DHCP dependencies
 	dhcpRequest   = dhcp.Request
