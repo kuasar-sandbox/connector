@@ -1685,30 +1685,30 @@ func TestServeSendsWatchdog(t *testing.T) {
 	watchdogEnabled = func() (time.Duration, bool) { return 20 * time.Millisecond, true }
 	t.Setenv("NOTIFY_SOCKET", socketPath)
 
+	gotWatchdog := make(chan struct{}, 1)
 	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
 		go func() {
-			time.Sleep(60 * time.Millisecond)
-			c <- syscall.SIGTERM
+			buf := make([]byte, 256)
+			_ = listener.SetReadDeadline(time.Now().Add(2 * time.Second))
+			for {
+				n, _, err := listener.ReadFrom(buf)
+				if err != nil {
+					c <- syscall.SIGTERM
+					return
+				}
+				if string(buf[:n]) == "WATCHDOG=1" {
+					gotWatchdog <- struct{}{}
+					c <- syscall.SIGTERM
+					return
+				}
+			}
 		}()
 	}
 
 	_ = runServe(nil, []string{"sw0"})
-
-	// Drain socket buffer, look for WATCHDOG=1
-	buf := make([]byte, 256)
-	gotWatchdog := false
-	for {
-		_ = listener.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		n, _, err := listener.ReadFrom(buf)
-		if err != nil {
-			break
-		}
-		if string(buf[:n]) == "WATCHDOG=1" {
-			gotWatchdog = true
-			break
-		}
-	}
-	if !gotWatchdog {
+	select {
+	case <-gotWatchdog:
+	default:
 		t.Error("expected at least one WATCHDOG=1 notification")
 	}
 }
