@@ -55,7 +55,7 @@ Runtime requirements:
 - Linux 5.10 or newer with BTF and TC BPF support;
 - root or the equivalent required capabilities;
 - network namespaces, TAP, veth, routing, and TC support;
-- Go 1.24 or newer for source builds;
+- Go 1.26.1 or newer for source builds;
 - Clang 12 or newer only when regenerating BPF objects.
 
 The repository includes pre-generated BPF objects, so an ordinary build does not require Clang. A skipped privileged test must not be interpreted as completed network validation. Privileged E2E must run in an isolated candidate environment and clean up every TAP device, namespace, route, rule, BPF map, and pin path owned by the run.
