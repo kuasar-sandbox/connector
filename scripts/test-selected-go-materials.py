@@ -28,12 +28,13 @@ class SelectedGoMaterials(unittest.TestCase):
             go = tools / "go"
             go.write_text('''#!/bin/sh
 [ "$1" = -C ] && [ "$2" = "$EXPECTED_MODULE" ] || { echo wrong-module >&2; exit 61; }
+[ "${GOWORK-unset}" = "$EXPECTED_WORKSPACE" ] || { echo caller-GOWORK-lost >&2; exit 65; }
 [ "${GOENV-}" = "$EXPECTED_GOENV" ] || { echo caller-GOENV-lost >&2; exit 62; }
 [ "${GOTOOLCHAIN-unset}" = "$EXPECTED_POLICY" ] || { echo caller-GOTOOLCHAIN-lost >&2; exit 63; }
 case "$4" in GOROOT) echo "$SELECTED_ROOT";; GOVERSION) echo "${REPORTED_VERSION:-go1.26.7}";; *) exit 64;; esac
 ''')
             go.chmod(0o755)
-            for policy in (None, "auto", "go1.26.7+path"):
+            for policy, workspace in ((None, None), ("auto", "off"), ("go1.26.7+path", str(root / "selected.go.work"))):
                 for mismatch in (False, True):
                     case = root / (str(policy) + str(mismatch))
                     env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"],
@@ -41,6 +42,11 @@ case "$4" in GOROOT) echo "$SELECTED_ROOT";; GOVERSION) echo "${REPORTED_VERSION
                                GOENV=str(configuration), EXPECTED_GOENV=str(configuration),
                                EXPECTED_POLICY=policy if policy is not None else "unset",
                                REPORTED_VERSION="go1.24.3" if mismatch else "go1.26.7")
+                    env["EXPECTED_WORKSPACE"] = workspace if workspace is not None else "unset"
+                    if workspace is None:
+                        env.pop("GOWORK", None)
+                    else:
+                        env["GOWORK"] = workspace
                     env.pop("RELEASE_MATERIALS_GO_ENV", None)
                     if policy is None:
                         env.pop("GOTOOLCHAIN", None)
