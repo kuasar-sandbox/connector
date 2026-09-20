@@ -1249,20 +1249,21 @@ func TestServeSuccess(t *testing.T) {
 	}
 	sw := &mockSwitch{name: "sw0"}
 	mockServeOpen(sw)
+	var sigCh chan<- os.Signal
+	statusCalls := 0
 	vswitchStatus = func(name string) (*vswitch.StatusOutput, error) {
+		statusCalls++
+		if statusCalls == 2 && sigCh != nil {
+			sigCh <- syscall.SIGTERM
+		}
 		return newReadyStatus("sw0", 4, 0, 4, 0), nil
 	}
 	vswitchProvisionPorts = func(name string, opts vswitch.ProvisionOptions) (*vswitch.ProvisionOutput, error) {
 		return &vswitch.ProvisionOutput{Provisioned: 4, Total: 4, Available: 4}, nil
 	}
 
-	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
-		go func() {
-			time.Sleep(200 * time.Millisecond)
-			c <- syscall.SIGTERM
-		}()
-	}
-	serveWatchInterval = 100 * time.Millisecond
+	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) { sigCh = c }
+	serveWatchInterval = 10 * time.Millisecond
 
 	err := runServe(nil, []string{"sw0"})
 	if err != nil {
@@ -1308,13 +1309,7 @@ func TestServeProvisionError(t *testing.T) {
 	var exitCode int32
 	osExit = func(code int) { atomic.StoreInt32(&exitCode, int32(code)) }
 
-	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			c <- syscall.SIGTERM
-		}()
-	}
-	serveWatchInterval = 100 * time.Millisecond
+	serveWatchInterval = 10 * time.Millisecond
 
 	// provision error arrives via provDone channel → osExit(1)
 	_ = runServe(nil, []string{"sw0"})
@@ -1511,25 +1506,29 @@ func setupServeRunLoop(t *testing.T) {
 		return &vswitch.ProvisionOutput{Provisioned: 4, Total: 4, Available: 4}, nil
 	}
 
-	serveWatchInterval = 50 * time.Millisecond
+	serveWatchInterval = 5 * time.Millisecond
 }
 
 func TestServeConsecutiveErrorsBelowThreshold(t *testing.T) {
 	defer resetDeps()
 	setupServeRunLoop(t)
 
-	// Fail twice then succeed — should not exit
+	// Fail below the fatal condition, then stop on the observed recovery.
 	callCount := 0
+	var sigCh chan<- os.Signal
 	vswitchStatus = func(name string) (*vswitch.StatusOutput, error) {
 		callCount++
-		// First call is the initial status check before provision
+		// First call is the initial status check before provision.
 		if callCount == 1 {
 			return newReadyStatus("sw0", 4, 0, 0, 4), nil
 		}
-		// After provision: fail twice then succeed
 		afterProv := callCount - 1
 		if afterProv <= 3 {
 			return nil, errors.New("pin dir missing")
+		}
+		if sigCh != nil {
+			sigCh <- syscall.SIGTERM
+			sigCh = nil
 		}
 		return newReadyStatus("sw0", 4, 0, 4, 0), nil
 	}
@@ -1537,13 +1536,7 @@ func TestServeConsecutiveErrorsBelowThreshold(t *testing.T) {
 
 	var exitCalled bool
 	osExit = func(code int) { exitCalled = true }
-
-	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			c <- syscall.SIGTERM
-		}()
-	}
+	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) { sigCh = c }
 
 	_ = runServe(nil, []string{"sw0"})
 	if exitCalled {
@@ -1580,13 +1573,6 @@ func TestServeConsecutiveErrorsExceedThreshold(t *testing.T) {
 	var exitCode int32
 	osExit = func(code int) { atomic.StoreInt32(&exitCode, int32(code)) }
 
-	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
-		go func() {
-			time.Sleep(2 * time.Second)
-			c <- syscall.SIGTERM
-		}()
-	}
-
 	_ = runServe(nil, []string{"sw0"})
 	if atomic.LoadInt32(&exitCode) != 1 {
 		t.Errorf("expected exit code 1, got %d", atomic.LoadInt32(&exitCode))
@@ -1598,14 +1584,19 @@ func TestServeErrorRecoveryResetsCounter(t *testing.T) {
 	setupServeRunLoop(t)
 
 	callCount := 0
+	var sigCh chan<- os.Signal
 	vswitchStatus = func(name string) (*vswitch.StatusOutput, error) {
 		callCount++
 		if callCount == 1 {
 			return newReadyStatus("sw0", 4, 0, 0, 4), nil
 		}
-		// After provision: fail, fail, success, fail, fail, success, ...
+		// After provision: fail, fail, success, fail, fail, success.
 		afterProv := callCount - 1
 		if afterProv%3 == 0 {
+			if afterProv >= 6 && sigCh != nil {
+				sigCh <- syscall.SIGTERM
+				sigCh = nil
+			}
 			return newReadyStatus("sw0", 4, 0, 4, 0), nil
 		}
 		return nil, errors.New("pin dir missing")
@@ -1614,13 +1605,7 @@ func TestServeErrorRecoveryResetsCounter(t *testing.T) {
 
 	var exitCalled bool
 	osExit = func(code int) { exitCalled = true }
-
-	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			c <- syscall.SIGTERM
-		}()
-	}
+	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) { sigCh = c }
 
 	_ = runServe(nil, []string{"sw0"})
 	if exitCalled {
@@ -1633,27 +1618,26 @@ func TestServeErrorsCountButDurationNot(t *testing.T) {
 	setupServeRunLoop(t)
 
 	callCount := 0
+	var sigCh chan<- os.Signal
 	vswitchStatus = func(name string) (*vswitch.StatusOutput, error) {
 		callCount++
 		if callCount == 1 {
 			return newReadyStatus("sw0", 4, 0, 0, 4), nil
 		}
+		if callCount >= 5 && sigCh != nil {
+			sigCh <- syscall.SIGTERM
+			sigCh = nil
+		}
 		return nil, errors.New("pin dir missing")
 	}
 
-	// Fake time: never advances, so duration < maxErrorDuration
+	// Fake time: never advances, so duration < maxErrorDuration.
 	fixedTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	timeNow = func() time.Time { return fixedTime }
 
 	var exitCalled bool
 	osExit = func(code int) { exitCalled = true }
-
-	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
-		go func() {
-			time.Sleep(300 * time.Millisecond)
-			c <- syscall.SIGTERM
-		}()
-	}
+	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) { sigCh = c }
 
 	_ = runServe(nil, []string{"sw0"})
 	if exitCalled {
@@ -1682,33 +1666,33 @@ func TestServeSendsWatchdog(t *testing.T) {
 	}
 	defer listener.Close()
 
-	t.Setenv("WATCHDOG_USEC", "2000000") // 2s → keepalive every 1s
+	watchdogEnabled = func() (time.Duration, bool) { return 20 * time.Millisecond, true }
 	t.Setenv("NOTIFY_SOCKET", socketPath)
 
+	gotWatchdog := make(chan struct{}, 1)
 	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
 		go func() {
-			time.Sleep(1500 * time.Millisecond)
-			c <- syscall.SIGTERM
+			buf := make([]byte, 256)
+			_ = listener.SetReadDeadline(time.Now().Add(2 * time.Second))
+			for {
+				n, _, err := listener.ReadFrom(buf)
+				if err != nil {
+					c <- syscall.SIGTERM
+					return
+				}
+				if string(buf[:n]) == "WATCHDOG=1" {
+					gotWatchdog <- struct{}{}
+					c <- syscall.SIGTERM
+					return
+				}
+			}
 		}()
 	}
 
 	_ = runServe(nil, []string{"sw0"})
-
-	// Drain socket buffer, look for WATCHDOG=1
-	buf := make([]byte, 256)
-	gotWatchdog := false
-	for {
-		_ = listener.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		n, _, err := listener.ReadFrom(buf)
-		if err != nil {
-			break
-		}
-		if string(buf[:n]) == "WATCHDOG=1" {
-			gotWatchdog = true
-			break
-		}
-	}
-	if !gotWatchdog {
+	select {
+	case <-gotWatchdog:
+	default:
 		t.Error("expected at least one WATCHDOG=1 notification")
 	}
 }
@@ -1717,7 +1701,13 @@ func TestServeNoWatchdogWithoutEnv(t *testing.T) {
 	defer resetDeps()
 	setupServeRunLoop(t)
 
+	var sigCh chan<- os.Signal
+	statusCalls := 0
 	vswitchStatus = func(name string) (*vswitch.StatusOutput, error) {
+		statusCalls++
+		if statusCalls == 2 && sigCh != nil {
+			sigCh <- syscall.SIGTERM
+		}
 		return newReadyStatus("sw0", 4, 0, 4, 0), nil
 	}
 
@@ -1733,12 +1723,7 @@ func TestServeNoWatchdogWithoutEnv(t *testing.T) {
 	// No WATCHDOG_USEC, but NOTIFY_SOCKET is set
 	t.Setenv("NOTIFY_SOCKET", socketPath)
 
-	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
-		go func() {
-			time.Sleep(300 * time.Millisecond)
-			c <- syscall.SIGTERM
-		}()
-	}
+	signalNotify = func(c chan<- os.Signal, sig ...os.Signal) { sigCh = c }
 
 	_ = runServe(nil, []string{"sw0"})
 

@@ -5,6 +5,7 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/kuasar-sandbox/connector/pkg/daemon"
 	"github.com/kuasar-sandbox/connector/pkg/dhcp"
 	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
@@ -29,6 +30,7 @@ func resetDeps() {
 	dhcpNewServer = dhcp.NewServer
 	signalNotify = signal.Notify
 	timeNow = time.Now
+	watchdogEnabled = daemon.WatchdogEnabled
 	serveTapFDListen = ""
 	startMgmtExtracts = nil
 	startMgmtServices = nil
