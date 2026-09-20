@@ -11,7 +11,7 @@ Use this guide to build, configure, deploy, inspect and maintain a connector vSw
 - Documented kernel baseline: Linux **5.10+**, with the needed TC/BPF features and BTF available at `/sys/kernel/btf/vmlinux`. Verify the actual kernel configuration and privileged tests; a version number alone is insufficient.
 - bpffs mounted at `/sys/fs/bpf`, for example `mount -t bpf bpf /sys/fs/bpf`.
 - Root execution for the privileged BPF/network/namespace paths, with capability requirements discussed in [required privileges](vswitch.md#53-required-privileges).
-- **Go 1.24+** for building; regenerating BPF bytecode additionally needs **Clang/LLVM 12+**.
+- **Go 1.26.1+** for building; regenerating BPF bytecode additionally needs **Clang/LLVM 12+**.
 
 ### 1.2 Build
 

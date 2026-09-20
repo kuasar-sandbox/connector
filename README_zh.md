@@ -55,7 +55,7 @@ sudo make test-e2e              # 特权网络 owner suite
 - Linux 5.10 或更新版本,支持 BTF 和 TC BPF;
 - root 或等效的必要 capabilities;
 - network namespace、TAP、veth、路由及 TC 支持;
-- 源码构建需要 Go 1.24 或更新版本;
+- 源码构建需要 Go 1.26.1 或更新版本;
 - 仅重新生成 BPF 对象时需要 Clang 12 或更新版本。
 
 仓库包含预生成 BPF 对象,普通构建不需要 Clang。特权测试被跳过不等于网络验证完成。特权 E2E 必须在隔离的候选环境中运行,并清理本次运行拥有的全部 TAP、namespace、route、rule、BPF map 和 pin path。
