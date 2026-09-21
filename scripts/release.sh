@@ -23,7 +23,8 @@ validate_version() {
 normalize_arch() {
   case "$1" in
     amd64|x86_64) printf 'x86_64\n' ;;
-    *) fail "unsupported release architecture: $1; current release target is x86_64" ;;
+    arm64|aarch64) printf 'aarch64\n' ;;
+    *) fail "unsupported release architecture: $1" ;;
   esac
 }
 
@@ -57,8 +58,27 @@ copy_root_executable() {
   install -m 0755 "$checkout/$source" "$STAGE/$destination"
 }
 
+# Inspect headers without executing target payloads on the build host.
+check_target_binary() {
+  local file="$1" machine
+  case "$2" in
+    x86_64) machine='Advanced Micro Devices X86-64' ;;
+    aarch64) machine='AArch64' ;;
+    *) fail "invalid target: $2" ;;
+  esac
+  LC_ALL=C readelf -h "$file" | awk -F: -v machine="$machine" '
+    { gsub(/^[ \t]+|[ \t]+$/, "", $1); gsub(/^[ \t]+|[ \t]+$/, "", $2) }
+    $1 == "Class" { class++; if ($2 != "ELF64") bad=1 }
+    $1 == "Data" { data++; if ($2 != "2\047s complement, little endian") bad=1 }
+    $1 == "Machine" { arch++; if ($2 != machine) bad=1 }
+    END { exit bad || class != 1 || data != 1 || arch != 1 }
+  ' || fail "${3:-payload} has the wrong ELF target ($2): $file"
+}
+
 check_go_binary() {
   local file="$1" info
+  local target_arch="$2" go_arch
+  case "$target_arch" in x86_64) go_arch=amd64 ;; aarch64) go_arch=arm64 ;; *) fail "invalid target: $target_arch" ;; esac
   info="$(go version -m "$file" 2>/dev/null)" \
     || fail "Go build info is missing from $file"
   awk -F '\t' '
@@ -66,11 +86,12 @@ check_go_binary() {
     $2 == "mod" { modules++; if ($3 != "github.com/kuasar-sandbox/connector") bad=1 }
     END { exit bad || paths != 1 || modules != 1 }
   ' <<< "$info" || fail "Go release payload must be the connector-ctl main package: $file"
-  awk -F '\t' '
+  awk -F '\t' -v expected_arch="$go_arch" '
     $2 == "build" && $3 ~ /^GOOS=/ { os++; if ($3 != "GOOS=linux") bad=1 }
-    $2 == "build" && $3 ~ /^GOARCH=/ { arch++; if ($3 != "GOARCH=amd64") bad=1 }
+    $2 == "build" && $3 ~ /^GOARCH=/ { arch++; if ($3 != "GOARCH=" expected_arch) bad=1 }
     END { exit bad || os != 1 || arch != 1 }
-  ' <<< "$info" || fail "Go release payload must target linux/amd64: $file"
+  ' <<< "$info" || fail "Go release payload must target linux/$go_arch: $file"
+  check_target_binary "$file" "$target_arch"
 }
 
 validate_archive_paths() {
@@ -148,7 +169,7 @@ validate_bundle() {
   rm -rf "$extract"
   mkdir -p "$extract"
   tar -xzf "$bundle/assets/$archive" -C "$extract"
-  check_go_binary "$extract/bin/connector-ctl"
+  check_go_binary "$extract/bin/connector-ctl" "$arch"
   local project_sha
   project_sha="$(go version -m "$extract/bin/connector-ctl" | \
     awk -F '\t' '$2 == "build" && $3 ~ /^vcs.revision=/ {print substr($3, 14)}')"
@@ -194,7 +215,7 @@ package_release() {
   bin_dir="${RELEASE_BIN_DIR:-$ROOT/bin/$arch}"
   project_sha="$(release_materials_resolve_git_source "$ROOT" "" connector)"
   copy_executable "$bin_dir/connector-ctl" bin/connector-ctl
-  check_go_binary "$STAGE/bin/connector-ctl"
+  check_go_binary "$STAGE/bin/connector-ctl" "$arch"
   copy_root_executable examples/perf_bench.sh test/connector/perf_bench.sh
   copy_root_executable examples/start_perf_bench.sh test/connector/start_perf_bench.sh
   copy_file dist/connector-vswitch.service deploy/connector-vswitch.service

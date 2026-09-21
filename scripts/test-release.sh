@@ -336,6 +336,32 @@ for target in darwin/amd64 linux/arm64; do
   grep -Fq 'must target linux/amd64' "$candidate/result.log" || fail "$target failed for an unrelated reason"
 done
 
+mkdir -p "$TMP/arm-bin"
+install -m 0755 "$TMP/target-linux-arm64" "$TMP/arm-bin/connector-ctl"
+SOURCE_DATE_EPOCH=1700000000 RELEASE_BIN_DIR="$TMP/arm-bin" \
+  "$fixture_root/scripts/release.sh" package v1.2.3 aarch64 "$TMP/arm-bundle"
+GH_REPO=kuasar-sandbox/connector SOURCE_SHA="$fixture_project_sha" "$fixture_root/scripts/publish-release.sh" assemble \
+  v1.2.3 "$TMP/bundle" "$TMP/arm-bundle" "$TMP/dual-bundle"
+PUBLISHER_TEST_ARCH=all "$ROOT/scripts/test-publisher.sh" "$fixture_root/scripts/publish-release.sh" \
+  "$TMP/dual-bundle" kuasar-sandbox/connector v1.2.3 "$fixture_project_sha" main
+for arch in x86_64 aarch64; do
+  original="$TMP/bundle"
+  [ "$arch" != aarch64 ] || original="$TMP/arm-bundle"
+  cmp "$original/assets/connector-v1.2.3-linux-$arch.tar.gz" \
+    "$TMP/dual-bundle/assets/connector-v1.2.3-linux-$arch.tar.gz" \
+    || fail 'dual publication rebuilt or changed a validated archive'
+done
+cp -a "$TMP/arm-bundle" "$TMP/arm-tampered"
+printf 'tampered' >> "$TMP/arm-tampered/assets/connector-v1.2.3-linux-aarch64.tar.gz"
+if GH_REPO=kuasar-sandbox/connector "$fixture_root/scripts/publish-release.sh" assemble v1.2.3 "$TMP/bundle" \
+  "$TMP/arm-tampered" "$TMP/dual-tampered" >/dev/null 2>&1; then
+  fail 'dual assembler accepted changed ARM bytes'
+fi
+if GH_REPO=kuasar-sandbox/connector "$fixture_root/scripts/publish-release.sh" assemble v1.2.3 "$TMP/bundle" \
+  "$TMP/bundle" "$TMP/dual-wrong-target" >/dev/null 2>&1; then
+  fail 'dual assembler accepted AMD64 as the missing ARM archive'
+fi
+
 for target_package in ./examples/tapfd_receiver command-line-arguments; do
   binary="$TMP/other-main-${target_package##*/}"
   if [ "$target_package" = command-line-arguments ]; then
@@ -449,7 +475,7 @@ if RELEASE_BIN_DIR="$TMP/bin" "$fixture_root/scripts/release.sh" package 01.2.3 
 fi
 if RELEASE_BIN_DIR="$TMP/bin" "$fixture_root/scripts/release.sh" package v1.2.3 aarch64 \
   "$TMP/invalid-arch" >/dev/null 2>&1; then
-  fail "packager accepted an unvalidated release architecture"
+  fail "packager accepted x86_64 payloads as aarch64"
 fi
 
 for mutation in setuid setgid writable-directory writable-binary; do
