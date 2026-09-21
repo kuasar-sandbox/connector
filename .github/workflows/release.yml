@@ -130,6 +130,9 @@ jobs:
         run: |
           taskset -pc "$KUASAR_BUILD_CPUS" "$$" >/dev/null
           set -euo pipefail
+          # Child go commands must use the compiler already selected for this module.
+          selected_go_root=$(go env GOROOT)
+          export PATH="$selected_go_root/bin:$PATH"
           if [ "$TARGET_ARCH" = x86_64 ]; then make test; make vet; fi
           make build
         working-directory: src/connector
