@@ -49,6 +49,7 @@ make build                      # bin/<arch>/connector-ctl; pure Go control plan
 make build TARGET_ARCH=aarch64  # cross-compile; amd64/arm64 aliases are accepted
 make generate                   # regenerate BPF objects after changing bpf/*.c; requires Clang/LLVM
 make test                       # unit tests
+make test-source-checks          # race, real pinned-BPF stats and vet; requires sudo
 sudo make test-e2e              # privileged networking owner suite
 ```
 
