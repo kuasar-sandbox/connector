@@ -1,7 +1,6 @@
 name: Release
 run-name: Release ${{ inputs.version }} @${{ inputs.source_sha }}
-
-on:
+'on':
   workflow_dispatch:
     inputs:
       version:
@@ -24,39 +23,48 @@ on:
         description: Platform commit selecting aggregate_version; required for a Preview
         required: false
         type: string
-
 permissions:
   contents: read
-
 concurrency:
   group: component-mutation-${{ github.repository }}-${{ inputs.version }}
   cancel-in-progress: false
-
 jobs:
   preflight:
-    runs-on: [self-hosted, Linux, X64, kuasar-control]
+    runs-on: ubuntu-latest
     outputs:
       source_ref: ${{ steps.request.outputs.source_ref }}
       source_sha: ${{ steps.request.outputs.source_sha }}
       version: ${{ steps.request.outputs.version }}
+      framework_sha: ${{ steps.framework.outputs.sha }}
     steps:
       - name: Require trusted release controller
         run: |
           set -euo pipefail
           [ "$GITHUB_REF" = refs/heads/main ] \
             || { echo "Release must run from main" >&2; exit 1; }
-
       - name: Check out trusted release tooling
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-
+      - name: Check out trusted platform tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: kuasar-sandbox/kuasar-sandbox
+          ref: main
+          path: trusted/platform
+          persist-credentials: false
+      - name: Bootstrap standard runner
+        run: |
+          bash trusted/platform/ci/hosted/bootstrap.sh --profile release-control
+      - name: Record exact framework revision
+        id: framework
+        run: |
+          echo "sha=$(git -C trusted/platform rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Check environment GitHub CLI
         run: |
           gh --version
           gh_help="$(gh api --help)"
           [[ "$gh_help" == *--slurp* ]] || { echo "environment gh must support api --slurp" >&2; exit 1; }
-
       - name: Validate release request
         id: request
         env:
@@ -66,7 +74,7 @@ jobs:
           AGGREGATE_VERSION: ${{ inputs.aggregate_version }}
           AGGREGATE_SHA: ${{ inputs.aggregate_sha }}
           VERSION: ${{ inputs.version }}
-          TARGET_ARCH: x86_64
+          TARGET_ARCH: all
         run: |
           set -euo pipefail
           bash scripts/validate-release-source.sh \
@@ -79,45 +87,52 @@ jobs:
             echo "source_sha=$SOURCE_SHA"
             echo "version=$VERSION"
           } >> "$GITHUB_OUTPUT"
-
+    if: github.event.repository.visibility == 'public' && github.event.repository.full_name == github.repository
   build:
     needs: preflight
-    runs-on: [self-hosted, Linux, X64, kuasar-e2e]
-    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
     env:
-      TARGET_ARCH: x86_64
-      GOPROXY: https://goproxy.cn,direct
-      GOSUMDB: sum.golang.google.cn
+      TARGET_ARCH: ${{ matrix.arch }}
     steps:
+      - name: Check out trusted platform tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: kuasar-sandbox/kuasar-sandbox
+          ref: ${{ needs.preflight.outputs.framework_sha }}
+          path: trusted/platform
+          persist-credentials: false
+      - name: Bootstrap native or cross build
+        run: |
+          profile=artifact-build
+          if [ "$TARGET_ARCH" = aarch64 ]; then profile=artifact-cross; fi
+          bash trusted/platform/ci/hosted/bootstrap.sh --profile "$profile"
       - name: Check out exact component source
         id: checkout-source
         continue-on-error: true
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.preflight.outputs.source_sha }}
           persist-credentials: false
-
+          path: src/connector
       - name: Retry exact component source checkout
         if: steps.checkout-source.outcome == 'failure'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.preflight.outputs.source_sha }}
           persist-credentials: false
-
+          path: src/connector
       - name: Attach native source cache
         run: |
-          set -euo pipefail
-          install -d -m 0755 /var/cache/kuasar/tarballs
-          mkdir -p build
-          ln -sfn /var/cache/kuasar/tarballs build/tarball
-
+          mkdir -p src/connector/build
+          ln -sfn "$KUASAR_TARBALL_CACHE" src/connector/build/tarball
       - name: Build and test connector
         run: |
+          taskset -pc "$KUASAR_BUILD_CPUS" "$$" >/dev/null
           set -euo pipefail
-          make test
-          make vet
+          if [ "$TARGET_ARCH" = x86_64 ]; then make test; make vet; fi
           make build
-
+        working-directory: src/connector
       - name: Package the component release
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
@@ -127,39 +142,66 @@ jobs:
           [ "$(git rev-parse HEAD)" = "${{ needs.preflight.outputs.source_sha }}" ]
           SOURCE_DATE_EPOCH=$(git show -s --format=%ct "${{ needs.preflight.outputs.source_sha }}")
           bash scripts/release.sh package "$VERSION" "$TARGET_ARCH" release-bundle
-
+        working-directory: src/connector
       - name: Upload validated release bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: component-release-${{ needs.preflight.outputs.version }}-${{ github.run_id }}
-          path: release-bundle
+          name: component-release-${{ needs.preflight.outputs.version }}-${{ matrix.arch }}-${{ github.run_id }}
+          path: src/connector/release-bundle
           if-no-files-found: error
           retention-days: 1
-
+    if: github.event.repository.visibility == 'public' && github.event.repository.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - x86_64
+          - aarch64
   publish:
-    needs: [preflight, build]
-    runs-on: [self-hosted, Linux, X64, kuasar-control]
+    needs:
+      - preflight
+      - build
+    runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: write
     steps:
       - name: Check out trusted publish tooling
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-
+      - name: Check out trusted platform tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: kuasar-sandbox/kuasar-sandbox
+          ref: ${{ needs.preflight.outputs.framework_sha }}
+          path: trusted/platform
+          persist-credentials: false
+      - name: Bootstrap standard runner
+        run: |
+          bash trusted/platform/ci/hosted/bootstrap.sh --profile release-control
       - name: Check environment GitHub CLI
         run: |
           gh --version
           gh_help="$(gh api --help)"
           [[ "$gh_help" == *--slurp* ]] || { echo "environment gh must support api --slurp" >&2; exit 1; }
-
-      - name: Download validated release bundle
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Download validated x86_64 bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: component-release-${{ needs.preflight.outputs.version }}-${{ github.run_id }}
-          path: release-bundle
-
+          name: component-release-${{ needs.preflight.outputs.version }}-x86_64-${{ github.run_id }}
+          path: staged/x86_64
+      - name: Download validated aarch64 bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: component-release-${{ needs.preflight.outputs.version }}-aarch64-${{ github.run_id }}
+          path: staged/aarch64
+      - name: Assemble the two validated architecture archives
+        env:
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+        run: |
+          bash scripts/publish-release.sh assemble "$VERSION" staged/x86_64 staged/aarch64 release-bundle
       - name: Publish component release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -168,33 +210,33 @@ jobs:
           SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
           AGGREGATE_VERSION: ${{ inputs.aggregate_version }}
           AGGREGATE_SHA: ${{ inputs.aggregate_sha }}
-          TARGET_ARCH: x86_64
+          TARGET_ARCH: all
         run: |
           set -euo pipefail
           bash scripts/validate-preview-line.sh \
             connector "$VERSION" "$AGGREGATE_VERSION" "$AGGREGATE_SHA"
           bash scripts/publish-release.sh publish \
             "$VERSION" "$TARGET_ARCH" "$SOURCE_SHA" release-bundle "$SOURCE_REF"
-
+    if: github.event.repository.visibility == 'public' && github.event.repository.full_name == github.repository
   cleanup:
-    needs: publish
-    runs-on: [self-hosted, Linux, X64, kuasar-control]
+    needs:
+      - preflight
+      - publish
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       actions: write
       contents: read
     steps:
       - name: Check out trusted cleanup tooling
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-
       - name: Check environment GitHub CLI
         run: |
           gh --version
           gh_help="$(gh api --help)"
           [[ "$gh_help" == *--slurp* ]] || { echo "environment gh must support api --slurp" >&2; exit 1; }
-
       - name: Delete release workflow artifacts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -214,3 +256,4 @@ jobs:
               --silent
           done
           echo "deleted ${#artifact_ids[@]} release workflow artifact(s)"
+    if: github.event.repository.visibility == 'public' && github.event.repository.full_name == github.repository

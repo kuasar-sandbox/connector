@@ -1,7 +1,7 @@
 # connector Makefile
 SHELL := /bin/bash
 
-.PHONY: all generate build connector-ctl clean test test-integration test-all test-e2e bench release test-release release-clean deps fmt lint vet vmlinux help
+.PHONY: all generate build connector-ctl clean test test-integration test-all test-source-checks test-e2e bench release test-release release-clean deps fmt lint vet vmlinux help
 
 # ---------------------------------------------------------------------------
 # Architecture selection
@@ -113,7 +113,10 @@ test-integration:
 test-all: test-integration
 
 # Run end-to-end shell tests (requires root + a BPF-capable kernel).
-test-e2e: connector-ctl
+test-source-checks:
+	bash scripts/ci-source-checks.sh
+
+test-e2e: connector-ctl test-source-checks
 	BIN="$(abspath $(BINDIR))" bash test/e2e/run_all.sh
 
 # Run the performance benchmark (requires root + iperf3).
@@ -176,6 +179,7 @@ help:
 	@echo "  test-integration - Run all tests incl. integration (requires root + BPF)"
 	@echo "  test-all         - Alias for test-integration"
 	@echo "  test-e2e         - Run end-to-end shell tests (requires root + BPF)"
+	@echo "  test-source-checks - Required race, real pinned-BPF stats and vet checks"
 	@echo "  bench            - Run performance benchmark (requires root + iperf3)"
 	@echo "  release          - Build a validated component release bundle"
 	@echo "  test-release     - Test component release packaging"

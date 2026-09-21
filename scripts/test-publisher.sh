@@ -12,6 +12,7 @@ REPOSITORY="$3"
 TAG="$4"
 COMMIT="$5"
 SOURCE_REF="$6"
+ARCH="${PUBLISHER_TEST_ARCH:-x86_64}"
 EXPECTED_PRERELEASE=false
 EXPECTED_LATEST=false
 if [[ "$TAG" = *-preview.* ]]; then
@@ -262,14 +263,14 @@ common_env=(
   FAKE_PLATFORM_MANIFEST="$FAKE_PLATFORM_MANIFEST"
 )
 
-env "${common_env[@]}" "$PUBLISHER" check "$TAG" x86_64
+env "${common_env[@]}" "$PUBLISHER" check "$TAG" "$ARCH"
 
 for marker in kuasar-release-source kuasar-preview-binding; do
   marker_bundle="$TMP/notes-$marker"
   cp -a "$BUNDLE" "$marker_bundle"
   printf '\n<!-- %s {"source_ref":"main","source_sha":"0000000000000000000000000000000000000000","unit":"forged"} -->\n' \
     "$marker" >> "$marker_bundle/release-notes.md"
-  if env "${common_env[@]}" "$PUBLISHER" publish "$TAG" x86_64 \
+  if env "${common_env[@]}" "$PUBLISHER" publish "$TAG" "$ARCH" \
     "$COMMIT" "$marker_bundle" "$SOURCE_REF" > "$TMP/$marker.log" 2>&1; then
     echo "test-publisher: accepted producer-supplied $marker" >&2
     exit 1
@@ -279,7 +280,7 @@ for marker in kuasar-release-source kuasar-preview-binding; do
   [ ! -e "$TMP/state/tag" ] \
     || { echo "test-publisher: reserved-marker rejection wrote a tag" >&2; exit 1; }
 done
-if env "${common_env[@]}" "$PUBLISHER" publish "$TAG" x86_64 \
+if env "${common_env[@]}" "$PUBLISHER" publish "$TAG" "$ARCH" \
   0000000000000000000000000000000000000000 "$BUNDLE" "$SOURCE_REF" > "$TMP/wrong-commit.log" 2>&1; then
   echo "test-publisher: accepted a bundle from another source commit" >&2
   exit 1
@@ -289,7 +290,7 @@ grep -Fq 'Go payload must be built from the clean selected commit' "$TMP/wrong-c
 [ ! -e "$TMP/state/tag" ] \
   || { echo "test-publisher: wrong-source validation wrote a tag" >&2; exit 1; }
 if env "${common_env[@]}" FAKE_GH_FAIL_CREATE_ONCE=1 \
-  "$PUBLISHER" publish "$TAG" x86_64 "$COMMIT" "$BUNDLE" "$SOURCE_REF" >/dev/null 2>&1; then
+  "$PUBLISHER" publish "$TAG" "$ARCH" "$COMMIT" "$BUNDLE" "$SOURCE_REF" >/dev/null 2>&1; then
   echo "test-publisher: interrupted draft creation unexpectedly succeeded" >&2
   exit 1
 fi
@@ -298,7 +299,7 @@ fi
 expected_delete_count=1
 if [ "$EXPECTED_PRERELEASE" = true ]; then
   if env "${common_env[@]}" FAKE_STABLE_EXISTS=1 \
-    "$PUBLISHER" publish "$TAG" x86_64 "$COMMIT" "$BUNDLE" "$SOURCE_REF" \
+    "$PUBLISHER" publish "$TAG" "$ARCH" "$COMMIT" "$BUNDLE" "$SOURCE_REF" \
     >/dev/null 2>&1; then
     echo "test-publisher: published a Preview after its Stable line closed" >&2
     exit 1
@@ -308,7 +309,7 @@ if [ "$EXPECTED_PRERELEASE" = true ]; then
   expected_delete_count=2
 fi
 env "${common_env[@]}" "$PUBLISHER" publish \
-  "$TAG" x86_64 "$COMMIT" "$BUNDLE" "$SOURCE_REF"
+  "$TAG" "$ARCH" "$COMMIT" "$BUNDLE" "$SOURCE_REF"
 env "${common_env[@]}" "$PUBLISHER" reconcile
 [ "$(cat "$TMP/state/delete-count")" = "$expected_delete_count" ] \
   || { echo "test-publisher: retry did not replace the stale draft" >&2; exit 1; }
@@ -356,7 +357,7 @@ else
   [ "$binding_lines" -eq 0 ] \
     || { echo "test-publisher: Stable release contains a Preview binding" >&2; exit 1; }
 fi
-if env "${common_env[@]}" "$PUBLISHER" check "$TAG" x86_64 >/dev/null 2>&1; then
+if env "${common_env[@]}" "$PUBLISHER" check "$TAG" "$ARCH" >/dev/null 2>&1; then
   echo "test-publisher: preflight accepted an already published release" >&2
   exit 1
 fi

@@ -49,6 +49,7 @@ make build                      # bin/<arch>/connector-ctl;纯 Go 控制面
 make build TARGET_ARCH=aarch64  # 交叉编译;接受 amd64/arm64 别名
 make generate                   # 修改 bpf/*.c 后重新生成对象;需要 Clang/LLVM
 make test                       # 单元测试
+make test-source-checks          # race、真实 pinned-BPF 统计和 vet；需要 sudo
 sudo make test-e2e              # 特权网络 owner suite
 ```
 
