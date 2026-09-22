@@ -132,6 +132,7 @@ jobs:
           set -euo pipefail
           # Child go commands must use the compiler already selected for this module.
           selected_go_root=$(go env GOROOT)
+          export GOROOT="$selected_go_root"
           export PATH="$selected_go_root/bin:$PATH"
           if [ "$TARGET_ARCH" = x86_64 ]; then make test; make vet; fi
           make build
