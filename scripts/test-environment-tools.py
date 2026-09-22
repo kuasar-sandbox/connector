@@ -112,8 +112,9 @@ class ReleaseGoHandoff(unittest.TestCase):
             root = Path(directory)
             tools = root / "launcher"
             selected = root / "selected compiler" / "bin"
+            stale = root / "stale inherited root"
             module = root / "module"
-            for path in (tools, selected, module):
+            for path in (tools, selected, stale, module):
                 path.mkdir(parents=True)
             scripts = {
                 tools / "taskset": "#!/bin/sh\nexit 0\n",
@@ -135,7 +136,7 @@ printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >>
             for path, source in scripts.items():
                 path.write_text(source)
                 path.chmod(0o755)
-            for inherited_goroot in (None, str(root / "stale inherited root")):
+            for inherited_goroot in (None, str(stale)):
                 for policy in (None, "local", "auto", "go1.99.1+path"):
                     for resolve_exit in (0, 73):
                         observed = root / "observed"
