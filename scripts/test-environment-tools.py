@@ -135,31 +135,36 @@ printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >>
             for path, source in scripts.items():
                 path.write_text(source)
                 path.chmod(0o755)
-            for policy in (None, "local", "auto", "go1.99.1+path"):
-                for resolve_exit in (0, 73):
-                    observed = root / "observed"
-                    observed.unlink(missing_ok=True)
-                    env = dict(os.environ, PATH=str(tools), TARGET_ARCH="x86_64",
-                               KUASAR_BUILD_CPUS="0", EXPECTED_MODULE=str(module),
-                               SELECTED_ROOT=str(selected.parent), OBSERVED=str(observed),
-                               GOENV=str(root / "environment-owned-config"),
-                               GO_RESOLVE_EXIT=str(resolve_exit))
-                    env.pop("GOROOT", None)
-                    if policy is None:
-                        env.pop("GOTOOLCHAIN", None)
-                    else:
-                        env["GOTOOLCHAIN"] = policy
-                    with self.subTest(policy=policy, resolve_exit=resolve_exit):
-                        result = subprocess.run([shutil.which("bash"), "-e", "-c", "\n".join(command)],
-                                                cwd=module, env=env, text=True,
-                                                capture_output=True, timeout=10)
-                        self.assertEqual(result.returncode, resolve_exit, result.stderr)
-                        if resolve_exit:
-                            self.assertFalse(observed.exists())
+            for inherited_goroot in (None, str(root / "stale inherited root")):
+                for policy in (None, "local", "auto", "go1.99.1+path"):
+                    for resolve_exit in (0, 73):
+                        observed = root / "observed"
+                        observed.unlink(missing_ok=True)
+                        env = dict(os.environ, PATH=str(tools), TARGET_ARCH="x86_64",
+                                   KUASAR_BUILD_CPUS="0", EXPECTED_MODULE=str(module),
+                                   SELECTED_ROOT=str(selected.parent), OBSERVED=str(observed),
+                                   GOENV=str(root / "environment-owned-config"),
+                                   GO_RESOLVE_EXIT=str(resolve_exit))
+                        if inherited_goroot is None:
+                            env.pop("GOROOT", None)
                         else:
-                            self.assertEqual(observed.read_text().splitlines(), [
-                                target + "|" + (policy or "unset") + "|unset|" + env["GOENV"]
-                                for target in ("test", "vet", "build")])
+                            env["GOROOT"] = inherited_goroot
+                        if policy is None:
+                            env.pop("GOTOOLCHAIN", None)
+                        else:
+                            env["GOTOOLCHAIN"] = policy
+                        with self.subTest(goroot=inherited_goroot, policy=policy, resolve_exit=resolve_exit):
+                            result = subprocess.run([shutil.which("bash"), "-e", "-c", "\n".join(command)],
+                                                    cwd=module, env=env, text=True,
+                                                    capture_output=True, timeout=10)
+                            self.assertEqual(result.returncode, resolve_exit, result.stderr)
+                            if resolve_exit:
+                                self.assertFalse(observed.exists())
+                            else:
+                                self.assertEqual(observed.read_text().splitlines(), [
+                                    target + "|" + (policy or "unset") + "|" + str(selected.parent)
+                                    + "|" + env["GOENV"]
+                                    for target in ("test", "vet", "build")])
 
 
 if __name__ == "__main__":
