@@ -20,8 +20,7 @@ require_command python3
 require_binary connector-ctl
 SWITCH_BIN="$BIN/connector-ctl vswitch"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/../lib/connector/notify_helpers.sh"
+source "$E2E_LIB/connector/notify_helpers.sh"
 
 
 PASS=0
