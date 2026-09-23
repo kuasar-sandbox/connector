@@ -108,58 +108,92 @@ class ReleaseGoHandoff(unittest.TestCase):
                 self.assertEqual(line.strip(), "working-directory: src/connector")
                 break
             command.append(line[len(prefix):])
+
+        real_go = shutil.which("go")
+        self.assertIsNotNone(real_go, "release validation requires the environment Go launcher")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            tools = root / "launcher"
-            selected = root / "selected compiler" / "bin"
+            tools = root / "environment tools"
+            stale = root / "stale inherited root"
             module = root / "module"
-            for path in (tools, selected, module):
+            for path in (tools, stale, module):
                 path.mkdir(parents=True)
+            (tools / "go").symlink_to(real_go)
             scripts = {
                 tools / "taskset": "#!/bin/sh\nexit 0\n",
-                tools / "go": '''#!/bin/sh
-[ "$PWD" = "$EXPECTED_MODULE" ] || exit 62
-[ "$*" = "env GOROOT" ] || { echo 'go: no such tool "covdata"' >&2; exit 1; }
-[ "$GO_RESOLVE_EXIT" = 0 ] || exit "$GO_RESOLVE_EXIT"
-printf '%s\n' "$SELECTED_ROOT"
-''',
-                selected / "go": '''#!/bin/sh
-[ "$*" = "tool covdata" ] || exit 63
-''',
                 tools / "make": '''#!/bin/sh
 set -e
-go tool covdata
+[ "$(go env GOROOT)" = "$GOROOT" ] || exit 64
+go tool compile -V=full >/dev/null
 printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >> "$OBSERVED"
 ''',
             }
             for path, source in scripts.items():
                 path.write_text(source)
                 path.chmod(0o755)
-            for policy in (None, "local", "auto", "go1.99.1+path"):
-                for resolve_exit in (0, 73):
+            (module / "go.mod").write_text("module example.com/releasehandoff\n\ngo 1.20\n")
+            goenv = root / "environment-owned-config"
+            goenv.write_text("")
+            path = str(tools) + os.pathsep + os.environ.get("PATH", "")
+
+            for inherited_goroot in (None, str(stale)):
+                for policy in (None, "local", "auto"):
                     observed = root / "observed"
                     observed.unlink(missing_ok=True)
-                    env = dict(os.environ, PATH=str(tools), TARGET_ARCH="x86_64",
-                               KUASAR_BUILD_CPUS="0", EXPECTED_MODULE=str(module),
-                               SELECTED_ROOT=str(selected.parent), OBSERVED=str(observed),
-                               GOENV=str(root / "environment-owned-config"),
-                               GO_RESOLVE_EXIT=str(resolve_exit))
-                    env.pop("GOROOT", None)
+                    github_env = root / "github-env"
+                    github_path = root / "github-path"
+                    github_env.unlink(missing_ok=True)
+                    github_path.unlink(missing_ok=True)
+                    env = dict(os.environ, PATH=path, TARGET_ARCH="x86_64",
+                               KUASAR_BUILD_CPUS="0", OBSERVED=str(observed),
+                               GOENV=str(goenv), GITHUB_ENV=str(github_env),
+                               GITHUB_PATH=str(github_path))
+                    if inherited_goroot is None:
+                        env.pop("GOROOT", None)
+                    else:
+                        env["GOROOT"] = inherited_goroot
                     if policy is None:
                         env.pop("GOTOOLCHAIN", None)
                     else:
                         env["GOTOOLCHAIN"] = policy
-                    with self.subTest(policy=policy, resolve_exit=resolve_exit):
+                    probe_env = dict(env)
+                    probe_env.pop("GOROOT", None)
+                    expected = subprocess.run([real_go, "env", "GOROOT"], cwd=module,
+                                              env=probe_env, text=True, capture_output=True,
+                                              timeout=10, check=True).stdout.strip()
+                    with self.subTest(goroot=inherited_goroot, policy=policy):
                         result = subprocess.run([shutil.which("bash"), "-e", "-c", "\n".join(command)],
                                                 cwd=module, env=env, text=True,
                                                 capture_output=True, timeout=10)
-                        self.assertEqual(result.returncode, resolve_exit, result.stderr)
-                        if resolve_exit:
-                            self.assertFalse(observed.exists())
-                        else:
-                            self.assertEqual(observed.read_text().splitlines(), [
-                                target + "|" + (policy or "unset") + "|unset|" + env["GOENV"]
-                                for target in ("test", "vet", "build")])
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(observed.read_text().splitlines(), [
+                            target + "|" + (policy or "unset") + "|" + expected
+                            + "|" + str(goenv)
+                            for target in ("test", "vet", "build")])
+                        self.assertEqual(github_env.read_text().splitlines(),
+                                         ["GOROOT=" + expected])
+                        self.assertEqual(github_path.read_text().splitlines(),
+                                         [expected + "/bin"])
+
+            observed = root / "observed"
+            observed.unlink(missing_ok=True)
+            github_env = root / "github-env"
+            github_path = root / "github-path"
+            github_env.unlink(missing_ok=True)
+            github_path.unlink(missing_ok=True)
+            env = dict(os.environ, PATH=path, TARGET_ARCH="x86_64",
+                       KUASAR_BUILD_CPUS="0", OBSERVED=str(observed),
+                       GOENV=str(goenv), GOROOT=str(stale),
+                       GOTOOLCHAIN="go9.99.9+path", GITHUB_ENV=str(github_env),
+                       GITHUB_PATH=str(github_path))
+            result = subprocess.run([shutil.which("bash"), "-e", "-c", "\n".join(command)],
+                                    cwd=module, env=env, text=True,
+                                    capture_output=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(observed.exists())
+            self.assertFalse(github_env.exists())
+            self.assertFalse(github_path.exists())
+
 
 
 if __name__ == "__main__":
