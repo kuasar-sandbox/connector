@@ -218,12 +218,36 @@ if grep -R -Fq 'queue: max' "$ROOT/.github/workflows"; then
   fail "workflows use the unsupported concurrency queue key"
 fi
 
-for entrypoint in test/e2e/run_all.sh test/e2e/geneve_eth_test.sh \
-  test/e2e/geneve_ip_test.sh test/e2e/mgmt_isolation_test.sh \
-  test/e2e/provision_test.sh test/e2e/tap_test.sh \
-  examples/perf_bench.sh examples/start_perf_bench.sh; do
+expected_cases=(
+  test/e2e/cases/network.geneve-ethernet.sh
+  test/e2e/cases/network.geneve-ip.sh
+  test/e2e/cases/network.management.sh
+  test/e2e/cases/network.provision.sh
+  test/e2e/cases/network.tap.sh
+  test/e2e/cases/network.vswitch-cleanup.sh
+)
+mapfile -t actual_cases < <(git -C "$ROOT" ls-files -- 'test/e2e/cases/network.*.sh' | sort)
+mapfile -t sorted_expected_cases < <(printf '%s\n' "${expected_cases[@]}" | sort)
+[ "${#actual_cases[@]}" -eq "${#sorted_expected_cases[@]}" ] \
+  || fail "unexpected number of connector network E2E cases"
+for i in "${!sorted_expected_cases[@]}"; do
+  [ "${actual_cases[$i]}" = "${sorted_expected_cases[$i]}" ] \
+    || fail "connector network E2E case set differs from the six platform cases"
+done
+for case_path in "${expected_cases[@]}"; do
+  [ "$(git -C "$ROOT" ls-files -s -- "$case_path" | awk '{print $1}')" = 100644 ] \
+    || fail "$case_path must be a non-executable platform case file (100644)"
+done
+for entrypoint in examples/perf_bench.sh examples/start_perf_bench.sh; do
   [ "$(git -C "$ROOT" ls-files -s -- "$entrypoint" | awk '{print $1}')" = 100755 ] \
     || fail "$entrypoint is not executable in the Git index"
+done
+for retired in test/e2e/run_all.sh test/e2e/geneve_eth_test.sh \
+  test/e2e/geneve_ip_test.sh test/e2e/mgmt_isolation_test.sh \
+  test/e2e/provision_test.sh test/e2e/tap_test.sh; do
+  if git -C "$ROOT" ls-files --error-unmatch -- "$retired" >/dev/null 2>&1; then
+    fail "$retired is retired and must not remain in the source tree"
+  fi
 done
 
 mkdir -p "$TMP/bin" "$TMP/src"
