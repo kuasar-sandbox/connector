@@ -140,9 +140,14 @@ printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >>
                 for policy in (None, "local", "auto"):
                     observed = root / "observed"
                     observed.unlink(missing_ok=True)
+                    github_env = root / "github-env"
+                    github_path = root / "github-path"
+                    github_env.unlink(missing_ok=True)
+                    github_path.unlink(missing_ok=True)
                     env = dict(os.environ, PATH=path, TARGET_ARCH="x86_64",
                                KUASAR_BUILD_CPUS="0", OBSERVED=str(observed),
-                               GOENV=str(goenv))
+                               GOENV=str(goenv), GITHUB_ENV=str(github_env),
+                               GITHUB_PATH=str(github_path))
                     if inherited_goroot is None:
                         env.pop("GOROOT", None)
                     else:
@@ -165,18 +170,29 @@ printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >>
                             target + "|" + (policy or "unset") + "|" + expected
                             + "|" + str(goenv)
                             for target in ("test", "vet", "build")])
+                        self.assertEqual(github_env.read_text().splitlines(),
+                                         ["GOROOT=" + expected])
+                        self.assertEqual(github_path.read_text().splitlines(),
+                                         [expected + "/bin"])
 
             observed = root / "observed"
             observed.unlink(missing_ok=True)
+            github_env = root / "github-env"
+            github_path = root / "github-path"
+            github_env.unlink(missing_ok=True)
+            github_path.unlink(missing_ok=True)
             env = dict(os.environ, PATH=path, TARGET_ARCH="x86_64",
                        KUASAR_BUILD_CPUS="0", OBSERVED=str(observed),
                        GOENV=str(goenv), GOROOT=str(stale),
-                       GOTOOLCHAIN="go9.99.9+path")
+                       GOTOOLCHAIN="go9.99.9+path", GITHUB_ENV=str(github_env),
+                       GITHUB_PATH=str(github_path))
             result = subprocess.run([shutil.which("bash"), "-e", "-c", "\n".join(command)],
                                     cwd=module, env=env, text=True,
                                     capture_output=True, timeout=10)
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(observed.exists())
+            self.assertFalse(github_env.exists())
+            self.assertFalse(github_path.exists())
 
 
 
