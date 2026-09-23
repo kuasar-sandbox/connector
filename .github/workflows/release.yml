@@ -134,6 +134,8 @@ jobs:
           selected_go_root=$(env -u GOROOT go env GOROOT)
           export GOROOT="$selected_go_root"
           export PATH="$selected_go_root/bin:$PATH"
+          printf 'GOROOT=%s\n' "$selected_go_root" >> "$GITHUB_ENV"
+          printf '%s/bin\n' "$selected_go_root" >> "$GITHUB_PATH"
           if [ "$TARGET_ARCH" = x86_64 ]; then make test; make vet; fi
           make build
         working-directory: src/connector
