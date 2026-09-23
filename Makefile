@@ -163,7 +163,7 @@ lint:
 
 # Regenerate bpf/vmlinux.h from the running kernel's BTF (requires bpftool).
 vmlinux:
-	@echo "==> Generating bpf/vmlinux.h from running kernel..."
+	@echo "==> Generating bpf/vmlinux.h..."
 	bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
 
 help:
