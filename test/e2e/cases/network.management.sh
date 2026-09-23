@@ -23,12 +23,6 @@
 # without the reverse rewrite, the SYN-ACK source would not match the sandbox's
 # connection tuple and the handshake would be RST. The loopback backend requires
 # route_localnet=1 on the mgmt device, which this test sets (the tool does not).
-#
-# Usage:
-#   sudo bash tests/mgmt_isolation_test.sh setup
-#   sudo bash tests/mgmt_isolation_test.sh test
-#   sudo bash tests/mgmt_isolation_test.sh teardown
-#   sudo bash tests/mgmt_isolation_test.sh all    # setup + test + teardown
 
 set -euo pipefail
 
@@ -37,8 +31,8 @@ require_root
 require_command ip
 require_command python3
 require_binary connector-ctl
+[ -r "${E2E_LIB}/connector/stats_management.py" ] || e2e_fail "missing prepared connector helper: stats_management.py"
 SWITCH_BIN="$BIN/connector-ctl vswitch"
-
 
 PASS=0
 FAIL=0
@@ -66,7 +60,7 @@ SVC_VIP="${MGMT_IP}"
 SVC_VPORT="80"
 SVC_TARGET="127.0.0.1"
 SVC_TARGET_PORT="18080"
-SVC_MGMT_DEV="eth0"               # mgmt-side peer in mgmt_ns (from --mgmt-extract=mgmt_ns:eth0:...)
+SVC_MGMT_DEV="eth0"
 SVC_PIDFILE="/tmp/mgmt_svc_test_server.pid"
 
 setup() {
@@ -126,15 +120,11 @@ setup() {
     ip netns exec mgmt_ns ip addr replace "${MGMT_IP}/32" dev "${SVC_MGMT_DEV}"
 
     echo "==> Enabling route_localnet for loopback --mgmt-service backend..."
-    # Required so the mgmt netns accepts the DNAT'd packet (dst=127.0.0.1) on a
-    # non-lo device and lets the reply (src=127.0.0.1) leave it. The vswitch tool
-    # deliberately does not touch this sysctl; deployment (here, the test) does.
     ip netns exec mgmt_ns sysctl -qw "net.ipv4.conf.${SVC_MGMT_DEV}.route_localnet=1"
     ip netns exec mgmt_ns sysctl -qw "net.ipv4.conf.all.route_localnet=1"
 
     echo "==> Starting --mgmt-service backend (${SVC_TARGET}:${SVC_TARGET_PORT} in mgmt_ns)..."
-    if command -v python3 &>/dev/null; then
-        ip netns exec mgmt_ns python3 -c '
+    ip netns exec mgmt_ns python3 -c '
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -147,15 +137,8 @@ while True:
     finally:
         c.close()
 ' &
-        echo $! > "${SVC_PIDFILE}"
-        # Give the listener a moment to bind.
-        sleep 0.5
-    else
-        if [ "${REQUIRE_CONNECTOR_E2E:-0}" = "1" ]; then
-            fail "python3 not found — service NAT backend is required"
-        fi
-        echo "    python3 not found — service NAT backend skipped (test 7 will SKIP)"
-    fi
+    echo $! > "${SVC_PIDFILE}"
+    sleep 0.5
 
     echo ""
     echo "==> Setup complete."
@@ -168,16 +151,13 @@ run_tests() {
     echo "========================================="
     echo ""
 
-    # Before other traffic, compare distinct UDP payload sizes with both
-    # sandbox-view counters at the existing service management observation.
-    if python3 "$(dirname "${BASH_SOURCE[0]}")/stats_management.py" \
+    if python3 "${E2E_LIB}/connector/stats_management.py" \
         "$SWITCH_BIN" "$SW_NAME" "$SVC_VIP" "$SVC_VPORT" "$SVC_TARGET" "$SVC_TARGET_PORT"; then
         pass "management stats preserve sandbox RX/TX direction and exact frame bytes"
     else
         fail "management stats direction or byte observation mismatch"
     fi
 
-    # --- Test 1: sandbox1 -> mgmt service ---
     echo "[1/7] sandbox1 -> mgmt service (${MGMT_IP})"
     if ip netns exec sandbox1 ping -c 2 -W 2 ${MGMT_IP} &>/dev/null; then
         pass "sandbox1 can reach mgmt service"
@@ -185,7 +165,6 @@ run_tests() {
         fail "sandbox1 cannot reach mgmt service"
     fi
 
-    # --- Test 2: sandbox2 -> mgmt service ---
     echo "[2/7] sandbox2 -> mgmt service (${MGMT_IP})"
     if ip netns exec sandbox2 ping -c 2 -W 2 ${MGMT_IP} &>/dev/null; then
         pass "sandbox2 can reach mgmt service"
@@ -193,7 +172,6 @@ run_tests() {
         fail "sandbox2 cannot reach mgmt service"
     fi
 
-    # --- Test 3: mgmt service -> sandbox1 via floating IP ---
     echo "[3/7] mgmt service -> sandbox1 (100.100.96.0)"
     if ip netns exec mgmt_ns ping -c 2 -W 2 100.100.96.0 &>/dev/null; then
         pass "mgmt service can reach sandbox1 via floating IP"
@@ -201,7 +179,6 @@ run_tests() {
         fail "mgmt service cannot reach sandbox1 via floating IP"
     fi
 
-    # --- Test 4: mgmt service -> sandbox2 via floating IP ---
     echo "[4/7] mgmt service -> sandbox2 (100.100.96.1)"
     if ip netns exec mgmt_ns ping -c 2 -W 2 100.100.96.1 &>/dev/null; then
         pass "mgmt service can reach sandbox2 via floating IP"
@@ -209,7 +186,6 @@ run_tests() {
         fail "mgmt service cannot reach sandbox2 via floating IP"
     fi
 
-    # --- Test 5: sandbox1 -> sandbox2 inner IP (must fail) ---
     echo "[5/7] sandbox1 -> sandbox2 inner IP (169.254.1.1) [expect blocked]"
     if ip netns exec sandbox1 ping -c 2 -W 2 169.254.1.1 &>/dev/null; then
         fail "sandbox1 can reach sandbox2 inner IP (isolation broken!)"
@@ -217,7 +193,6 @@ run_tests() {
         pass "sandbox1 cannot reach sandbox2 (isolation OK)"
     fi
 
-    # --- Test 6: sandbox1 -> sandbox2 floating IP (must fail) ---
     echo "[6/7] sandbox1 -> sandbox2 floating IP (100.100.96.1) [expect blocked]"
     if ip netns exec sandbox1 ping -c 2 -W 2 100.100.96.1 &>/dev/null; then
         fail "sandbox1 can reach sandbox2 floating IP (isolation broken!)"
@@ -225,33 +200,23 @@ run_tests() {
         pass "sandbox1 cannot reach sandbox2 floating IP (isolation OK)"
     fi
 
-    # --- Test 7: sandbox1 -> VIP:vport (--mgmt-service) ---
     echo "[7/7] sandbox1 -> ${SVC_VIP}:${SVC_VPORT} (--mgmt-service -> ${SVC_TARGET}:${SVC_TARGET_PORT})"
-    if ! command -v python3 &>/dev/null; then
-        if [ "${REQUIRE_CONNECTOR_E2E:-0}" = "1" ]; then
-            fail "python3 unavailable, cannot run service NAT backend"
-        fi
-        echo "  SKIP: python3 unavailable, cannot run service NAT backend"
-    elif ip netns exec sandbox1 timeout -k 2s 5 bash -c '
+    if ip netns exec sandbox1 timeout -k 2s 5 bash -c '
         exec 3<>/dev/tcp/'"${SVC_VIP}"'/'"${SVC_VPORT}"' || exit 1
         read -t 3 resp <&3
         [ "$resp" = "OK" ]
     ' &>/dev/null; then
-        # A completed TCP handshake + payload proves forward DNAT AND reverse SNAT
-        # (the SYN-ACK source was rewritten back to VIP:vport, else it would RST).
         pass "sandbox1 reached backend via service VIP (fwd DNAT + reverse SNAT OK)"
     else
         fail "sandbox1 could not reach backend via service VIP:${SVC_VPORT}"
     fi
 
-    # --- Port stats ---
     echo ""
     echo "========================================="
     echo "  Port Stats"
     echo "========================================="
     ${SWITCH_BIN} stats ${SW_NAME}
 
-    # --- Summary ---
     echo ""
     echo "========================================="
     echo "  Results: ${PASS} passed, ${FAIL} failed"
