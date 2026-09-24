@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=notify_helpers.sh
-source "$SCRIPT_DIR/notify_helpers.sh"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HELPERS="$ROOT/test/e2e/lib/notify_helpers.sh"
+# shellcheck source=../test/e2e/lib/notify_helpers.sh
+source "$HELPERS"
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/connector-notify-test.XXXXXX")
 receiver_pid=""
@@ -90,7 +91,7 @@ trap 'stop_owned_process "$owned_pid"; exit 130' INT
 trap 'stop_owned_process "$owned_pid"; exit 143' TERM
 while :; do sleep 1; done
 SH
-python3 - "$tmp_dir/signal-fixture.sh" "$SCRIPT_DIR/notify_helpers.sh" "$tmp_dir" <<'PY'
+python3 - "$tmp_dir/signal-fixture.sh" "$HELPERS" "$tmp_dir" <<'PY'
 import os
 import signal
 import subprocess
@@ -154,4 +155,4 @@ if stop_owned_process "$receiver_pid"; then echo 'expected forced-shutdown failu
 if kill -0 "$receiver_pid" 2>/dev/null; then exit 1; fi
 receiver_pid=""
 
-echo "notify helper tests: PASS"
+echo "notify helper source regression: PASS"

@@ -13,17 +13,15 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=notify_helpers.sh
-source "$SCRIPT_DIR/notify_helpers.sh"
+source "${E2E_LIB:?E2E_LIB is required}/common.sh"
+require_root
+require_command ip
+require_command python3
+require_binary connector-ctl
+SWITCH_BIN="$BIN/connector-ctl vswitch"
 
-if [ -n "${SWITCH_BIN:-}" ]; then
-    : # Use environment variable
-elif [ -x "bin/connector-ctl" ]; then
-    SWITCH_BIN="bin/connector-ctl vswitch"
-else
-    SWITCH_BIN="/usr/sbin/connector-ctl vswitch"
-fi
+source "$E2E_LIB/connector/notify_helpers.sh"
+
 
 PASS=0
 FAIL=0
@@ -801,17 +799,6 @@ run_tests() {
     echo ""
 }
 
-case "${1:-}" in
-    setup)    setup ;;
-    test)     run_tests ;;
-    teardown) teardown ;;
-    all)
-        trap teardown EXIT
-        setup
-        run_tests
-        ;;
-    *)
-        echo "Usage: $0 {setup|test|teardown|all}"
-        exit 1
-        ;;
-esac
+trap teardown EXIT
+setup
+run_tests

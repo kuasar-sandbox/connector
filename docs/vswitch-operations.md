@@ -22,12 +22,22 @@ make release VERSION=vX.Y.Z     # Package and validate build/release-bundle
 make generate                   # Regenerate changed BPF source; clang 12+ (prebuilt .o files are tracked)
 make test                       # Unit tests
 sudo make test-integration      # Integration: root and a BPF-capable kernel
-sudo make test-e2e              # test/e2e/run_all.sh
 sudo make bench                 # Benchmarks: root and iperf3
 make lint                       # go vet
 make fmt                        # Go formatting and clang-format
 make vmlinux                    # Regenerate bpf/vmlinux.h; requires bpftool
 ```
+
+Product E2E is separate from these source/build targets. Use a prebuilt platform tree containing the matching connector cases and common runner, then prepare a new workspace and run the network suite:
+
+```bash
+PLATFORM=/path/to/prebuilt-platform
+WORKDIR=/path/to/new-network-workspace
+python3 "$PLATFORM/test/e2e/e2e" prepare --release-dir "$PLATFORM" --workdir "$WORKDIR"
+sudo python3 "$WORKDIR/test/e2e/e2e" run --workdir "$WORKDIR" --suite network
+```
+
+CI uses this same platform runner. It executes the selected cases with prebuilt products, without compiling Go code or invoking a component-owned runner. Run only in an isolated test environment with the prerequisites required by every selected case; missing selected prerequisites are failures, not successful skips.
 
 ### 1.3 systemd integration
 

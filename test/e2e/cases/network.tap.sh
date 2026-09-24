@@ -28,13 +28,13 @@
 
 set -euo pipefail
 
-if [ -n "${SWITCH_BIN:-}" ]; then
-    :
-elif [ -x "bin/connector-ctl" ]; then
-    SWITCH_BIN="bin/connector-ctl vswitch"
-else
-    SWITCH_BIN="/usr/sbin/connector-ctl vswitch"
-fi
+source "${E2E_LIB:?E2E_LIB is required}/common.sh"
+require_root
+require_command ip
+require_command python3
+require_binary connector-ctl
+SWITCH_BIN="$BIN/connector-ctl vswitch"
+
 
 PASS=0
 FAIL=0
@@ -598,19 +598,6 @@ run_tests() {
     [ "$FAIL" -eq 0 ]
 }
 
-case "${1:-all}" in
-    setup)    setup ;;
-    test)     run_tests ;;
-    teardown) teardown ;;
-    all)
-        setup
-        run_tests
-        rc=$?
-        teardown
-        exit $rc
-        ;;
-    *)
-        echo "Usage: $0 {setup|test|teardown|all}"
-        exit 1
-        ;;
-esac
+trap teardown EXIT
+setup
+run_tests

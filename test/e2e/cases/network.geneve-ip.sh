@@ -32,13 +32,20 @@
 
 set -euo pipefail
 
-if [ -n "${SWITCH_BIN:-}" ]; then
-    : # Use environment variable
-elif [ -x "bin/connector-ctl" ]; then
-    SWITCH_BIN="bin/connector-ctl vswitch"
-else
-    SWITCH_BIN="/usr/sbin/connector-ctl vswitch"
+source "${E2E_LIB:?E2E_LIB is required}/common.sh"
+require_root
+require_command ip
+require_command python3
+require_binary connector-ctl
+SWITCH_BIN="$BIN/connector-ctl vswitch"
+if [ -z "${E2E_GENEVE_LOCATOR:-}" ]; then
+    for locator in port vni tlv; do
+        echo "==> locator=$locator"
+        E2E_GENEVE_LOCATOR="$locator" bash "$0"
+    done
+    exit 0
 fi
+
 
 PASS=0
 FAIL=0
@@ -58,7 +65,7 @@ fail() {
 TRANSIT_IP_A="10.0.0.1"
 TRANSIT_IP_B="10.0.0.2"
 GENEVE_PORT_BASE=50000
-GENEVE_LOCATOR="${2:-${GENEVE_LOCATOR:-port}}"
+GENEVE_LOCATOR="${E2E_GENEVE_LOCATOR:?internal locator is required}"
 GENEVE_TLV_LOCATOR="0102:81"
 
 case "$GENEVE_LOCATOR" in
@@ -250,17 +257,6 @@ teardown() {
     echo "==> Teardown complete."
 }
 
-case "${1:-}" in
-    setup)    setup ;;
-    test)     run_tests ;;
-    teardown) teardown ;;
-    all)
-        trap teardown EXIT
-        setup
-        run_tests
-        ;;
-    *)
-        echo "Usage: $0 {setup|test|teardown|all}"
-        exit 1
-        ;;
-esac
+trap teardown EXIT
+setup
+run_tests

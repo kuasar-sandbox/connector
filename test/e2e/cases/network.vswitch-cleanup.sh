@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Real regression: missing switch netns must not turn stale indices into host deletes.
 set -euo pipefail
+source "${E2E_LIB:?E2E_LIB is required}/common.sh"
+require_root
+require_command unshare
+require_command ip
+require_command python3
+require_binary connector-ctl
 if [ "${1:-}" != --isolated ]; then
     : "${BIN:?BIN must point to the assembled platform binaries}"
     binary="$(realpath "$BIN/connector-ctl")"

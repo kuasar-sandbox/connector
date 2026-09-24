@@ -56,8 +56,6 @@ s.close()
         )
         assert server.wait(timeout=5) == 0, "UDP service failed"
         after = stats()
-        # These IPv4 UDP frames include Ethernet + IPv4 + UDP (14 + 20 + 8).
-        # Distinct payload lengths prove sandbox TX/RX direction independently.
         expected = {"mgmt_tx_packets": 1, "mgmt_tx_bytes": 1243,
                     "mgmt_rx_packets": 1, "mgmt_rx_bytes": 179,
                     "transit_tx_packets": 0, "transit_tx_bytes": 0,
