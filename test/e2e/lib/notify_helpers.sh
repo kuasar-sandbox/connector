@@ -43,21 +43,20 @@ PY
     NOTIFY_RECEIVER_PID=$!
 }
 
-# Wait at most timeout seconds for the post-bind marker, failing immediately if
-# the receiver exits (for example because bind failed). EPOCHREALTIME avoids the
-# integer-SECONDS truncation that can shorten a nominal timeout by almost 1s.
+# Wait for at least timeout seconds for the post-bind marker, failing immediately
+# if the receiver exits (for example because bind failed). Bash SECONDS is
+# integer-valued, so the extra second prevents truncation from shortening the
+# requested timeout while keeping the wait strictly bounded and Bash-4 compatible.
 wait_notify_receiver_ready() {
     local ready_path="$1" receiver_pid="$2" timeout="${3:-5}"
-    local started="${EPOCHREALTIME/./}" now deadline
-    deadline=$((10#$started + timeout * 1000000))
+    local deadline=$((SECONDS + timeout + 1))
 
     while [ ! -e "$ready_path" ]; do
         if ! kill -0 "$receiver_pid" 2>/dev/null; then
             wait "$receiver_pid" 2>/dev/null || true
             return 1
         fi
-        now="${EPOCHREALTIME/./}"
-        if ((10#$now >= deadline)); then
+        if ((SECONDS >= deadline)); then
             return 1
         fi
         sleep 0.05
