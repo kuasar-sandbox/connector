@@ -23,12 +23,22 @@ make release VERSION=vX.Y.Z     # 打包并校验 build/release-bundle
 make generate                   # 仅修改 bpf/*.c 时需要(clang 12+);仓库自带预生成 .o
 make test                       # 单元测试
 sudo make test-integration      # 集成测试(root + BPF 内核)
-sudo make test-e2e              # 端到端(test/e2e/run_all.sh)
 sudo make bench                 # 性能基准(root + iperf3)
 make lint                       # go vet
 make fmt                        # Go formatting 与 clang-format
 make vmlinux                    # 重新生成 bpf/vmlinux.h(需 bpftool)
 ```
+
+产品 E2E 与以上源码/构建目标分开。使用包含匹配 connector case 和平台公共 runner 的预构建平台目录，先准备新工作区，再运行 network suite：
+
+```bash
+PLATFORM=/path/to/prebuilt-platform
+WORKDIR=/path/to/new-network-workspace
+python3 "$PLATFORM/test/e2e/e2e" prepare --release-dir "$PLATFORM" --workdir "$WORKDIR"
+sudo python3 "$WORKDIR/test/e2e/e2e" run --workdir "$WORKDIR" --suite network
+```
+
+CI 使用同一个平台 runner，只消费预构建产品执行所选 case，不编译 Go 代码，也不调用组件自有 runner。仅在隔离测试环境运行，并满足每个已选 case 的前置条件；缺少条件属于失败，不是成功跳过。
 
 ### 1.3 systemd 集成
 

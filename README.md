@@ -50,8 +50,9 @@ make build TARGET_ARCH=aarch64  # cross-compile; amd64/arm64 aliases are accepte
 make generate                   # regenerate BPF objects after changing bpf/*.c; requires Clang/LLVM
 make test                       # unit tests
 make test-source-checks          # race, real pinned-BPF stats and vet; requires sudo
-sudo make test-e2e              # privileged networking owner suite
 ```
+
+Product E2E uses the platform-owned runner: prebuilt products -> `e2e prepare` -> `e2e run --suite network`. Follow the [prepared network-suite commands](docs/vswitch-operations.md#12-build). Source checks above remain separate; product E2E does not build Go code or use a component-owned runner.
 
 Runtime requirements:
 

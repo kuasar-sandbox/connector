@@ -50,8 +50,9 @@ make build TARGET_ARCH=aarch64  # 交叉编译;接受 amd64/arm64 别名
 make generate                   # 修改 bpf/*.c 后重新生成对象;需要 Clang/LLVM
 make test                       # 单元测试
 make test-source-checks          # race、真实 pinned-BPF 统计和 vet；需要 sudo
-sudo make test-e2e              # 特权网络 owner suite
 ```
+
+产品 E2E 使用平台统一 runner：预构建产品 -> `e2e prepare` -> `e2e run --suite network`，具体命令见[已准备网络 suite 的运行方法](docs/vswitch-operations_zh.md#12-构建)。以上源码检查保持独立；产品 E2E 不编译 Go 代码，也不使用组件自有 runner。
 
 运行要求:
 
