@@ -39,6 +39,8 @@ sudo python3 "$WORKDIR/test/e2e/e2e" run --workdir "$WORKDIR" --suite network
 
 CI uses this same platform runner. It executes the selected cases with prebuilt products, without compiling Go code or invoking a component-owned runner. Run only in an isolated test environment with the prerequisites required by every selected case; missing selected prerequisites are failures, not successful skips.
 
+The network cases check for root when they start. The common runner does not elevate privileges, so retain `sudo` (or use a root shell) when selecting an individual case with `--include network.tap.sh` as well.
+
 ### 1.3 systemd integration
 
 The [dist directory](../dist/) supplies three templates:
