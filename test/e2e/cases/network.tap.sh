@@ -20,11 +20,8 @@
 #   T7. attach --open-port combined op delivers fd in one call
 #   T11. tap-mode connectivity: ARP round-trip through the handed-off vnet_hdr fd
 #
-# Usage:
-#   sudo bash test/e2e/tap_test.sh setup
-#   sudo bash test/e2e/tap_test.sh test
-#   sudo bash test/e2e/tap_test.sh teardown
-#   sudo bash test/e2e/tap_test.sh all
+# Run from the platform release after preparation:
+#   sudo test/e2e/e2e run --workdir /path/to/prepared --include network.tap.sh
 
 set -euo pipefail
 

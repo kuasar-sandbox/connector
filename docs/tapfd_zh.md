@@ -329,7 +329,7 @@ if err != nil { log.Fatal(err) }
 ```
 
 不依赖参考库时,可按 §2.4 直接基于 `recvmsg(2)` + `SCM_RIGHTS` 实现。Go 示例见
-源码树 `examples/tapfd_receiver/`;发布包中的 `tap_test.sh` 使用内嵌 Python receiver,
+源码树 `examples/tapfd_receiver/`;发布包中的 `network.tap.sh` 使用内嵌 Python receiver,
 不要求现场构建该示例。
 
 ## 9. See Also

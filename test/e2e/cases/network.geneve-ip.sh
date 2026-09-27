@@ -24,11 +24,9 @@
 #   1. sandbox1 → sandbox2 (10.1.0.2): PASS (IP-over-GENEVE)
 #   2. sandbox2 → sandbox1 (10.1.0.1): PASS (IP-over-GENEVE)
 #
-# Usage:
-#   sudo bash test/e2e/geneve_ip_test.sh setup [port|vni|tlv]
-#   sudo bash test/e2e/geneve_ip_test.sh test [port|vni|tlv]
-#   sudo bash test/e2e/geneve_ip_test.sh teardown [port|vni|tlv]
-#   sudo bash test/e2e/geneve_ip_test.sh all [port|vni|tlv]
+# Run from the platform release after preparation:
+#   sudo test/e2e/e2e run --workdir /path/to/prepared --include network.geneve-ip.sh
+# The case executes all port, vni and tlv locator variants.
 
 set -euo pipefail
 

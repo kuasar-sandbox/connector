@@ -242,7 +242,7 @@ if err != nil { log.Fatal(err) }
 // Pass tapFiles[0] to the VMM; netnsFile (possibly nil) can be used with setns(CLONE_NEWNET).
 ```
 
-Without the library, implement section 2.4 directly with `recvmsg(2)` and `SCM_RIGHTS`. The runnable Go example is in [`examples/tapfd_receiver/`](../examples/tapfd_receiver/). The release package's `tap_test.sh` embeds a Python receiver and does not require building that example on site.
+Without the library, implement section 2.4 directly with `recvmsg(2)` and `SCM_RIGHTS`. The runnable Go example is in [`examples/tapfd_receiver/`](../examples/tapfd_receiver/). The release package's `network.tap.sh` embeds a Python receiver and does not require building that example on site.
 
 ## 9. See also
 

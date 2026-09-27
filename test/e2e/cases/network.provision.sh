@@ -5,11 +5,8 @@
 #   - Group E/C/D/A: 4 ports
 #   - Group B: 16 ports (provision batch/partial/specific)
 #
-# Usage:
-#   sudo bash test/e2e/provision_test.sh setup
-#   sudo bash test/e2e/provision_test.sh test
-#   sudo bash test/e2e/provision_test.sh teardown
-#   sudo bash test/e2e/provision_test.sh all    # setup + test + teardown
+# Run from the platform release after preparation:
+#   sudo test/e2e/e2e run --workdir /path/to/prepared --include network.provision.sh
 
 set -euo pipefail
 

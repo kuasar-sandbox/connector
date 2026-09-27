@@ -651,7 +651,7 @@ GOWORK=off go test -tags=integration -exec 'sudo -n env REQUIRE_CONNECTOR_STATS=
 | --- | --- | --- | --- |
 | 单元 | `*_test.go` | 普通用户 | 纯逻辑;mock 注入 BPF/netlink |
 | 集成 | `*_integration_test.go` | root | 真实 eBPF 加载、netlink 操作;`-tags=integration -exec sudo` |
-| 端到端 | `test/e2e/*_test.sh` | root | 完整网络拓扑 + 真实包;`setup`/`test`/`teardown`/`all` 子命令 |
+| 端到端 | `test/e2e/cases/network.*.sh` | root | 完整网络拓扑 + 真实包；prepared 平台 runner 执行每个用例，由用例负责 setup 与 cleanup |
 | 基准 | `examples/perf_bench.sh`、`examples/start_perf_bench.sh` | root + iperf3 | 数据面吞吐/PPS/RTT(不同端口密度)与控制面 Start 耗时 |
 
 ### 8.2 eBPF 三层验证
@@ -661,19 +661,22 @@ GOWORK=off go test -tags=integration -exec 'sudo -n env REQUIRE_CONNECTOR_STATS=
 2. **`BPF_PROG_TEST_RUN`** — 直接执行 eBPF 程序,喂入手工构造的报文,断言返回 action
    与输出字节。`BPF_PROG_TEST_RUN` 不易设置 `skb->ingress_ifindex`,对 `tc_ingress_nx`
    经 `ifindex=0 → slot_id` 的 map 项绕过。
-3. **真实拓扑** — `test/e2e/*_test.sh` 建立完整网络拓扑,用真实 ping/iperf 验证转发。
+3. **真实拓扑** — `test/e2e/cases/network.*.sh` 建立完整网络拓扑,用真实 ping/iperf 验证转发。
 
-`TestNativeStatsRealResetReuseAndReadOnlyFailure` 使用真实 pinned locked BPF map 和独立打开的 reader,并通过内核强制只读的 FD 验证 reset 失败. `TestNativeStatsRealConcurrentOwnership` 覆盖共享读取与 attach/detach 并发. 其它同组真实内核用例覆盖读中 force cleanup/替换、owner CAS 后 SIGKILL,以及共用生产 BPF helper 的迟到 TC 写入和四路并发执行流与重置并发. `mgmt_isolation_test.sh` 还以四条真实 FloatingIP UDP 流反复 detach/attach 20 次,逐次要求通信恢复并核验非对称包数/字节数关系. 源码集成 CI 在 `REQUIRE_CONNECTOR_STATS=1`、race 和特权执行下运行这些用例;缺少能力会失败,不会把 skip 作为通过证据.
+`TestNativeStatsRealResetReuseAndReadOnlyFailure` 使用真实 pinned locked BPF map 和独立打开的 reader,并通过内核强制只读的 FD 验证 reset 失败. `TestNativeStatsRealConcurrentOwnership` 覆盖共享读取与 attach/detach 并发. 其它同组真实内核用例覆盖读中 force cleanup/替换、owner CAS 后 SIGKILL,以及共用生产 BPF helper 的迟到 TC 写入和四路并发执行流与重置并发. 源码集成 CI 在 `REQUIRE_CONNECTOR_STATS=1`、race 和特权执行下运行这些用例;缺少能力会失败,不会把 skip 作为通过证据. `network.management.sh` 还以四条真实 FloatingIP UDP 流反复 detach/attach 20 次,逐次要求通信恢复并核验非对称包数/字节数关系.
 
 ### 8.3 e2e 套件
 
-| 脚本 | 覆盖场景 |
+准备平台发布包后，在其目录中运行 `sudo test/e2e/e2e run --workdir /path/to/prepared --suite network`。每个用例负责 setup、断言及 cleanup；locator 变体在 `network.geneve-ip.sh` 内执行。
+
+| 用例文件 | 覆盖场景 |
 | --- | --- |
-| `mgmt_isolation_test.sh` | 管理平面连通、沙箱间隔离、真实 FloatingIP service NAT,以及 `stats_management.py` 的非对称 UDP 包数/字节方向断言及四流并发下的 20 次 slot 重用 |
-| `geneve_eth_test.sh` | legacy port locator 的 Ether-over-GENEVE 经 Linux gateway bridge |
-| `geneve_ip_test.sh` | IP-over-GENEVE 双 switch,由 `run_all.sh` 分别覆盖 port/vni/tlv locator、双向连通与 transit stats |
-| `provision_test.sh` | 两阶段启动 + Reserved 修复 + show |
-| `tap_test.sh` | tap 模式、open-port、`attach --open-port`、模式切换 |
+| `network.management.sh` | 管理平面连通、沙箱间隔离、真实 FloatingIP service NAT,以及 `stats_management.py` 的非对称 UDP 包数/字节方向断言及四流并发下的 20 次 slot 重用 |
+| `network.geneve-ethernet.sh` | legacy port locator 的 Ether-over-GENEVE 经 Linux gateway bridge |
+| `network.geneve-ip.sh` | IP-over-GENEVE 双 switch,由该用例分别覆盖 port/vni/tlv locator、双向连通与 transit stats |
+| `network.provision.sh` | 两阶段启动 + Reserved 修复 + show |
+| `network.tap.sh` | tap 模式、open-port、`attach --open-port`、模式切换 |
+| `network.vswitch-cleanup.sh` | switch namespace 缺失时，清理保留无关 host/peer 接口与 MMDS bind 地址，并移除旧 BPF pin |
 
 手工搭建拓扑与生命周期操作统一见维护中的 [vSwitch 运维指南](vswitch-operations_zh.md)。
 使用 `attach` 返回的实际分配结果，不按沙箱索引推算端口。
@@ -692,7 +695,7 @@ GOWORK=off go test -tags=integration -exec 'sudo -n env REQUIRE_CONNECTOR_STATS=
 | pkg/internal/bpf/ | 内部 BPF ABI:生成的 cilium/ebpf 绑定、types 与 loader。 |
 | pkg/internal/bpfmap/ | 内部 ABI 耦合的 mmap、CAS、stats 与 MAC 派生。 |
 | bpf/ | switch_kern.c、common.h、vmlinux.h 等 C 源。 |
-| test/e2e/ | 组件套件与 run_all.sh。 |
+| test/e2e/ | 供 prepared 平台 runner 使用的规范 network 用例和底层 helper。 |
 | examples/ | 运维/基准脚本与 tapfd_receiver 源码示例。 |
 | dist/ | systemd 单元/配置模板。 |
 

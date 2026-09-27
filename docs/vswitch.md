@@ -513,26 +513,29 @@ GOWORK=off go test -tags=integration -exec 'sudo -n env REQUIRE_CONNECTOR_STATS=
 |---|---|---|---|
 | Unit | `*_test.go`. | Ordinary user. | Pure logic with injected BPF/netlink dependencies. |
 | Integration | `*_integration_test.go`. | Root/BPF-capable kernel. | Real BPF loads/netlink with integration build tags and privileged execution. |
-| End-to-end | [test/e2e](../test/e2e/) `*_test.sh`. | Root. | Real topology/packets; setup/test/teardown/all script modes where provided. |
+| End-to-end | [test/e2e/cases](../test/e2e/cases/) `network.*.sh`. | Root. | Real topology/packets; the prepared platform runner executes each case with owned setup and cleanup. |
 | Benchmarks | [perf_bench.sh](../examples/perf_bench.sh), [start_perf_bench.sh](../examples/start_perf_bench.sh). | Root and iperf3. | Throughput/PPS/RTT at varying port counts and control-plane startup timing. |
 
 ### 8.2 Three levels of BPF validation
 
 1. **Layout:** integration tests under pkg/internal/bpf verify Go/C offsets, sizes and alignment.
 2. **BPF_PROG_TEST_RUN:** construct packets, execute the program and assert actions/output bytes. Where ingress_ifindex cannot be supplied conveniently, tests map ifindex=0 to the test slot for tc_ingress_nx.
-3. **Real topology:** test/e2e scripts create networks and use actual ping/iperf traffic.
+3. **Real topology:** `test/e2e/cases/network.*.sh` cases create networks and use actual ping/iperf traffic.
 
-`TestNativeStatsRealResetReuseAndReadOnlyFailure` uses actual pinned locked BPF maps and an independently opened reader, including a kernel-enforced read-only FD to prove reset failure. `TestNativeStatsRealConcurrentOwnership` exercises shared reads against attach/detach. Other real kernel cases in that group cover force cleanup/replacement during a read, SIGKILL immediately after the ownership CAS, and the production BPF helper rejecting late TC writes while four execution streams race resets. `mgmt_isolation_test.sh` also keeps four actual FloatingIP UDP streams across 20 detach/attach cycles, requiring communication to resume and verifying asymmetric packet/byte pairs after each reuse. Source integration CI runs these with `REQUIRE_CONNECTOR_STATS=1`, race detection and privileged execution; missing capability is a failure, not accepted skipped coverage.
+`TestNativeStatsRealResetReuseAndReadOnlyFailure` uses actual pinned locked BPF maps and an independently opened reader, including a kernel-enforced read-only FD to prove reset failure. `TestNativeStatsRealConcurrentOwnership` exercises shared reads against attach/detach. Other real kernel cases in that group cover force cleanup/replacement during a read, SIGKILL immediately after the ownership CAS, and the production BPF helper rejecting late TC writes while four execution streams race resets. Source integration CI runs these with `REQUIRE_CONNECTOR_STATS=1`, race detection and privileged execution; missing capability is a failure, not accepted skipped coverage. `network.management.sh` also keeps four actual FloatingIP UDP streams across 20 detach/attach cycles, requiring communication to resume and verifying asymmetric packet/byte pairs after each reuse.
 
 ### 8.3 E2E suites
 
-| Script | Coverage |
+Prepare the platform release, then run `sudo test/e2e/e2e run --workdir /path/to/prepared --suite network` from its directory. Each case owns setup, assertions and cleanup; locator variants run inside `network.geneve-ip.sh`.
+
+| Case file | Coverage |
 |---|---|
-| mgmt_isolation_test.sh | Management connectivity, local sandbox isolation, actual FloatingIP service NAT and asymmetric UDP packet/byte direction and 20 slot reuses under four live streams via `stats_management.py`. |
-| geneve_eth_test.sh | Legacy port locator with Ether-over-GENEVE through a Linux gateway bridge. |
-| geneve_ip_test.sh | IP-over-GENEVE between switches; run_all covers port/vni/tlv locators, bidirectional connectivity and transit counters. |
-| provision_test.sh | Two-phase startup, Reserved-slot repair and show. |
-| tap_test.sh | TAP mode, open-port, attach --open-port and mode changes. |
+| network.management.sh | Management connectivity, local sandbox isolation, actual FloatingIP service NAT and asymmetric UDP packet/byte direction and 20 slot reuses under four live streams via `stats_management.py`. |
+| network.geneve-ethernet.sh | Legacy port locator with Ether-over-GENEVE through a Linux gateway bridge. |
+| network.geneve-ip.sh | IP-over-GENEVE between switches; the case covers port/vni/tlv locators, bidirectional connectivity and transit counters. |
+| network.provision.sh | Two-phase startup, Reserved-slot repair and show. |
+| network.tap.sh | TAP mode, open-port, attach --open-port and mode changes. |
+| network.vswitch-cleanup.sh | Missing switch namespace cleanup preserves unrelated host/peer interfaces and the MMDS bind address while removing stale BPF pins. |
 
 For manual topology construction and lifecycle operations, use the maintained [vSwitch operations guide](vswitch-operations.md). Consume the actual allocation returned by `attach`; do not infer a port from a sandbox index.
 
@@ -550,7 +553,7 @@ For manual topology construction and lifecycle operations, use the maintained [v
 | `pkg/internal/bpf/` | Internal BPF ABI: generated cilium/ebpf bindings, types and loader. |
 | `pkg/internal/bpfmap/` | Internal ABI-coupled mmap, CAS, counters and MAC derivation. |
 | `bpf/` | C sources: switch_kern.c, common.h and vmlinux.h. |
-| `test/e2e/` | Component suites and run_all.sh. |
+| `test/e2e/` | Canonical network cases and low-level helpers for the prepared platform runner. |
 | `examples/` | Operations/benchmark scripts and tapfd_receiver source example. |
 | `dist/` | systemd service/configuration templates. |
 

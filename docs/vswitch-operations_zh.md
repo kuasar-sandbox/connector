@@ -40,6 +40,8 @@ sudo python3 "$WORKDIR/test/e2e/e2e" run --workdir "$WORKDIR" --suite network
 
 CI 使用同一个平台 runner，只消费预构建产品执行所选 case，不编译 Go 代码，也不调用组件自有 runner。仅在隔离测试环境运行，并满足每个已选 case 的前置条件；缺少条件属于失败，不是成功跳过。
 
+网络 case 启动时会检查 root 权限。统一 runner 不会自动提权，因此用 `--include network.tap.sh` 单独选择 case 时，也必须保留 `sudo`（或使用 root shell）。
+
 ### 1.3 systemd 集成
 
 `dist/` 提供三个模板:
