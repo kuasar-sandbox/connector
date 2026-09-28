@@ -72,6 +72,12 @@ third-party or differently licensed material.
 
 ## CI and merge policy
 
+The membership lookup checks the PR author, not the maintainer who reruns a job.
+A rerun does not admit a non-member author. Use the central
+[maintainer reception procedure](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/CONTRIBUTING.md#ci-eligibility-and-external-contributions)
+to preserve attribution and validate an adopted candidate. Updated source commits
+require fresh inspection and CI; prior reception does not cover new changes.
+
 The repository's trusted default-branch wrapper handles pull-request events;
 candidate workflow files never decide admission or obtain control-plane secrets.
 The [central CI contract](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/ci.md)
