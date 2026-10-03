@@ -141,7 +141,7 @@ module 输入。
 权限分离及拒绝替换已发布资产的要求保持不变。
 生产者提供的说明不得夹带发布者专属的来源/Preview 标记。
 
-验证要求 Linux/amd64 的
+验证要求匹配所选原生 Linux 架构（x86_64 对应 amd64，aarch64 对应 arm64）的
 `github.com/kuasar-sandbox/connector/cmd/connector-ctl` main package 及匹配的
 Connector module。部署文件和运维辅助脚本取自所选源码树。归档保留内嵌 eBPF
 的来源及许可标识,包括项目许可范围说明和 GPL 正文。验证拒绝额外载荷、不安全

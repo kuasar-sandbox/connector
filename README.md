@@ -154,7 +154,8 @@ existing source/Preview markers. Trusted source selection, build/publish permiss
 separation and the refusal to replace published assets remain required.
 Producer-supplied notes may not contain the publisher's reserved source/Preview markers.
 
-Validation requires the Linux/amd64
+Validation requires the selected native Linux architecture (amd64 for x86_64,
+arm64 for aarch64) for the
 `github.com/kuasar-sandbox/connector/cmd/connector-ctl` main package and the
 matching Connector module. Deployment files and operational helpers are copied
 from the selected source tree. The archive retains the embedded eBPF source
