@@ -2,6 +2,14 @@
 
 # connector
 
+For the first cross-component sandbox or Demo, follow the project
+[Quick Start](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/quickstart.md)
+with the matching aggregate release and
+[workbench](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/workbench/README.md).
+This component can still be built/deployed independently; workbench is not a
+production runtime dependency. Published architectures are specific to the
+selected release; source support does not imply all historical assets exist.
+
 `connector` is the **high-density eBPF networking component** for MicroVMs in [Kuasar Sandbox](https://github.com/kuasar-sandbox/kuasar-sandbox).
 
 It allocates and releases sandbox network resources quickly, forwards established traffic in the Linux kernel, keeps sandbox-to-sandbox forwarding absent by default, assigns a platform-controlled network identity to each sandbox, and provides the foundation for enforcing sandbox-level policy at an external network gateway.
@@ -156,7 +164,7 @@ and materials outside the component namespace. Source records are limited to
 the Connector project, its embedded eBPF and the Go version used by `connector-ctl`;
 undeclared sources cannot claim extra license material.
 
-`connector` publishes independent component versions named `vX.Y.Z`. The x86_64 component archive contains `connector-ctl`, deployment files, and the operational helpers selected by the component release contract. Design documents and E2E sources are collected from the selected component tag into the project platform archive.
+`connector` publishes independent component versions named `vX.Y.Z`. Each published native-architecture component archive contains `connector-ctl`, deployment files, and the operational helpers selected by the component release contract. The aggregate platform archive carries selected user guides and canonical E2E runtime inputs from its explicit documentation/test selections. Internal design documents and source-only tests remain in the source repositories.
 Use `make release VERSION=vX.Y.Z` to build and validate the same local bundle layout.
 
 The project repository publishes aggregate versions named `release-vX.Y.Z`, selecting an exact `connector` tag together with the other release units and validating the combined platform. Component and aggregate version numbers are independent.
