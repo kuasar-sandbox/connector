@@ -2,6 +2,11 @@
 
 # connector
 
+首次运行跨组件沙箱或 Demo，推荐从项目[快速开始](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/quickstart_zh.md)
+使用匹配聚合版本的 [workbench](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/workbench/README_zh.md)。
+本组件仍可独立构建和部署，workbench 不是生产运行的强制依赖。预构建架构以所选
+发布版的实际资产为准；源码支持某架构不意味着所有历史版本都提供该架构制品。
+
 `connector` 是 [Kuasar Sandbox](https://github.com/kuasar-sandbox/kuasar-sandbox) 面向 MicroVM 的高密度 eBPF 网络组件。
 
 它快速分配和释放沙箱网络资源,在 Linux 内核中转发已建立的流量,默认不提供沙箱间转发路径,为每个沙箱分配平台控制的网络身份,并为外部网络网关实施沙箱级策略提供基础。
@@ -136,7 +141,7 @@ module 输入。
 权限分离及拒绝替换已发布资产的要求保持不变。
 生产者提供的说明不得夹带发布者专属的来源/Preview 标记。
 
-验证要求 Linux/amd64 的
+验证要求匹配所选原生 Linux 架构（x86_64 对应 amd64，aarch64 对应 arm64）的
 `github.com/kuasar-sandbox/connector/cmd/connector-ctl` main package 及匹配的
 Connector module。部署文件和运维辅助脚本取自所选源码树。归档保留内嵌 eBPF
 的来源及许可标识,包括项目许可范围说明和 GPL 正文。验证拒绝额外载荷、不安全
@@ -144,7 +149,7 @@ Connector module。部署文件和运维辅助脚本取自所选源码树。归�
 来源记录仅允许 Connector 项目、其内嵌 eBPF 及 `connector-ctl` 使用的 Go 版本;
 未声明来源不能用于认领额外许可材料。
 
-`connector` 独立发布 `vX.Y.Z` 组件版本。x86_64 组件归档包含 `connector-ctl`、部署文件和组件发行合同选定的运维辅助脚本。设计文档和 E2E 源码从选定组件 Tag 收集到项目平台归档。用 `make release VERSION=vX.Y.Z` 构建并验证相同的本地 bundle 布局。
+`connector` 独立发布 `vX.Y.Z` 组件版本。已发布原生架构的组件归档包含 `connector-ctl`、部署文件和组件发行合同选定的运维辅助脚本。聚合 platform 包按显式文档/测试选择携带用户指南与规范 E2E 运行输入，内部设计文档和源码专用测试保留在源码仓。用 `make release VERSION=vX.Y.Z` 构建并验证相同的本地 bundle 布局。
 
 项目主仓独立发布 `release-vX.Y.Z` 聚合版本,选择精确的 Connector Tag 与其他发行单元,并验证组合后的平台。组件与聚合版本号相互独立。
 
