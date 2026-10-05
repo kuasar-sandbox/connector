@@ -62,6 +62,7 @@ func init() {
 	serveCmd.Flags().Uint32Var(&startPorts, "ports", 0, "Number of ports (1-4096, required)")
 	serveCmd.Flags().StringVar(&startMACAddr, "mac-addr", "", "Virtual MAC address (required)")
 	serveCmd.Flags().StringVar(&startFloatingIPBase, "floating-ip-base", "", "Floating IP base address (required)")
+	serveCmd.Flags().Uint8Var(&startGenerationBits, "generation-bits", 0, "Attachment generation bits in FloatingIP identity (0-20)")
 	serveCmd.Flags().StringArrayVar(&startMgmtExtracts, "mgmt-extract", nil, "Management plane extraction CIDRs (format: <netns>:<dev>:<cidr1>,<cidr2>,...; CIDRs are traffic matches, not interface addresses; leave <netns> empty, e.g. ':mgmt0:1.2.3.4', to keep the peer in the caller/host netns)")
 	serveCmd.Flags().StringArrayVar(&startMgmtServices, "mgmt-service", nil, "Management service VIP<->target translation (format: <VIP>:<vport>:<targetIP>:<targetPort>; repeatable). VIP must fall within a --mgmt-extract route. Translates both TCP and UDP. Each (targetIP,targetPort) must be unique. Loopback targets require route_localnet=1 on the mgmt dev.")
 	serveCmd.Flags().StringVar(&startTransitDev, "transit-dev", "", "Transit device name")
