@@ -40,6 +40,7 @@ func (s *switchContext) Status() (*StatusOutput, error) {
 		PortsUsed:      used,
 		PortsAvailable: free,
 		PortsReserved:  reserved,
+		GenerationBits: cfg.GenerationBits,
 		MgmtPlanes:     meta.MgmtPlaneInfos(),
 		MgmtServices:   meta.MgmtServiceInfos(),
 		TransitDev:     meta.TransitDevName(),
@@ -452,7 +453,8 @@ func (s *switchContext) Stats(ports []int) (*StatsOutput, error) {
 		out.Ports = append(out.Ports, PortStatsOutput{
 			Port:             sid + 1,
 			InnerIP:          bpf.Uint32ToIP(innerIP).String(),
-			FloatingIP:       bpf.Uint32ToIP(cfg.FloatingIpBase + sid).String(),
+			FloatingIP:       bpf.Uint32ToIP(FloatingIPForAttachment(cfg.FloatingIpBase, sid, slot.Generation)).String(),
+			Generation:       slot.Generation,
 			PortMAC:          portMAC.String(),
 			MgmtRxPackets:    st.MgmtRxPackets,
 			MgmtRxBytes:      st.MgmtRxBytes,

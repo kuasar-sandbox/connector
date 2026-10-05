@@ -49,6 +49,7 @@ type DetachOptions struct {
 // AttachOptions holds options for the attach command.
 type AttachOptions struct {
 	Port              int              // Requested port number (0 for auto)
+	Generation        uint32           // Caller-supplied attachment generation
 	ToNetNS           string           // Target namespace
 	InnerIP           net.IP           // Sandbox internal IP
 	TransitGatewayIP  net.IP           // GENEVE gateway IP
@@ -67,6 +68,8 @@ type ReserveOptions struct {
 // AttachOutput represents the JSON output of the attach command.
 type AttachOutput struct {
 	Port             uint32 `json:"port"`
+	Generation       uint32 `json:"generation,omitempty"`
+	GenerationBits   uint8  `json:"generation_bits,omitempty"`
 	PortDev          string `json:"port_dev"`
 	PortNetNS        string `json:"port_netns"`
 	PortMAC          string `json:"port_mac"`
@@ -98,6 +101,7 @@ type StatusOutput struct {
 	PortsUsed      uint32            `json:"ports_used"`
 	PortsAvailable uint32            `json:"ports_available"`
 	PortsReserved  uint32            `json:"ports_reserved"`
+	GenerationBits uint8             `json:"generation_bits,omitempty"`
 	MgmtPlanes     []MgmtPlaneInfo   `json:"mgmt_planes,omitempty"`
 	MgmtServices   []MgmtServiceInfo `json:"mgmt_services,omitempty"`
 	TransitDev     string            `json:"transit_dev,omitempty"`
@@ -147,6 +151,7 @@ type PortStatsOutput struct {
 	Port             uint32 `json:"port"`
 	InnerIP          string `json:"inner_ip"`
 	FloatingIP       string `json:"floating_ip"`
+	Generation       uint32 `json:"generation,omitempty"`
 	PortMAC          string `json:"port_mac"`
 	MgmtRxPackets    uint64 `json:"mgmt_rx_packets"`
 	MgmtRxBytes      uint64 `json:"mgmt_rx_bytes"`

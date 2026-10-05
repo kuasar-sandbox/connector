@@ -1620,3 +1620,45 @@ func TestDetachSkipDevice(t *testing.T) {
 }
 
 // StartReserved/Stop error path tests are in start_test.go and stop_test.go
+
+func TestAttachGenerationValidationPrecedesSlotMutation(t *testing.T) {
+	defer resetDeps()
+	bpfPinPathExists = func(string) (bool, error) { return true, nil }
+	bpfLoadPinnedMaps = func(string) (*bpf.Maps, error) { return &bpf.Maps{}, nil }
+	getSwitchConfigFn = func(BPFMap) (*SwitchConfig, error) {
+		return &SwitchConfig{N_ports: 4, FloatingIpBase: 0x64640000, GenerationBits: 4}, nil
+	}
+	getSwitchMetadataFn = func(BPFMap) (*SwitchMetadata, error) { return &SwitchMetadata{}, nil }
+	slots := newMmappedSlotsForTest(4)
+	newMmappedSlotsFn = func(BPFArrayMap, uint32) (*MmappedSlots, error) { return slots, nil }
+	_, err := Attach("sw0", AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), Generation: 16})
+	if err == nil || !containsSubstring(err.Error(), "exceeds 4-bit range") {
+		t.Fatalf("Attach err=%v", err)
+	}
+	if got := slots.GetInnerIP(0); got != InnerIPFree {
+		t.Fatalf("invalid generation mutated slot: inner_ip=%08x", got)
+	}
+}
+
+func TestAttachGenerationChangesFloatingIdentity(t *testing.T) {
+	defer resetDeps()
+	bpfPinPathExists = func(string) (bool, error) { return true, nil }
+	bpfLoadPinnedMaps = func(string) (*bpf.Maps, error) { return &bpf.Maps{}, nil }
+	getSwitchConfigFn = func(BPFMap) (*SwitchConfig, error) {
+		return &SwitchConfig{N_ports: 4, FloatingIpBase: 0x64640000, GenerationBits: 4}, nil
+	}
+	getSwitchMetadataFn = func(BPFMap) (*SwitchMetadata, error) { return &SwitchMetadata{}, nil }
+	slots := newMmappedSlotsForTest(4)
+	newMmappedSlotsFn = func(BPFArrayMap, uint32) (*MmappedSlots, error) { return slots, nil }
+	newStatsManagerFn = func(BPFMap, uint32) *StatsManager { return NewStatsManager(&mockBPFMapWithSlot{}, 4) }
+	out, err := Attach("sw0", AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), Generation: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Port != 1 || out.Generation != 3 || out.FloatingIP != "100.100.48.0" {
+		t.Fatalf("Attach output=%+v", out)
+	}
+	if got := slots.GetSlot(0).Generation; got != 3 {
+		t.Fatalf("slot generation=%d", got)
+	}
+}

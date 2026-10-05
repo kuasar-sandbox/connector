@@ -66,6 +66,13 @@ func TapDeviceName(switchName string, slotID uint32) string {
 	return fmt.Sprintf("%s-t%d", switchName, slotID+1)
 }
 
+const floatingSlotBits = uint32(12)
+const floatingSlotMask = uint32(MaxPorts - 1)
+
+func FloatingIPForAttachment(base uint32, slotID, generation uint32) uint32 {
+	return base + (generation << floatingSlotBits) + slotID
+}
+
 // UpdateSwitchConfig writes the user-facing Config into the BPF config map.
 // Performs the Config → SwitchConfig type conversion (including IP encoding)
 // then issues a single map update.
@@ -75,6 +82,7 @@ func UpdateSwitchConfig(configMap BPFMap, cfg *Config) error {
 	bpfCfg.SetSwitchMacAddr(cfg.MACAddr)
 	bpfCfg.N_ports = cfg.NumPorts
 	bpfCfg.FloatingIpBase = bpf.IPToUint32(cfg.FloatingIPBase)
+	bpfCfg.GenerationBits = cfg.GenerationBits
 	bpfCfg.GenevePortBase = uint32(cfg.GenevePortBase)
 	bpfCfg.GeneveLocator = uint8(cfg.GeneveLocator)
 	if cfg.GeneveTLVLocator != nil {

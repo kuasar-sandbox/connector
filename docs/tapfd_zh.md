@@ -211,15 +211,15 @@ netns fd。
 请求行:
 
 ```text
-TAPFD/1 PREPARE VSWITCH=sw0 INNER_IP=169.254.0.21\n
-TAPFD/1 PREPARE VSWITCH=sw0 INNER_IP=169.254.0.21 TRANSIT_GATEWAY_IP=10.0.0.2 TRANSIT_GENEVE_VNI=42 TRANSIT_GENEVE_OPTS=0102:02:0000002a,0102:83:1122334455667788\n
+TAPFD/1 PREPARE VSWITCH=sw0 GENERATION=3 INNER_IP=169.254.0.21\n
+TAPFD/1 PREPARE VSWITCH=sw0 GENERATION=3 INNER_IP=169.254.0.21 TRANSIT_GATEWAY_IP=10.0.0.2 TRANSIT_GENEVE_VNI=42 TRANSIT_GENEVE_OPTS=0102:02:0000002a,0102:83:1122334455667788\n
 TAPFD/1 OPEN want_netns=1 VSWITCH=sw0 PORT=3\n
 TAPFD/1 RELEASE VSWITCH=sw0 PORT=3\n
 ```
 
 - `TAPFD/1` 是协议版本。操作包括 `PREPARE`、`OPEN`、`RELEASE`。
 - `PREPARE` 分配并配置一个后续可 `OPEN` 的 port slot。`connector-ctl vswitch serve`
-  接受 `INNER_IP` 以及可选 `TRANSIT_GATEWAY_IP`、`TRANSIT_GENEVE_VNI`、
+  接受 `INNER_IP`、调用方可选 `GENERATION` 以及可选 `TRANSIT_GATEWAY_IP`、`TRANSIT_GENEVE_VNI`、
   `TRANSIT_GENEVE_OPTS`、`TRANSIT_MAC`。`transit_geneve_opts` 是逗号分隔的
   `CLASS:TYPE:DATA` 序列,与 CLI `--transit-geneve-opt` 复用同一个 parser;class/type/data
   为十六进制,data 长度须为 4 字节整数倍,空值表示无 options。调用方顺序被原样保留,
@@ -244,7 +244,7 @@ consumer **应当**接受该 `TAPFD/1 OK` 前缀;为兼容 exec helper,也可接
 `PREPARE`/`RELEASE` 成功响应不携带 fd:
 
 ```text
-TAPFD/1 OK port=3 floating_ip=100.100.96.3 mac=02:00:00:00:80:01 ip=169.254.0.21 mode=tap\n
+TAPFD/1 OK port=3 generation=3 floating_ip=100.100.96.3 mac=02:00:00:00:80:01 ip=169.254.0.21 mode=tap\n
 TAPFD/1 OK port=3 released=1\n
 ```
 

@@ -92,6 +92,8 @@ Device names follow `<switch>-{p,n,m,t}<id>`: `sw1-p7` is the sandbox veth peer,
 
 CIDRs from `--mgmt-extract` populate each slot's destination classifiers; they do not assign addresses to the management peer. Connector creates the pair, sets MAC/MTU, brings it up, attaches TC, records extraction matches and installs floating-IP return routes. Deployment supplies interface addresses, local routes, service listeners and sysctls, ensuring the selected destination is local or otherwise reachable in the management namespace. The service template uses MGMT_ADDRS for explicit address assignment ([§1.3](vswitch-operations.md#13-systemd-integration)).
 
+**Attachment identity:** each Attach accepts a caller-supplied `generation`. FloatingIP encodes `(generation << 12) | slot_id`; the slot stores the same generation. A stale generation is not a separate error class: it resolves exactly like any FloatingIP that does not identify the current attachment and follows the existing non-match path. `generation_bits=0` accepts generation 0 only and is wire-compatible with `floating_ip_base + slot_id`. A typical `generation_bits=4` provides 16 generations per slot.
+
 **Sandbox → management service**, for example 169.254.169.254:
 
 | Stage | Packet/action |
@@ -105,16 +107,16 @@ CIDRs from `--mgmt-extract` populate each slot's destination classifiers; they d
 | Stage | Packet/action |
 |---|---|
 | Management return | `src=169.254.169.254, dst=floating_ip`; eth0 → `sw-mX`. |
-| TC management ingress | Derive `slot_id=dst-floating_ip_base`; DNAT destination to inner_ip; set destination MAC to the selected port MAC; increment mgmt_rx. |
+| TC management ingress | Decode `generation|slot_id` from `dst-floating_ip_base`, resolve the current attachment, then DNAT destination to inner_ip; set destination MAC to the selected port MAC; increment mgmt_rx. |
 | Port delivery | Switch port → sandbox veth peer or TAP queue. |
 
-**Return routes:** replies addressed to floating IP must reach management-side TC for DNAT. Start installs routes scoped to the fixed maximum floating span of 4096 addresses, using the containing /20 and metric `100+index`, rather than replacing the namespace's default route:
+**Return routes:** replies addressed to floating IP must reach management-side TC for DNAT. Start installs routes for the complete attachment-identity span. The low 12 bits remain the fixed 4096-slot index; `generation_bits` adds caller-supplied high bits. The return prefix is `/20-generation_bits`, using the containing block and metric `100+index`, rather than replacing the namespace's default route:
 
 ```text
-ip route add <floating_ip_base>/20 dev <mgmt-dev> metric <100+index>
+ip route add <floating_identity_range> dev <mgmt-dev> metric <100+index>
 ```
 
-If the floating base is not /20-aligned, the maximum span crosses two /20s and both routes are installed. Addresses captured by those routes but outside the configured floating range reach the management device. With no matching slot, `tc_ingress_mx` returns `TC_ACT_OK` without sandbox DNAT/redirect, leaving further processing to the switch namespace stack and its filtering policy. This is not a TC-enforced drop. An empty management namespace means these routes are in the caller/host namespace; they still do not replace its default route.
+If the floating base is not aligned to the derived prefix, the identity window crosses two adjacent blocks and both routes are installed. `generation_bits=0` is the legacy /20 layout; `generation_bits=4` uses /16-sized coverage while the slot count remains 4096. Addresses captured by those routes but outside the configured floating range reach the management device. With no matching slot, `tc_ingress_mx` returns `TC_ACT_OK` without sandbox DNAT/redirect, leaving further processing to the switch namespace stack and its filtering policy. This is not a TC-enforced drop. An empty management namespace means these routes are in the caller/host namespace; they still do not replace its default route.
 
 **Optional management-service translation:** without `--mgmt-service`, extraction changes inner↔floating addressing while retaining the requested service destination IP/port. Deployment must make the VIP reachable and listen appropriately. `--mgmt-service=<VIP>:<vport>:<targetIP>:<targetPort>` adds deterministic stateless TCP/UDP translation:
 
@@ -185,7 +187,8 @@ struct slot_item {                          // 108 bytes, cache-line layout
     __u8  geneve_opts_len;                  // offset 31 — opaque bytes only; 0 skips geneve_opts lookup
     __u32 mgmt_cidr_count;                  // offset 32
     struct mgmt_cidr mgmt_cidrs_0;          // offset 36 (20B) — first inline CIDR (hot path)
-    __u8  _pad_cl0[8];                      // offset 56
+    __u32 generation;                       // offset 56 — caller-supplied attachment generation
+    __u8  _pad_cl0[4];                      // offset 60
     // Cache line 1 (cold path)
     struct mgmt_cidr mgmt_cidrs_ext[MAX_MGMT_CIDR_EXT]; // offset 64 (40B)
     __u32 stats_ready;                      // offset 104 — userspace confirmed current-attach reset
@@ -201,7 +204,8 @@ struct switch_config {                      // 40 bytes
     __u8  _pad3[3];
     __u32 transit_nexthop;
     __u8  port_mac[6];                      // all zero: derive; nonzero: fixed
-    __u8  _pad4[2];
+    __u8  generation_bits;                  // high FloatingIP identity bits; 0 = legacy
+    __u8  _pad4;
     __u8  geneve_locator;                   // 0=port,1=vni,2=tlv
     __u8  geneve_tlv_type;                  // exact 8-bit wire type
     __u16 geneve_tlv_class;

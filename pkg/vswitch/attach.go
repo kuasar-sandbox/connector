@@ -49,6 +49,13 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	if innerIP == 0 {
 		return nil, fmt.Errorf("inner-ip cannot be 0.0.0.0")
 	}
+	if cfg.GenerationBits == 0 {
+		if opts.Generation != 0 {
+			return nil, fmt.Errorf("generation %d requires generation_bits > 0", opts.Generation)
+		}
+	} else if uint64(opts.Generation) >= (uint64(1) << cfg.GenerationBits) {
+		return nil, fmt.Errorf("generation %d exceeds %d-bit range", opts.Generation, cfg.GenerationBits)
+	}
 	// The options map and the mmap'd slot are two separate kernel objects. New
 	// switches serialize slot ownership changes with the existing per-switch
 	// control flock so Detach/Reserve cannot release and reassign a slot between
@@ -62,19 +69,46 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	}
 
 	var slotID uint32
+	// Generation is the final attachment publication fence. On modern switches
+	// the control lock serializes ownership changes; write an out-of-range
+	// sentinel while the slot is still Free, then publish the caller generation
+	// only after every fallible Attach step completes. Thus neither the previous
+	// nor the new FloatingIP can identify a partially prepared attachment.
+	const unpublishedGeneration = ^uint32(0)
+	claim := func(id uint32) bool {
+		if hasGeneveOptsMap {
+			if s.mmapSlots.GetInnerIP(id) != InnerIPFree {
+				return false
+			}
+			s.mmapSlots.UpdateSlotFields(id, func(slot *SlotItem) {
+				slot.Generation = unpublishedGeneration
+			})
+		}
+		return s.mmapSlots.TryAllocate(id, innerIP)
+	}
 
-	// Allocate slot using atomic CAS
+	// Allocate slot using atomic CAS.
 	if opts.Port > 0 {
-		// Specific slot requested
 		slotID = uint32(opts.Port - 1)
 		if slotID >= cfg.N_ports {
 			return nil, fmt.Errorf("port %d: %w (max %d)", opts.Port, ErrPortOutOfRange, cfg.N_ports)
 		}
-		if !s.mmapSlots.TryAllocate(slotID, innerIP) {
+		if !claim(slotID) {
 			return nil, fmt.Errorf("port %d: %w", opts.Port, ErrPortAllocated)
 		}
+	} else if hasGeneveOptsMap {
+		found := false
+		for id := uint32(0); id < cfg.N_ports; id++ {
+			if claim(id) {
+				slotID, found = id, true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("no free slots available")
+		}
 	} else {
-		// Auto-allocate: find first free slot
+		// Legacy switches have no generation-aware data path.
 		var err error
 		slotID, err = s.mmapSlots.FindFreeSlot(innerIP)
 		if err != nil {
@@ -173,6 +207,7 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	// every failure path can release its claim with the hint still at zero.
 	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
 		slot.GeneveOptsLen = geneveOptsValue.Len
+		slot.Generation = opts.Generation
 	})
 	// Publish the new counter generation only after every attachment field and
 	// fallible operation is complete. Packets captured before this point can
@@ -183,7 +218,7 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	}
 
 	// Calculate derived values
-	floatingIP := bpf.Uint32ToIP(cfg.FloatingIpBase + slotID)
+	floatingIP := bpf.Uint32ToIP(FloatingIPForAttachment(cfg.FloatingIpBase, slotID, opts.Generation))
 	genevePort := geneveWirePort(locator, cfg.GenevePortBase, slotID)
 	wireGeneveVNI := geneveWireVNI(locator, slotID, opts.TransitGeneveVNI)
 
@@ -191,13 +226,15 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	portMAC := GetPortMAC(cfg.SwitchMac[:], cfg.PortMac[:], slotID)
 
 	out := &AttachOutput{
-		Port:       slotID + 1,
-		PortDev:    portName,
-		PortNetNS:  opts.ToNetNS,
-		PortMAC:    portMAC.String(),
-		InnerIP:    opts.InnerIP.String(),
-		FloatingIP: floatingIP.String(),
-		Mode:       portKind.String(),
+		Port:           slotID + 1,
+		Generation:     opts.Generation,
+		GenerationBits: cfg.GenerationBits,
+		PortDev:        portName,
+		PortNetNS:      opts.ToNetNS,
+		PortMAC:        portMAC.String(),
+		InnerIP:        opts.InnerIP.String(),
+		FloatingIP:     floatingIP.String(),
+		Mode:           portKind.String(),
 	}
 	if portKind == PortKindTap {
 		// Tap ports live in the switch netns; the sandbox holds an fd via

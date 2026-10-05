@@ -32,6 +32,7 @@ Example:
 
 var (
 	attachPort              int
+	attachGeneration        uint32
 	attachToNetNS           string
 	attachInnerIP           string
 	attachTransitGatewayIP  string
@@ -44,6 +45,7 @@ var (
 
 func init() {
 	attachCmd.Flags().IntVar(&attachPort, "port", 0, "Port number (0 for auto-allocate)")
+	attachCmd.Flags().Uint32Var(&attachGeneration, "generation", 0, "Caller-supplied attachment generation")
 	attachCmd.Flags().StringVar(&attachToNetNS, "to-netns", "", "Target network namespace to move port device into (veth mode only)")
 	attachCmd.Flags().StringVar(&attachInnerIP, "inner-ip", "", "Sandbox internal IP (required)")
 	attachCmd.Flags().StringVar(&attachTransitGatewayIP, "transit-gateway-ip", "", "GENEVE gateway IP")
@@ -79,6 +81,7 @@ func runAttach(cmd *cobra.Command, args []string) error {
 
 	opts := vswitch.AttachOptions{
 		Port:             attachPort,
+		Generation:       attachGeneration,
 		ToNetNS:          attachToNetNS,
 		InnerIP:          innerIP,
 		TransitGeneveVNI: attachTransitGeneveVNI,

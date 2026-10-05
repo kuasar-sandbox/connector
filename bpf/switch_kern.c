@@ -255,6 +255,8 @@ int tc_ingress_nx(struct __sk_buff *skb)
     __u64 generation = stats_generation(slot_id);
     if (!slot || is_slot_free(slot->inner_ip))
         return TC_ACT_OK;
+    if (cfg->generation_bits > 20 || slot->generation >= (1U << cfg->generation_bits))
+        return TC_ACT_OK;
 
     // Cache slot values
     __u32 transit_ifindex = slot->transit_ifindex;
@@ -304,7 +306,7 @@ int tc_ingress_nx(struct __sk_buff *skb)
         __u8 mgmt_dev_mac[6];
         if (match_mgmt_cidr(slot, dst_ip, &mgmt_ifindex, mgmt_dev_mac)) {
             // Management plane traffic: SNAT src IP to floating IP
-            __be32 floating_ip = bpf_htonl(floating_ip_base + slot_id);
+            __be32 floating_ip = bpf_htonl(floating_ip_base + (slot->generation << 12) + slot_id);
             __be32 old_sip = ip->saddr;
             __u8 protocol = ip->protocol;
             __u8 ihl = ip->ihl;
@@ -697,12 +699,24 @@ int tc_ingress_mx(struct __sk_buff *skb)
 
         __u32 tip_host = bpf_ntohl(arp_pl->ar_tip);
         __u8 reply_mac[6];
-        if (tip_host >= floating_ip_base && (tip_host - floating_ip_base) < n_ports) {
-            // Use port MAC (fixed or per-slot derived)
-            __u32 sid = tip_host - floating_ip_base;
-            get_port_mac(reply_mac, cfg, sid);
-        } else {
-            // Non-port ARP: reply with switch_mac
+        int matched = 0;
+        if (tip_host >= floating_ip_base) {
+            __u32 identity = tip_host - floating_ip_base;
+            __u32 sid = identity & 0xfff;
+            __u32 attachment_generation = identity >> 12;
+            if (cfg->generation_bits > 20)
+                return TC_ACT_OK;
+            __u32 generation_limit = 1U << cfg->generation_bits;
+            if (attachment_generation < generation_limit && sid < n_ports) {
+                struct slot_item *slot = bpf_map_lookup_elem(&slots, &sid);
+                if (slot && slot->generation == attachment_generation) {
+                    get_port_mac(reply_mac, cfg, sid);
+                    matched = 1;
+                }
+            }
+        }
+        if (!matched) {
+            // Same policy as any FloatingIP that does not identify a current slot.
             __bpf_memcpy(reply_mac, switch_mac, 6);
         }
         return send_arp_reply_with_mac(skb, reply_mac, data, data_end);
@@ -721,14 +735,20 @@ int tc_ingress_mx(struct __sk_buff *skb)
     if (dst_ip_host < floating_ip_base)
         return TC_ACT_OK;
 
-    __u32 slot_id = dst_ip_host - floating_ip_base;
-    if (slot_id >= n_ports)
+    __u32 identity = dst_ip_host - floating_ip_base;
+    __u32 slot_id = identity & 0xfff;
+    __u32 attachment_generation = identity >> 12;
+    if (cfg->generation_bits > 20)
+        return TC_ACT_OK;
+    __u32 generation_limit = 1U << cfg->generation_bits;
+    if (attachment_generation >= generation_limit || slot_id >= n_ports)
         return TC_ACT_OK;
 
-    // Get slot config
+    // Get slot config. A stale generation follows the same non-match path as
+    // any address that does not identify the current slot attachment.
     struct slot_item *slot = bpf_map_lookup_elem(&slots, &slot_id);
     __u64 generation = stats_generation(slot_id);
-    if (!slot || is_slot_free(slot->inner_ip) || slot->ifindex == 0)
+    if (!slot || slot->generation != attachment_generation || is_slot_free(slot->inner_ip) || slot->ifindex == 0)
         return TC_ACT_OK;
 
     // Cache slot values

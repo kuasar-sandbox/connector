@@ -133,23 +133,25 @@ func TestTapFDServerPrepare(t *testing.T) {
 	defer client.Close()
 	fake := &fakeVSwitch{
 		attachOut: &vswitch.AttachOutput{
-			Port:       7,
-			FloatingIP: "100.100.96.7",
-			PortMAC:    "02:00:00:00:80:07",
-			InnerIP:    "169.254.0.21",
-			Mode:       "tap",
+			Port:           7,
+			Generation:     3,
+			GenerationBits: 4,
+			FloatingIP:     "100.100.144.7",
+			PortMAC:        "02:00:00:00:80:07",
+			InnerIP:        "169.254.0.21",
+			Mode:           "tap",
 		},
 	}
 	go handleTapFDConn(server, "sw0", fake, nil)
 
-	if _, err := client.Write([]byte("TAPFD/1 PREPARE VSWITCH=sw0 INNER_IP=169.254.0.21 TRANSIT_GATEWAY_IP=192.0.2.1 TRANSIT_GENEVE_VNI=4242 transit_geneve_opts=0102:02:0000002a,0102:83: TRANSIT_MAC=02:00:00:00:00:09\n")); err != nil {
+	if _, err := client.Write([]byte("TAPFD/1 PREPARE VSWITCH=sw0 GENERATION=3 INNER_IP=169.254.0.21 TRANSIT_GATEWAY_IP=192.0.2.1 TRANSIT_GENEVE_VNI=4242 transit_geneve_opts=0102:02:0000002a,0102:83: TRANSIT_MAC=02:00:00:00:00:09\n")); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 	resp := readAllString(t, client)
-	if !strings.HasPrefix(resp, "TAPFD/1 OK ") || !strings.Contains(resp, "port=7") || !strings.Contains(resp, "mode=tap") {
+	if !strings.HasPrefix(resp, "TAPFD/1 OK ") || !strings.Contains(resp, "port=7") || !strings.Contains(resp, "generation=3") || !strings.Contains(resp, "mode=tap") {
 		t.Fatalf("response = %q, want OK prepare fields", resp)
 	}
-	if fake.attachOpts.InnerIP.String() != "169.254.0.21" ||
+	if fake.attachOpts.Generation != 3 || fake.attachOpts.InnerIP.String() != "169.254.0.21" ||
 		fake.attachOpts.TransitGatewayIP.String() != "192.0.2.1" ||
 		fake.attachOpts.TransitGeneveVNI != 4242 ||
 		len(fake.attachOpts.TransitGeneveOpts) != 2 ||

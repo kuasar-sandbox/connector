@@ -189,37 +189,26 @@ func initBPFSlotsReserved(mmapSlots *MmappedSlots, numPorts uint32) error {
 	return nil
 }
 
-// floatingReturnPrefix is the prefix length of the return route(s) installed in
-// each management namespace. The floating-IP space is slot_id-indexed over at
-// most MaxPorts (=4096 = 2^12) addresses, so a fixed /20 exactly covers one
-// aligned block.
-const floatingReturnPrefix = 20
-
-// floatingReturnNets returns the /20 network(s) that must be routed back toward
-// the switch so management-service replies addressed to a floating IP reach the
-// sw-mX TC ingress. The covered window is [base, base+MaxPorts-1]; since the
-// window width equals the /20 block size it touches exactly one block when base
-// is /20-aligned and two adjacent blocks otherwise (we install both rather than
-// require alignment). Returns nil for a nil/non-IPv4 base (floating IPs are
-// IPv4 — the BPF floating_ip_base is a __u32); the caller then installs no
-// return route.
-func floatingReturnNets(base net.IP) []*net.IPNet {
-	if base.To4() == nil {
+// floatingReturnNets returns the network block(s) covering the complete
+// FloatingIP attachment identity window. Low 12 bits are the slot id and the
+// configured high bits are generation. An unaligned base spans at most two
+// adjacent blocks, preserving the legacy behavior.
+func floatingReturnNets(base net.IP, generationBits uint8) []*net.IPNet {
+	if base.To4() == nil || generationBits > 20 {
 		return nil
 	}
-	mask := net.CIDRMask(floatingReturnPrefix, 32)
+	prefix := 20 - int(generationBits)
+	mask := net.CIDRMask(prefix, 32)
 	maskU := bpf.MaskToUint32(mask)
-
 	u := bpf.IPToUint32(base)
-	startNet := u & maskU
-
-	nets := []*net.IPNet{{IP: bpf.Uint32ToIP(startNet), Mask: mask}}
-
-	endU := u + (MaxPorts - 1)
-	if endU < u { // uint32 overflow near the top of the address space
-		return nets
+	span := uint64(1) << (12 + generationBits)
+	end64 := uint64(u) + span - 1
+	if end64 > uint64(^uint32(0)) {
+		return nil
 	}
-	if endNet := endU & maskU; endNet != startNet {
+	startNet := u & maskU
+	nets := []*net.IPNet{{IP: bpf.Uint32ToIP(startNet), Mask: mask}}
+	if endNet := uint32(end64) & maskU; endNet != startNet {
 		nets = append(nets, &net.IPNet{IP: bpf.Uint32ToIP(endNet), Mask: mask})
 	}
 	return nets
@@ -299,10 +288,10 @@ func createMgmtPlanes(cfg *Config, switchNs *netns.NetNS, objects *bpf.Objects, 
 				return fmt.Errorf("bring up: %w", err)
 			}
 
-			// Add return route(s) (direct, no gateway) scoped to the floating-IP
-			// /20 block(s) so management-service responses to a floating_ip route
-			// back through sw-mX, without hijacking the mgmt netns default route.
-			for _, fn := range floatingReturnNets(cfg.FloatingIPBase) {
+			// Add return route(s) (direct, no gateway) scoped to the configured
+			// attachment-identity span so management-service responses to a
+			// floating_ip route back through sw-mX without replacing the default.
+			for _, fn := range floatingReturnNets(cfg.FloatingIPBase, cfg.GenerationBits) {
 				if err := netlinkAddDeviceRoute(me.Dev, fn, metric); err != nil {
 					return fmt.Errorf("add return route: %w", err)
 				}
@@ -506,6 +495,7 @@ func buildStartOutput(cfg *Config, mgmtPlanes []MgmtPlaneInfo, transitDevIP stri
 		PortsAvailable: portsAvailable,
 		PortsReserved:  portsReserved,
 		FloatingIPBase: cfg.FloatingIPBase.String(),
+		GenerationBits: cfg.GenerationBits,
 		MgmtPlanes:     mgmtPlanes,
 		MgmtServices:   MgmtServiceInfos(cfg.MgmtServices),
 	}
@@ -762,6 +752,9 @@ func validateConfigMatch(requested *Config, existing *SwitchConfig, existingMeta
 	if !requested.FloatingIPBase.Equal(existingFloatingIP) {
 		mismatches = append(mismatches, fmt.Sprintf("floating_ip_base: requested %s, existing %s", requested.FloatingIPBase, existingFloatingIP))
 	}
+	if requested.GenerationBits != existing.GenerationBits {
+		mismatches = append(mismatches, fmt.Sprintf("generation_bits: requested %d, existing %d", requested.GenerationBits, existing.GenerationBits))
+	}
 
 	// Namespace fields (from metadata)
 	if requested.SwitchNetNS != existingMeta.SwitchNetnsName() {
@@ -926,6 +919,7 @@ type StartOutput struct {
 	PortsAvailable   uint32            `json:"ports_available"`
 	PortsReserved    uint32            `json:"ports_reserved"`
 	FloatingIPBase   string            `json:"floating_ip_base"`
+	GenerationBits   uint8             `json:"generation_bits,omitempty"`
 	MgmtPlanes       []MgmtPlaneInfo   `json:"mgmt_planes,omitempty"`
 	MgmtServices     []MgmtServiceInfo `json:"mgmt_services,omitempty"`
 	TransitType      string            `json:"transit_type"`

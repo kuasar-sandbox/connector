@@ -2210,19 +2210,21 @@ func TestFloatingReturnNets(t *testing.T) {
 	tests := []struct {
 		name string
 		base net.IP
+		bits uint8
 		want []string
 	}{
-		{"nil base", nil, nil},
-		{"ipv6 base", net.ParseIP("fd00::1"), nil},
-		{"aligned", net.ParseIP("100.100.96.0"), []string{"100.100.96.0/20"}},
-		{"unaligned spans two /20", net.ParseIP("100.100.97.5"), []string{"100.100.96.0/20", "100.100.112.0/20"}},
-		{"straddle block boundary", net.ParseIP("100.100.95.255"), []string{"100.100.80.0/20", "100.100.96.0/20"}},
-		{"overflow near top of space", net.ParseIP("255.255.255.0"), []string{"255.255.240.0/20"}},
+		{"nil base", nil, 0, nil},
+		{"ipv6 base", net.ParseIP("fd00::1"), 0, nil},
+		{"legacy aligned", net.ParseIP("100.100.96.0"), 0, []string{"100.100.96.0/20"}},
+		{"legacy unaligned spans two /20", net.ParseIP("100.100.97.5"), 0, []string{"100.100.96.0/20", "100.100.112.0/20"}},
+		{"four-bit aligned", net.ParseIP("100.100.0.0"), 4, []string{"100.100.0.0/16"}},
+		{"four-bit unaligned spans two /16", net.ParseIP("100.100.96.0"), 4, []string{"100.100.0.0/16", "100.101.0.0/16"}},
+		{"overflow near top of space", net.ParseIP("255.255.255.0"), 0, nil},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := floatingReturnNets(tt.base)
+			got := floatingReturnNets(tt.base, tt.bits)
 			if len(got) != len(tt.want) {
 				t.Fatalf("got %d nets %v, want %d %v", len(got), got, len(tt.want), tt.want)
 			}

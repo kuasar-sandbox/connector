@@ -215,6 +215,7 @@ type Config struct {
 	NumPorts          uint32            // Number of ports
 	MACAddr           net.HardwareAddr  // Virtual MAC address
 	FloatingIPBase    net.IP            // Floating IP base address
+	GenerationBits    uint8             // FloatingIP generation bits above the fixed 12-bit slot id
 	MgmtExtracts      []*MgmtExtract    // Management plane extraction CIDR matches
 	MgmtServices      []*MgmtService    // Management service VIP<->target translations (require MgmtExtracts)
 	TransitDev        string            // Transit device name
@@ -284,8 +285,16 @@ func (c *Config) validateBase() error {
 	if len(c.MACAddr) != 6 {
 		return fmt.Errorf("invalid MAC address")
 	}
-	if c.FloatingIPBase == nil {
-		return fmt.Errorf("floating-ip-base is required")
+	if c.FloatingIPBase == nil || c.FloatingIPBase.To4() == nil {
+		return fmt.Errorf("floating-ip-base must be IPv4")
+	}
+	if c.GenerationBits > 20 {
+		return fmt.Errorf("generation_bits must be between 0 and 20")
+	}
+	span := uint64(1) << (12 + c.GenerationBits)
+	base := uint64(bpf.IPToUint32(c.FloatingIPBase))
+	if base+span-1 > uint64(^uint32(0)) {
+		return fmt.Errorf("floating-ip-base %s with generation_bits=%d overflows IPv4", c.FloatingIPBase, c.GenerationBits)
 	}
 	if len(c.MgmtExtracts) > int(MaxMgmtCIDRPerSlot) {
 		return fmt.Errorf("too many mgmt-extract entries (max %d)", MaxMgmtCIDRPerSlot)
@@ -423,6 +432,7 @@ type FileConfig struct {
 	NumPorts         uint32            `json:"num_ports"`
 	MACAddr          string            `json:"mac_addr"`
 	FloatingIPBase   string            `json:"floating_ip_base"`
+	GenerationBits   uint8             `json:"generation_bits,omitempty"`
 	MgmtExtracts     []string          `json:"mgmt_extracts,omitempty"`
 	MgmtServices     []string          `json:"mgmt_services,omitempty"`
 	TransitDev       string            `json:"transit_dev,omitempty"`
@@ -468,6 +478,7 @@ func (fc *FileConfig) ToConfig() (*Config, error) {
 		NumPorts:         fc.NumPorts,
 		MACAddr:          mac,
 		FloatingIPBase:   fip,
+		GenerationBits:   fc.GenerationBits,
 		GeneveLocator:    fc.GeneveLocator,
 		GenevePortBase:   fc.GenevePortBase,
 		GeneveTLVLocator: fc.GeneveTLVLocator,

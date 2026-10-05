@@ -554,3 +554,37 @@ func TestDetachDoesNotUndoConcurrentForceReserve(t *testing.T) {
 		t.Fatalf("detach/reserve state: inner=%#x hint=%d", slots.GetInnerIP(0), slots.GetSlot(0).GeneveOptsLen)
 	}
 }
+
+func TestAttachGenerationPublishesOnlyAfterFalliblePreparation(t *testing.T) {
+	defer resetDeps()
+	cfg := &SwitchConfig{GenerationBits: 4, FloatingIpBase: 0x64640000}
+	s, slots := newGeneveAttachTestContext(cfg, true)
+	const unpublished = ^uint32(0)
+	observed := false
+	writeGeneveOptsFn = func(_ BPFMap, slotID uint32, _ *GeneveOptsValue) error {
+		observed = true
+		if got := slots.GetInnerIP(slotID); got != 0x0a000001 {
+			t.Fatalf("claim inner_ip=%#x", got)
+		}
+		if got := slots.GetSlot(slotID).Generation; got != unpublished {
+			t.Fatalf("generation published before fallible preparation: %d", got)
+		}
+		return errors.New("stop before publication")
+	}
+	_, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), Generation: 3, SkipDevice: true})
+	if err == nil || !strings.Contains(err.Error(), "stop before publication") || !observed {
+		t.Fatalf("Attach err=%v observed=%v", err, observed)
+	}
+	if got := slots.GetInnerIP(0); got != InnerIPFree {
+		t.Fatalf("rollback inner_ip=%#x", got)
+	}
+
+	writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error { return nil }
+	out, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.2"), Generation: 4, SkipDevice: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Generation != 4 || slots.GetSlot(0).Generation != 4 {
+		t.Fatalf("final generation output=%d slot=%d", out.Generation, slots.GetSlot(0).Generation)
+	}
+}
