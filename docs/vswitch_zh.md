@@ -120,6 +120,8 @@ Connector 创建 veth、设置 MAC/MTU、拉起、挂 TC、写 extraction 并安
 回程路由。接口地址、local route、服务 listener 和 sysctl 由部署负责,确保目标在
 管理 namespace 内本地持有或经路由可达。systemd 示例用 MGMT_ADDRS 显式配址([§1.3](vswitch-operations_zh.md#13-systemd-集成))。
 
+**Attachment identity:** 每次 Attach 接受调用方提供的 `generation`。FloatingIP 编码 `(generation << 12) | slot_id`,slot 同时保存该 generation。generation 不匹配不引入独立失败策略,而与 FloatingIP 未解析到当前 attachment 使用同一既有 non-match 路径。`generation_bits=0` 只接受 generation 0,与 `floating_ip_base + slot_id` 完全兼容;通常建议 `generation_bits=4`,即每 slot 16 个 generations。
+
 **沙箱 → 管理服务**(如 169.254.169.254):
 
 | 阶段 | 报文/动作 |
@@ -133,17 +135,16 @@ Connector 创建 veth、设置 MAC/MTU、拉起、挂 TC、写 extraction 并安
 | 阶段 | 报文/动作 |
 |---|---|
 | 管理回程 | `src=169.254.169.254, dst=floating_ip`;eth0→sw-mX。 |
-| TC 管理入口 | slot_id=dst-floating_ip_base;DNAT 目的到 inner_ip,目的 MAC 设为选定端口 MAC,增加 mgmt_rx。 |
+| TC 管理入口 | 从 `dst-floating_ip_base` 解码 `generation|slot_id`,解析当前 attachment 后 DNAT 目的到 inner_ip,目的 MAC 设为选定端口 MAC,增加 mgmt_rx。 |
 | 端口交付 | switch 端口→沙箱 veth peer 或 TAP 队列。 |
 
-**回程路由**:发往 floating IP 的回包必须到管理侧 TC 才能 DNAT。start 针对最大
-4096 地址 floating 段安装所在 /20 的定向路由,metric=100+index,不替换默认路由:
+**回程路由**:发往 floating IP 的回包必须到管理侧 TC 才能 DNAT。start 覆盖完整 attachment identity 范围:低 12 bit 始终是固定 4096-slot 索引,`generation_bits` 增加调用方 generation 高位;回程前缀为 `/20-generation_bits`,metric=100+index,不替换默认路由:
 
 ```text
-ip route add <floating_ip_base>/20 dev <mgmt-dev> metric <100+index>
+ip route add <floating_identity_range> dev <mgmt-dev> metric <100+index>
 ```
 
-floating base 不对齐 /20 时最大段跨两个 /20,两条都装。被路由捕获但不属于实际
+floating base 不对齐派生前缀时 identity window 最多跨两个相邻块,两条都装。`generation_bits=0` 保持 legacy /20;`generation_bits=4` 使用 /16 范围而 slot 数仍固定 4096。被路由捕获但不属于实际
 floating 范围的地址到达管理设备后,`tc_ingress_mx` 因无匹配 slot 返回 `TC_ACT_OK`,
 不执行 sandbox DNAT/redirect;后续由 switch namespace 协议栈及其过滤策略处理,
 不是 TC 强制丢包。管理 namespace 留空时,路由位于 caller/Host netns,
@@ -233,7 +234,8 @@ struct slot_item {                          // 108 字节,cache-line 优化
     __u8  geneve_opts_len;                  // offset 31 — 0 跳过 geneve_opts lookup
     __u32 mgmt_cidr_count;                  // offset 32
     struct mgmt_cidr mgmt_cidrs_0;          // offset 36 (20B) — 内联第一条(热路径)
-    __u8  _pad_cl0[8];                      // offset 56
+    __u32 generation;                       // offset 56 — 调用方提供的 attachment generation
+    __u8  _pad_cl0[4];                      // offset 60
     // ── cache line 1 (cold path) ────────────────────────────────
     struct mgmt_cidr mgmt_cidrs_ext[MAX_MGMT_CIDR_EXT]; // offset 64 (40B)
     __u32 stats_ready;                      // offset 104 — userspace confirmed current-attach reset
@@ -249,7 +251,8 @@ struct switch_config {                      // 40 字节
     __u8  _pad3[3];
     __u32 transit_nexthop;
     __u8  port_mac[6];                      // 全零 → 派生;非零 → 固定
-    __u8  _pad4[2];
+    __u8  generation_bits;                  // FloatingIP identity 高位;0=legacy
+    __u8  _pad4;
     __u8  geneve_locator;                   // 0=port,1=vni,2=tlv
     __u8  geneve_tlv_type;                  // 精确 8-bit wire type
     __u16 geneve_tlv_class;

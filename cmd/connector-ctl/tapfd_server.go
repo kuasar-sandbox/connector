@@ -221,8 +221,13 @@ func handleTapFDPrepare(conn *net.UnixConn, sw vswitch.Interface, req *tapfd.Req
 		sendTapFDError(conn, tapfd.ErrorCodePortInvalid, fmt.Errorf("port %d is %s, not tap", out.Port, out.Mode))
 		return
 	}
-	if err := sendTapFDOK(conn, fmt.Sprintf("port=%d floating_ip=%s mac=%s ip=%s mode=%s",
-		out.Port, out.FloatingIP, out.PortMAC, out.InnerIP, out.Mode)); err != nil {
+	response := fmt.Sprintf("port=%d floating_ip=%s mac=%s ip=%s mode=%s",
+		out.Port, out.FloatingIP, out.PortMAC, out.InnerIP, out.Mode)
+	if out.GenerationBits > 0 {
+		response = fmt.Sprintf("port=%d generation=%d floating_ip=%s mac=%s ip=%s mode=%s",
+			out.Port, out.Generation, out.FloatingIP, out.PortMAC, out.InnerIP, out.Mode)
+	}
+	if err := sendTapFDOK(conn, response); err != nil {
 		// The client never received the allocated port number and therefore cannot
 		// RELEASE it. Roll back here so a disconnected caller cannot leak a slot.
 		_ = sw.Detach(vswitch.DetachOptions{Port: int(out.Port), SkipDevice: true})
@@ -279,6 +284,13 @@ func prepareAttachOptions(req *tapfd.Request) (vswitch.AttachOptions, error) {
 		return vswitch.AttachOptions{}, fmt.Errorf("invalid inner_ip %q", innerText)
 	}
 	opts := vswitch.AttachOptions{InnerIP: innerIP}
+	if generationText := requestField(req, "generation", "GENERATION"); generationText != "" {
+		generation, err := strconv.ParseUint(generationText, 10, 32)
+		if err != nil {
+			return vswitch.AttachOptions{}, fmt.Errorf("invalid generation %q", generationText)
+		}
+		opts.Generation = uint32(generation)
+	}
 
 	if gatewayText := requestField(req, "transit_gateway_ip", "transit-gateway-ip", "TRANSIT_GATEWAY_IP"); gatewayText != "" {
 		opts.TransitGatewayIP = net.ParseIP(gatewayText)

@@ -124,7 +124,7 @@ struct mgmt_cidr {
 };  // Total: 20 bytes
 
 // Slot configuration - indexed by slot_id (0 to n_ports-1)
-// floating_ip = config.floating_ip_base + slot_id
+// floating_ip = config.floating_ip_base + (generation << 12) + slot_id
 // geneve_port = config.geneve_port_base + slot_id
 //
 // Cache line optimized layout:
@@ -145,7 +145,8 @@ struct slot_item {
     __u8  geneve_opts_len;    // offset 31 - Opaque option bytes; 0 skips map lookup
     __u32 mgmt_cidr_count;    // offset 32 - Number of management routes
     struct mgmt_cidr mgmt_cidrs_0;  // offset 36-55 (20B) - Inline first mgmt_cidr (hot entry)
-    __u8  _pad_cl0[8];        // offset 56-63 - Pad to 64 bytes
+    __u32 generation;         // offset 56-59 - Caller-supplied attachment generation
+    __u8  _pad_cl0[4];        // offset 60-63 - Pad to 64 bytes
 
     // ═══════════════════════════════════════════════════════════
     // Cache Line 1 (44 bytes) - Extended mgmt_cidrs (cold path)
@@ -166,7 +167,8 @@ struct switch_config {
     __u8  _pad3[3];           // Alignment
     __u32 transit_nexthop;    // transit-dev L3 nexthop IP, 0 = FIB lookup
     __u8  port_mac[6];        // Port MAC: all-zero = per-port derivation, non-zero = fixed value
-    __u8  _pad4[2];           // Alignment
+    __u8  generation_bits;    // Floating-IP high bits above fixed 12-bit slot id
+    __u8  _pad4;              // Alignment
     __u8  geneve_locator;     // GENEVE_LOCATOR_*; zero is legacy port mode
     __u8  geneve_tlv_type;    // Exact 8-bit wire type, including critical bit
     __u16 geneve_tlv_class;   // Host-order option class

@@ -151,14 +151,14 @@ To avoid forking/executing a helper for every handoff, a provider may keep an `A
 Request lines:
 
 ```text
-TAPFD/1 PREPARE VSWITCH=sw0 INNER_IP=169.254.0.21\n
-TAPFD/1 PREPARE VSWITCH=sw0 INNER_IP=169.254.0.21 TRANSIT_GATEWAY_IP=10.0.0.2 TRANSIT_GENEVE_VNI=42 TRANSIT_GENEVE_OPTS=0102:02:0000002a,0102:83:1122334455667788\n
+TAPFD/1 PREPARE VSWITCH=sw0 GENERATION=3 INNER_IP=169.254.0.21\n
+TAPFD/1 PREPARE VSWITCH=sw0 GENERATION=3 INNER_IP=169.254.0.21 TRANSIT_GATEWAY_IP=10.0.0.2 TRANSIT_GENEVE_VNI=42 TRANSIT_GENEVE_OPTS=0102:02:0000002a,0102:83:1122334455667788\n
 TAPFD/1 OPEN want_netns=1 VSWITCH=sw0 PORT=3\n
 TAPFD/1 RELEASE VSWITCH=sw0 PORT=3\n
 ```
 
 - `TAPFD/1` is the protocol version. Operations are `PREPARE`, `OPEN` and `RELEASE`.
-- `PREPARE` allocates and configures a port slot that can subsequently be opened with `OPEN`. `connector-ctl vswitch serve` accepts `INNER_IP` and optional `TRANSIT_GATEWAY_IP`, `TRANSIT_GENEVE_VNI`, `TRANSIT_GENEVE_OPTS` and `TRANSIT_MAC`. `transit_geneve_opts` is a comma-separated sequence of `CLASS:TYPE:DATA` items and uses the same parser as CLI `--transit-geneve-opt`. Class, type and data are hexadecimal; data length must be a multiple of four bytes; an empty value means no options. Caller ordering is preserved. Options are used only for connector-to-gateway outbound Geneve encapsulation; they do not appear on the return path or in the TAP FD payload.
+- `PREPARE` allocates and configures a port slot that can subsequently be opened with `OPEN`. `connector-ctl vswitch serve` accepts `INNER_IP`, optional caller-supplied `GENERATION`, and optional `TRANSIT_GATEWAY_IP`, `TRANSIT_GENEVE_VNI`, `TRANSIT_GENEVE_OPTS` and `TRANSIT_MAC`. `transit_geneve_opts` is a comma-separated sequence of `CLASS:TYPE:DATA` items and uses the same parser as CLI `--transit-geneve-opt`. Class, type and data are hexadecimal; data length must be a multiple of four bytes; an empty value means no options. Caller ordering is preserved. Options are used only for connector-to-gateway outbound Geneve encapsulation; they do not appear on the return path or in the TAP FD payload.
 - `OPEN` opens the queue descriptors of an allocated port and returns them using `SCM_RIGHTS`. `want_netns=1` has the same meaning as section 3.4: the consumer requests the TAP's netns descriptor.
 - `RELEASE` releases an allocated port slot.
 - Other `key=value` tokens are provider-specific. `connector-ctl vswitch serve` accepts `switch`/`vswitch`/`VSWITCH` and `port`/`PORT`.
@@ -175,7 +175,7 @@ Consumers **SHOULD** accept this `TAPFD/1 OK` prefix. They may also accept bare 
 Successful `PREPARE`/`RELEASE` responses do not carry descriptors:
 
 ```text
-TAPFD/1 OK port=3 floating_ip=100.100.96.3 mac=02:00:00:00:80:01 ip=169.254.0.21 mode=tap\n
+TAPFD/1 OK port=3 generation=3 floating_ip=100.100.96.3 mac=02:00:00:00:80:01 ip=169.254.0.21 mode=tap\n
 TAPFD/1 OK port=3 released=1\n
 ```
 

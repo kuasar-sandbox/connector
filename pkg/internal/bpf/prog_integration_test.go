@@ -1530,3 +1530,96 @@ func TestIngressNxMgmtServiceMiss(t *testing.T) {
 		t.Errorf("dst port: got %d, want 53 (unchanged)", udp.DstPort)
 	}
 }
+
+func TestFloatingIPGenerationFencesStaleAttachment(t *testing.T) {
+	ensureBPFEnv(t)
+	objs, err := bpf.LoadObjects()
+	if err != nil {
+		t.Fatalf("LoadObjects: %v", err)
+	}
+	defer objs.Close()
+	testSetupMaps(t, objs)
+
+	key := uint32(0)
+	var cfg vswitch.SwitchConfig
+	if err := objs.Maps.Config.Lookup(key, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.GenerationBits = 4
+	if err := objs.Maps.Config.Update(key, &cfg, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+	var slot vswitch.SlotItem
+	if err := objs.Maps.Slots.Lookup(key, &slot); err != nil {
+		t.Fatal(err)
+	}
+	slot.Generation = 3
+	if err := objs.Maps.Slots.Update(key, &slot, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+
+	mgmtMAC := [6]byte{0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xee}
+	mgmtIP := net.ParseIP("169.254.169.254")
+	current := bpf.Uint32ToIP(testFloatingIPBase + (3 << 12))
+	stale := bpf.Uint32ToIP(testFloatingIPBase + (2 << 12))
+	for _, tc := range []struct {
+		name string
+		ip   net.IP
+		want uint32
+	}{
+		{"current generation", current, TCActRedirect},
+		{"stale generation", stale, TCActOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pkt := buildIPv4UDPPacket(mgmtMAC, testSwitchMAC, mgmtIP, tc.ip, 80, 12345, []byte("reply"))
+			ret, _, err := objs.Programs.IngressMX.Test(pkt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ret != tc.want {
+				t.Fatalf("ret=%d want=%d", ret, tc.want)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		ip   net.IP
+		want [6]byte
+	}{
+		{"arp current generation", current, portMAC(testSwitchMAC, testSlotID)},
+		{"arp stale generation uses non-match policy", stale, testSwitchMAC},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pkt := buildARPRequest(mgmtMAC, mgmtIP, tc.ip)
+			_, out, err := objs.Programs.IngressMX.Test(pkt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			arp, err := parseARPPacket(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if arp.SenderMAC != tc.want {
+				t.Fatalf("sender MAC=%v want=%v", arp.SenderMAC, tc.want)
+			}
+		})
+	}
+
+	sandboxMAC := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
+	pkt := buildIPv4UDPPacket(sandboxMAC, testSwitchMAC, net.ParseIP("169.254.1.1"), mgmtIP, 12345, 80, []byte("request"))
+	ret, out, err := objs.Programs.IngressNX.Test(pkt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ret != TCActRedirect {
+		t.Fatalf("egress ret=%d", ret)
+	}
+	ipHdr, err := parseIPHeader(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ipHdr.SrcIP.Equal(current) {
+		t.Fatalf("SNAT src=%v want=%v", ipHdr.SrcIP, current)
+	}
+}

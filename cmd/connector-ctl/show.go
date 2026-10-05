@@ -55,6 +55,7 @@ type SlotJSON struct {
 	Allocated        bool   `json:"allocated"`
 	InnerIP          string `json:"inner_ip"`
 	FloatingIP       string `json:"floating_ip"`
+	Generation       uint32 `json:"generation,omitempty"`
 	PortMAC          string `json:"port_mac"`
 	TransitIP        string `json:"transit_ip,omitempty"`
 	TransitGatewayIP string `json:"transit_gateway_ip,omitempty"`
@@ -70,6 +71,7 @@ type ConfigJSON struct {
 	PortMAC          string                    `json:"port_mac"`
 	NPorts           uint32                    `json:"n_ports"`
 	FloatingIPBase   string                    `json:"floating_ip_base"`
+	GenerationBits   uint8                     `json:"generation_bits,omitempty"`
 	GeneveLocator    string                    `json:"geneve_locator"`
 	GenevePort       uint16                    `json:"geneve_port"`
 	GenevePortBase   uint32                    `json:"geneve_port_base,omitempty"`
@@ -140,7 +142,8 @@ func slotToJSON(cfg *vswitch.SwitchConfig, ps vswitch.PortSlot, sid uint32) Slot
 		Mode:             vswitch.SlotPortKind(&ps.SlotItem).String(),
 		Allocated:        ps.Allocated,
 		InnerIP:          vswitch.Uint32ToIP(ps.InnerIp).String(),
-		FloatingIP:       vswitch.Uint32ToIP(cfg.FloatingIpBase + sid).String(),
+		FloatingIP:       vswitch.Uint32ToIP(vswitch.FloatingIPForAttachment(cfg.FloatingIpBase, sid, ps.Generation)).String(),
+		Generation:       ps.Generation,
 		PortMAC:          portMAC.String(),
 		Ifindex:          ps.Ifindex,
 		TransitGeneveVNI: ps.TransitGeneveVni,
@@ -194,6 +197,7 @@ func runShowConfig(cmd *cobra.Command, args []string) error {
 		PortMAC:        portMAC,
 		NPorts:         cfg.N_ports,
 		FloatingIPBase: vswitch.Uint32ToIP(cfg.FloatingIpBase).String(),
+		GenerationBits: cfg.GenerationBits,
 		GeneveLocator:  geneveLocator.String(),
 		GenevePort:     vswitch.GeneveWirePort(geneveLocator, cfg.GenevePortBase, 0),
 		GeneveEncapEth: cfg.GeneveEncapEth != 0,

@@ -61,7 +61,8 @@ type vswitchSlotItem struct {
 	GeneveOptsLen    uint8
 	MgmtCidrCount    uint32
 	MgmtCidrs0       vswitchMgmtCidr
-	PadCl0           [8]uint8
+	Generation       uint32
+	PadCl0           [4]uint8
 	MgmtCidrsExt     [2]vswitchMgmtCidr
 	StatsReady       uint32
 }
@@ -110,7 +111,8 @@ type vswitchSwitchConfig struct {
 	Pad3           [3]uint8
 	TransitNexthop uint32
 	PortMac        [6]uint8
-	Pad4           [2]uint8
+	GenerationBits uint8
+	Pad4           uint8
 	GeneveLocator  uint8
 	GeneveTlvType  uint8
 	GeneveTlvClass uint16
