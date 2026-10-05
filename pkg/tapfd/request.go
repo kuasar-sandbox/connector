@@ -9,6 +9,7 @@ import (
 const (
 	RequestVersion     = "TAPFD/1"
 	RequestOpOpen      = "OPEN"
+	RequestOpInfo      = "INFO"
 	RequestOpPrepare   = "PREPARE"
 	RequestOpRelease   = "RELEASE"
 	ResponseStatusOK   = "OK"
@@ -154,7 +155,7 @@ func ParseRequestLine(line string) (*Request, error) {
 
 func validRequestOp(op string) bool {
 	switch op {
-	case RequestOpOpen, RequestOpPrepare, RequestOpRelease:
+	case RequestOpInfo, RequestOpOpen, RequestOpPrepare, RequestOpRelease:
 		return true
 	default:
 		return false
