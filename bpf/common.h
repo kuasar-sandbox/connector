@@ -145,8 +145,8 @@ struct slot_item {
     __u8  geneve_opts_len;    // offset 31 - Opaque option bytes; 0 skips map lookup
     __u32 mgmt_cidr_count;    // offset 32 - Number of management routes
     struct mgmt_cidr mgmt_cidrs_0;  // offset 36-55 (20B) - Inline first mgmt_cidr (hot entry)
-    __u32 generation;         // offset 56-59 - Caller-supplied attachment generation
-    __u8  _pad_cl0[4];        // offset 60-63 - Pad to 64 bytes
+    __u32 generation;         // offset 56-59 - Last/current attachment generation
+    __u32 generation_valid;   // offset 60-63 - Generation history exists
 
     // ═══════════════════════════════════════════════════════════
     // Cache Line 1 (44 bytes) - Extended mgmt_cidrs (cold path)

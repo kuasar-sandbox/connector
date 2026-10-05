@@ -69,34 +69,53 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	}
 
 	var slotID uint32
-	// Generation is the final attachment publication fence. On modern switches
-	// the control lock serializes ownership changes; write an out-of-range
-	// sentinel while the slot is still Free, then publish the caller generation
-	// only after every fallible Attach step completes. Thus neither the previous
-	// nor the new FloatingIP can identify a partially prepared attachment.
+	var previousGeneration uint32
+	var previousGenerationValid uint32
+	// Generation is the final attachment publication fence. On generation-aware
+	// switches the control lock serializes ownership changes. A free slot whose
+	// retained generation equals the requested one is not a valid auto-reuse
+	// candidate: that would recreate the same FloatingIP identity immediately.
+	// A never-used slot is distinguished by GenerationValid==0, so generation 0
+	// remains a valid first attachment.
 	const unpublishedGeneration = ^uint32(0)
 	claim := func(id uint32) bool {
-		if hasGeneveOptsMap {
+		if hasGeneveOptsMap && cfg.GenerationBits > 0 {
 			if s.mmapSlots.GetInnerIP(id) != InnerIPFree {
 				return false
 			}
+			slot := s.mmapSlots.GetSlot(id)
+			if slot.GenerationValid != 0 && slot.Generation == opts.Generation {
+				return false
+			}
+			previousGeneration, previousGenerationValid = slot.Generation, slot.GenerationValid
 			s.mmapSlots.UpdateSlotFields(id, func(slot *SlotItem) {
 				slot.Generation = unpublishedGeneration
 			})
 		}
-		return s.mmapSlots.TryAllocate(id, innerIP)
+		if s.mmapSlots.TryAllocate(id, innerIP) {
+			return true
+		}
+		if hasGeneveOptsMap && cfg.GenerationBits > 0 && s.mmapSlots.GetInnerIP(id) == InnerIPFree {
+			s.mmapSlots.UpdateSlotFields(id, func(slot *SlotItem) {
+				slot.Generation = previousGeneration
+				slot.GenerationValid = previousGenerationValid
+			})
+		}
+		return false
 	}
 
-	// Allocate slot using atomic CAS.
 	if opts.Port > 0 {
 		slotID = uint32(opts.Port - 1)
 		if slotID >= cfg.N_ports {
 			return nil, fmt.Errorf("port %d: %w (max %d)", opts.Port, ErrPortOutOfRange, cfg.N_ports)
 		}
 		if !claim(slotID) {
+			if cfg.GenerationBits > 0 && s.mmapSlots.GetInnerIP(slotID) == InnerIPFree {
+				return nil, fmt.Errorf("port %d: generation %d was already used by the previous attachment", opts.Port, opts.Generation)
+			}
 			return nil, fmt.Errorf("port %d: %w", opts.Port, ErrPortAllocated)
 		}
-	} else if hasGeneveOptsMap {
+	} else if hasGeneveOptsMap && cfg.GenerationBits > 0 {
 		found := false
 		for id := uint32(0); id < cfg.N_ports; id++ {
 			if claim(id) {
@@ -105,10 +124,10 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 			}
 		}
 		if !found {
-			return nil, fmt.Errorf("no free slots available")
+			return nil, fmt.Errorf("no free slots available for generation %d", opts.Generation)
 		}
 	} else {
-		// Legacy switches have no generation-aware data path.
+		// generation_bits=0 preserves the legacy first-free allocator exactly.
 		var err error
 		slotID, err = s.mmapSlots.FindFreeSlot(innerIP)
 		if err != nil {
@@ -137,10 +156,14 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 		}
 	})
 	rollbackClaim := func() {
-		// The hint is not published until all fallible Attach work completes.
-		// Release only our CAS claim; if another operation already changed the
-		// owner, the CAS fails without touching that owner's state.
-		s.mmapSlots.TryRelease(slotID, innerIP)
+		// Restore generation history only when releasing our exact CAS claim.
+		// A concurrent force operation that changed ownership remains untouched.
+		if s.mmapSlots.TryRelease(slotID, innerIP) && hasGeneveOptsMap && cfg.GenerationBits > 0 {
+			s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
+				slot.Generation = previousGeneration
+				slot.GenerationValid = previousGenerationValid
+			})
+		}
 	}
 
 	// Mode-specific validation: tap ports must have been provisioned (have a
@@ -208,6 +231,9 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
 		slot.GeneveOptsLen = geneveOptsValue.Len
 		slot.Generation = opts.Generation
+		if cfg.GenerationBits > 0 {
+			slot.GenerationValid = 1
+		}
 	})
 	// Publish the new counter generation only after every attachment field and
 	// fallible operation is complete. Packets captured before this point can

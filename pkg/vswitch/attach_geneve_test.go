@@ -588,3 +588,79 @@ func TestAttachGenerationPublishesOnlyAfterFalliblePreparation(t *testing.T) {
 		t.Fatalf("final generation output=%d slot=%d", out.Generation, slots.GetSlot(0).Generation)
 	}
 }
+
+func TestAttachGenerationReuseSelection(t *testing.T) {
+	defer resetDeps()
+	cfg := &SwitchConfig{N_ports: 3, GenerationBits: 4, FloatingIpBase: 0x64640000}
+	s, slots := newGeneveAttachTestContext(cfg, true)
+	writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error { return nil }
+
+	first, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), Generation: 0, SkipDevice: true})
+	if err != nil || first.Port != 1 {
+		t.Fatalf("first Attach=%+v err=%v", first, err)
+	}
+	if err := s.Detach(DetachOptions{Port: 1, SkipDevice: true}); err != nil {
+		t.Fatal(err)
+	}
+	if slot := slots.GetSlot(0); slot.Generation != 0 || slot.GenerationValid != 1 {
+		t.Fatalf("retained generation=(%d,%d), want (0,1)", slot.Generation, slot.GenerationValid)
+	}
+
+	// Same caller generation must skip the just-freed identity and use another
+	// free slot. This is what lets an external generation allocator remain
+	// independent of connector's slot allocator.
+	second, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.2"), Generation: 0, SkipDevice: true})
+	if err != nil || second.Port != 2 {
+		t.Fatalf("same-generation auto Attach=%+v err=%v, want port 2", second, err)
+	}
+	if err := s.Detach(DetachOptions{Port: 2, SkipDevice: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A different generation may immediately reuse port 1.
+	third, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.3"), Generation: 1, SkipDevice: true})
+	if err != nil || third.Port != 1 {
+		t.Fatalf("new-generation auto Attach=%+v err=%v, want port 1", third, err)
+	}
+}
+
+func TestAttachExplicitPortRejectsSameGenerationReuse(t *testing.T) {
+	defer resetDeps()
+	cfg := &SwitchConfig{N_ports: 1, GenerationBits: 4, FloatingIpBase: 0x64640000}
+	s, _ := newGeneveAttachTestContext(cfg, true)
+	writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error { return nil }
+	if _, err := s.Attach(AttachOptions{Port: 1, InnerIP: net.ParseIP("10.0.0.1"), Generation: 3, SkipDevice: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Detach(DetachOptions{Port: 1, SkipDevice: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Attach(AttachOptions{Port: 1, InnerIP: net.ParseIP("10.0.0.2"), Generation: 3, SkipDevice: true}); err == nil || !strings.Contains(err.Error(), "already used") {
+		t.Fatalf("same-generation explicit reuse err=%v", err)
+	}
+	if _, err := s.Attach(AttachOptions{Port: 1, InnerIP: net.ParseIP("10.0.0.2"), Generation: 4, SkipDevice: true}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAttachGenerationRollbackRestoresHistory(t *testing.T) {
+	defer resetDeps()
+	cfg := &SwitchConfig{N_ports: 1, GenerationBits: 4, FloatingIpBase: 0x64640000}
+	s, slots := newGeneveAttachTestContext(cfg, true)
+	writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error { return nil }
+	if _, err := s.Attach(AttachOptions{Port: 1, InnerIP: net.ParseIP("10.0.0.1"), Generation: 5, SkipDevice: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Detach(DetachOptions{Port: 1, SkipDevice: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error { return errors.New("injected") }
+	if _, err := s.Attach(AttachOptions{Port: 1, InnerIP: net.ParseIP("10.0.0.2"), Generation: 6, SkipDevice: true}); err == nil {
+		t.Fatal("failed Attach succeeded")
+	}
+	slot := slots.GetSlot(0)
+	if slots.GetInnerIP(0) != InnerIPFree || slot.Generation != 5 || slot.GenerationValid != 1 {
+		t.Fatalf("rollback lost generation history: inner=%#x gen=%d valid=%d", slots.GetInnerIP(0), slot.Generation, slot.GenerationValid)
+	}
+}

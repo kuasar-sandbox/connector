@@ -23,6 +23,7 @@ const MetadataMaxSize = 4096
 var (
 	_ [108]byte = [unsafe.Sizeof(SlotItem{})]byte{}
 	_ [56]byte  = [unsafe.Offsetof(SlotItem{}.Generation)]byte{}
+	_ [60]byte  = [unsafe.Offsetof(SlotItem{}.GenerationValid)]byte{}
 	_ [104]byte = [unsafe.Offsetof(SlotItem{}.StatsReady)]byte{}
 	_ [40]byte  = [unsafe.Sizeof(SwitchConfig{})]byte{}
 	_ [34]byte  = [unsafe.Offsetof(SwitchConfig{}.GenerationBits)]byte{}
