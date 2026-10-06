@@ -273,6 +273,7 @@ func TestTapFDServerRelease(t *testing.T) {
 
 type fakeVSwitch struct {
 	vswitch.Interface
+	config         *vswitch.SwitchConfig
 	attachOpts     vswitch.AttachOptions
 	attachOut      *vswitch.AttachOutput
 	attachErr      error
@@ -281,6 +282,8 @@ type fakeVSwitch struct {
 	detachOpts     vswitch.DetachOptions
 	detachErr      error
 }
+
+func (f *fakeVSwitch) Config() *vswitch.SwitchConfig { return f.config }
 
 func (f *fakeVSwitch) Attach(opts vswitch.AttachOptions) (*vswitch.AttachOutput, error) {
 	f.attachOpts = opts
@@ -323,4 +326,22 @@ func readAllString(t *testing.T, conn *net.UnixConn) string {
 		t.Fatalf("read response: %v", err)
 	}
 	return string(b)
+}
+
+func TestTapFDInfoReturnsGenerationBits(t *testing.T) {
+	fake := &fakeVSwitch{config: &vswitch.SwitchConfig{GenerationBits: 4}}
+	server, client := unixSocketPair(t)
+	done := make(chan struct{})
+	go func() {
+		handleTapFDConn(server, "sw0", fake, nil)
+		close(done)
+	}()
+	if _, err := client.Write([]byte("TAPFD/1 INFO VSWITCH=sw0\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := readAllString(t, client), "TAPFD/1 OK generation_bits=4\n"; got != want {
+		t.Fatalf("response=%q want=%q", got, want)
+	}
+	client.Close()
+	<-done
 }

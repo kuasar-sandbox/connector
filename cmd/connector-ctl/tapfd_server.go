@@ -190,6 +190,8 @@ func handleTapFDConn(conn *net.UnixConn, switchName string, sw vswitch.Interface
 	}
 
 	switch req.Op {
+	case tapfd.RequestOpInfo:
+		handleTapFDInfo(conn, sw)
 	case tapfd.RequestOpPrepare:
 		handleTapFDPrepare(conn, sw, req)
 	case tapfd.RequestOpOpen:
@@ -199,6 +201,15 @@ func handleTapFDConn(conn *net.UnixConn, switchName string, sw vswitch.Interface
 	default:
 		sendTapFDError(conn, tapfd.ErrorCodeBadRequest, fmt.Errorf("unsupported request op %q", req.Op))
 	}
+}
+
+func handleTapFDInfo(conn *net.UnixConn, sw vswitch.Interface) {
+	cfg := sw.Config()
+	if cfg == nil {
+		sendTapFDError(conn, tapfd.ErrorCodeProviderInternal, fmt.Errorf("switch config unavailable"))
+		return
+	}
+	_ = sendTapFDOK(conn, fmt.Sprintf("generation_bits=%d", cfg.GenerationBits))
 }
 
 func handleTapFDPrepare(conn *net.UnixConn, sw vswitch.Interface, req *tapfd.Request) {

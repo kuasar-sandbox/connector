@@ -157,7 +157,8 @@ TAPFD/1 OPEN want_netns=1 VSWITCH=sw0 PORT=3\n
 TAPFD/1 RELEASE VSWITCH=sw0 PORT=3\n
 ```
 
-- `TAPFD/1` is the protocol version. Operations are `PREPARE`, `OPEN` and `RELEASE`.
+- `TAPFD/1` is the protocol version. Operations are `INFO`, `PREPARE`, `OPEN` and `RELEASE`.
+- `INFO` is read-only and returns switch capabilities needed by a resident client; currently `generation_bits=<n>`. It does not allocate or mutate a slot.
 - `PREPARE` allocates and configures a port slot that can subsequently be opened with `OPEN`. `connector-ctl vswitch serve` accepts `INNER_IP`, optional caller-supplied `GENERATION`, and optional `TRANSIT_GATEWAY_IP`, `TRANSIT_GENEVE_VNI`, `TRANSIT_GENEVE_OPTS` and `TRANSIT_MAC`. `transit_geneve_opts` is a comma-separated sequence of `CLASS:TYPE:DATA` items and uses the same parser as CLI `--transit-geneve-opt`. Class, type and data are hexadecimal; data length must be a multiple of four bytes; an empty value means no options. Caller ordering is preserved. Options are used only for connector-to-gateway outbound Geneve encapsulation; they do not appear on the return path or in the TAP FD payload.
 - `OPEN` opens the queue descriptors of an allocated port and returns them using `SCM_RIGHTS`. `want_netns=1` has the same meaning as section 3.4: the consumer requests the TAP's netns descriptor.
 - `RELEASE` releases an allocated port slot.
@@ -172,7 +173,13 @@ TAPFD/1 OK port=3 mac=02:00:00:00:80:01 ip=169.254.3.1 fd=1 netns_fd=1\0
 
 Consumers **SHOULD** accept this `TAPFD/1 OK` prefix. They may also accept bare section 2 metadata for compatibility with exec helpers.
 
-Successful `PREPARE`/`RELEASE` responses do not carry descriptors:
+Successful `INFO`/`PREPARE`/`RELEASE` responses do not carry descriptors:
+
+```text
+TAPFD/1 OK generation_bits=4\n
+```
+
+`PREPARE`/`RELEASE` examples:
 
 ```text
 TAPFD/1 OK port=3 generation=3 floating_ip=100.100.96.3 mac=02:00:00:00:80:01 ip=169.254.0.21 mode=tap\n
@@ -187,7 +194,7 @@ TAPFD/1 ERR code=PORT_UNAVAILABLE message=port_not_attached\n
 
 Recommended error codes are `BAD_REQUEST`, `SWITCH_MISMATCH`, `PORT_INVALID`, `PORT_UNAVAILABLE` and `PROVIDER_INTERNAL`. A consumer receiving `ERR` **MUST NOT** enable the interface.
 
-`connector-ctl vswitch serve --tapfd-listen /run/kuasar/connector/sw0/tapfd.sock` is the reference provider for this mode. It handles `PREPARE`/`OPEN`/`RELEASE` on the same persistent switch handle, avoiding repeated fork/exec and reopening pinned BPF maps on the hot path.
+`connector-ctl vswitch serve --tapfd-listen /run/kuasar/connector/sw0/tapfd.sock` is the reference provider for this mode. It handles `INFO`/`PREPARE`/`OPEN`/`RELEASE` on the same persistent switch handle, avoiding repeated fork/exec and reopening pinned BPF maps on the hot path.
 
 ## 5. Lifetime and idempotency
 

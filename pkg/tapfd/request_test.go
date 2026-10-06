@@ -158,3 +158,13 @@ func unixConnFromRawFD(t *testing.T, fd int) *net.UnixConn {
 	}
 	return conn.(*net.UnixConn)
 }
+
+func TestParseInfoRequest(t *testing.T) {
+	req, err := ParseRequestLine("TAPFD/1 INFO VSWITCH=sw0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Op != RequestOpInfo || req.Fields["VSWITCH"] != "sw0" {
+		t.Fatalf("request=%+v", req)
+	}
+}
