@@ -304,9 +304,8 @@ connector-ctl vswitch attach sw0 --inner-ip=169.254.1.1 \
 
 ### 2.5 `connector-ctl vswitch detach`
 
-释放端口:在新 switch 的 per-switch control flock 内直接 CAS Allocated→Free,随后清零
-options fast-path hint。`Reserved` 只表示显式 reserve/provision/stop 状态,Detach 不把它
-用作过渡态。固定长度 options map value 和其它 transit fields 不在 Detach 中清理;
+释放端口:当前 switch 仅持共享 lifecycle guard,先发布 dataplane-down 并完成设备/attachment 清理,清零 options hint,最后 CAS Allocated→Free。不同 slot 的 Attach/Detach 不因此互斥。
+`Reserved` 只表示显式 reserve/provision/stop 状态,Detach 不把它用作过渡态。固定长度 options map value 和其它 transit fields 不在 Detach 中清理;
 Free slot 不会被数据面使用,下一次 Attach 在发布新 hint 前完整覆盖。缺少
 `geneve_opts` map 的旧 switch 保持 CAS-only 兼容路径。tap slot 无设备操作;veth slot
 给 `--from-netns` 则把设备移回 port netns,省略则校验设备已在 port netns。

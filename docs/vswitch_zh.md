@@ -42,9 +42,9 @@ CLI、配置、构建、部署与故障排查见 [vSwitch 运维](vswitch-operat
    并可选用静态管理服务地址转换。
 3. **进程生命周期与数据面解耦**:`start`/`attach`/`detach` 返回后用户态退出,转发由
    内核 eBPF 持续执行。
-4. **并发安全**:slot 所有权由 mmap + 原子 CAS 判定;含 `geneve_opts` map 的新 switch
-   还用 per-switch flock 串行化 Attach/Detach/Reserve 的复合更新。旧 switch 缺少该 map
-   时保持原有 CAS-only 路径。
+4. **并发安全**:slot 所有权由 mmap + 原子 CAS 判定;当前 Attach/Detach 仅持共享 switch
+   生命周期锁,不同 slot 可并发;破坏性/force 管理操作继续使用排他侧。旧 switch 缺少
+   `geneve_opts` 时保持原有 CAS-only 路径。
 5. **可观测**:per-port、per-direction、per-class(mgmt/transit)流量计数;状态查询用
    Kubernetes Conditions 风格。
 6. **systemd-native**:`Type=notify` 集成,watchdog keepalive,崩溃重启后经 bpffs
@@ -209,9 +209,9 @@ GENEVE 内层同时识别 IPv4 与 IPv6(管理平面与 `slot.inner_ip` 为 IPv4
 使用算术或固定 locator 布局,不需要通用 slot-index hash/TLV 搜索;管理服务转换
 仍有独立 hash lookup。
 
-Stats 在现有 pin 目录 control flock 上取得非阻塞共享锁,并在计数读取前后核验当前 pinned slots map ID,因此绕过 flock 的 force cleanup 也会使本次读取失败. Attach/detach/reserve 和交换机替换复用原有排他侧. 控制操作占用、map 被替换、清零未确认或 map 读取失败时,整个请求批次返回错误. 多个共享读取可以并发. 显式查询 Free/Reserved 端口返回 `ErrPortNotAttached`;省略端口列表时仅选择 Allocated 槽. 确认清零后的 0 是有效观测;清零失败仍允许 attach 成功,但在后续成功 attach 前返回 `ErrStatsUnavailable`. 不新增第二份归属表.
+Stats 在现有 pin 目录 control flock 上取得非阻塞共享锁,并在计数读取前后核验当前 pinned slots map ID,因此绕过 flock 的 force cleanup 也会使本次读取失败. Attach/detach 使用共享 lifecycle 侧;reserve/force 与交换机替换使用排他侧. 控制操作占用、map 被替换、清零未确认或 map 读取失败时,整个请求批次返回错误. 多个共享读取可以并发. 显式查询 Free/Reserved 端口返回 `ErrPortNotAttached`;省略端口列表时仅选择 Allocated 槽. 确认清零后的 0 是有效观测;清零失败仍允许 attach 成功,但在后续成功 attach 前返回 `ErrStatsUnavailable`. 不新增第二份归属表.
 
-清零标记使用 offset 104 原有的四个 padding 字节,slot 仍为 108 字节,mmap stride 仍为 112 字节. 分配在发布新 owner 的 CAS 前清除此标记,即使进程紧接着退出也不会沿用旧 readiness. `stats` 改为每槽一个 80 字节 ARRAY value,包含 `bpf_spin_lock` 和内部 64-bit 计数代次. TC 在读取 attachment 字段前取得代次,更新计数时在同一内核锁内验证代次. Attach 完成全部字段与可能失败的设备操作后,通过 `BPF_F_LOCK` 同时清零并推进代次;此前已经执行的旧包不能把旧值写回新计数. 查询也使用 `BPF_F_LOCK`,保证每对包数/字节数的一致读取. 代次耗尽或重置失败仅使统计不可用,不改变 Attach 的成功条件.
+slot 仍为 108 字节,mmap stride 仍为 112 字节. 只有赢得 owner CAS 的 Attach 才清 `stats_ready`;在当前计数实例完成 reset 及其它准备前,slot 一直保持 dataplane-down. `stats` 为每槽一个 80 字节 ARRAY value,包含 `bpf_spin_lock` 和内部 64-bit 计数代次. TC 在读取 attachment 字段前取得代次,更新计数时在同一内核锁内验证代次. Attach 在发布 `PORT_F_UP` 前通过 `BPF_F_LOCK` 清零并推进代次;此前已经执行的旧包不能把旧值写回新计数. 查询要求 up 且 stats-ready,并使用 `BPF_F_LOCK` 保证每对包数/字节数的一致读取. 代次耗尽或重置失败仅使统计不可用,不改变 Attach 的成功条件.
 
 此 map ABI 要求重新创建使用旧 PERCPU_ARRAY 的交换机;不会热替换旧 map 或添加兼容统计路径. 缺少 `geneve_opts` 的旧交换机仍沿用原有生命周期能力,但不能提供一致 Stats. 计数代次不作为沙箱身份、公开字段或生命周期账本发布. 转发、NAT、GENEVE 和设备交付规则保持现有语义.
 
@@ -235,7 +235,7 @@ struct slot_item {                          // 108 字节,cache-line 优化
     __u32 mgmt_cidr_count;                  // offset 32
     struct mgmt_cidr mgmt_cidrs_0;          // offset 36 (20B) — 内联第一条(热路径)
     __u32 generation;                       // offset 56 — 调用方提供的 attachment generation
-    __u8  _pad_cl0[4];                      // offset 60
+    __u32 flags;                            // offset 60 — PORT_F_UP dataplane publication
     // ── cache line 1 (cold path) ────────────────────────────────
     struct mgmt_cidr mgmt_cidrs_ext[MAX_MGMT_CIDR_EXT]; // offset 64 (40B)
     __u32 stats_ready;                      // offset 104 — userspace confirmed current-attach reset
@@ -405,7 +405,7 @@ stateDiagram-v2
 | 操作 | 语义 | CAS |
 | --- | --- | --- |
 | Attach | Free → Allocated | `CAS(inner_ip, 0, innerIP)` |
-| Detach | Allocated → Free | `CAS(inner_ip, currentIP, 0)`;新 switch 在持有 control flock 时清零 hint,map value 留给下一次 Attach 覆盖;不经过 Reserved |
+| Detach | Allocated → Free | 先发布 dataplane-down 并清零 options hint,最后执行 `CAS(inner_ip, currentIP, 0)`;release CAS 后旧 owner 不再写 slot;不经过 Reserved |
 | Reserve | Free → Reserved | `CAS(inner_ip, 0, 0xFFFFFFFF)` |
 | Provision 完成 | Reserved → Free | `CAS(inner_ip, 0xFFFFFFFF, 0)` |
 
@@ -413,23 +413,22 @@ stateDiagram-v2
 数据面字段的原子发布,而回滚/设备操作本身也可能失败。调用方应依据操作结果,
 在出错后检查并协调实际状态(§5.4)。
 
-### 4.4 控制操作互斥
+### 4.4 控制操作并发
 
-CAS 只保证单 slot 所有权原子;多 slot/多资源的控制操作,以及新 switch 上跨 mmap slot
-与 `geneve_opts` map 的复合更新,经 `flock(LOCK_EX)` 在 bpffs pin 目录
-`/sys/fs/bpf/<sw>/` 上互斥:
+单个 slot 的 Free/Reserved/Allocated 所有权仍由 CAS 判定。pin 目录 flock 现在作为 **switch 生命周期 guard**,而不是 attachment 串行锁:
 
 | 操作 | flock | CAS |
-| --- | --- | --- |
-| Start(StartReserved) | ✓ | ✓(所有 slot 置 Reserved) |
-| Stop / `stop --force` | ✓ | – |
-| ProvisionPorts | ✓ | ✓(逐槽 Reserved→Free) |
-| Attach / Detach / Reserve(新 switch) | ✓ | ✓;锁覆盖 claim、map/MTU/device 更新与 hint 发布/回收 |
-| Attach / Detach / Reserve(旧 switch,无 `geneve_opts`) | – | ✓(兼容的 CAS-only 路径) |
+|---|---|---|
+| Start / StartReserved | 排他 | slot 标记 Reserved |
+| Stop / `stop --force` | 排他 | 先 reserve/release slot,再做破坏性清理 |
+| ProvisionPorts | 排他 | 每个完成的 slot Reserved→Free |
+| 当前 switch Attach / Detach | **阻塞式共享锁**;不同 slot 可并发,force/破坏性操作等待它们完成 | 是 |
+| Reserve / `Reserve --force` | 排他 | Free/Allocated→Reserved;force 不会中断正在执行的共享 Attach/Detach |
+| 无 `geneve_opts` 的旧 switch Attach / Detach | 无 lifecycle guard | 原有 CAS-only 路径 |
 
-新 switch 的 Attach、Detach、Reserve 在取得 flock 后、执行任何 CAS 前,会把已打开
-`slots` map 的 kernel map ID 与当前 pin path 中的 map ID 比较。同名 switch 若在等待锁时
-已被 `StopReleased` 并重建,旧 context 会失败并要求重新 Open,不会修改已 unpin 的旧 map。
+取得共享或排他 lifecycle guard 后都会核验当前 opened slots map 仍是该 switch 名称下 pinned 的 map,因此保留 stale-switch 防护,但 Attach 不再与 Attach 串行。
+
+当前 slot 还在原 cache-line padding(offset 60)中保存 `PORT_F_UP`。Free/Reserved 始终 down;Attach 在 down 状态 CAS 取得 ownership,完成 slot/map/stats/device 准备后最后发布 `PORT_F_UP`;Detach 先清 `PORT_F_UP`,完成 teardown 后最后 CAS→Free。
 
 ### 4.5 两阶段启动
 

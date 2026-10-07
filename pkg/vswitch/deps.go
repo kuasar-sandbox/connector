@@ -2,6 +2,7 @@ package vswitch
 
 import (
 	"os"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 
@@ -58,8 +59,9 @@ var (
 	osMkdir = os.Mkdir
 
 	// flock operations (for testing)
-	acquireControlLockFn  = AcquireControlLock
-	verifyCurrentSwitchFn = verifyCurrentSwitch
+	acquireControlLockFn       = AcquireControlLock
+	acquireSharedControlLockFn = func(name string) (*ControlLock, error) { return acquireSwitchLock(name, syscall.LOCK_SH) }
+	verifyCurrentSwitchFn      = verifyCurrentSwitch
 
 	// bpf.Objects method wrappers (for testing)
 	bpfObjectsPinMaps = func(objects *bpf.Objects, name string) error { return objects.PinMaps(name) }

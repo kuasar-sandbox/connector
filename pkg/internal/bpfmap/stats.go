@@ -8,7 +8,7 @@ import (
 )
 
 // StatsManager reads and resets the kernel-locked per-slot counter map.
-// Ownership changes serialize through the existing switch control flock.
+// Counter replacement is per-slot; callers publish readiness only for the current attachment owner.
 type StatsManager struct {
 	statsMap BPFMap
 	numPorts uint32
@@ -40,7 +40,7 @@ func (sm *StatsManager) GetStats(slotID uint32) (*SlotStats, error) {
 
 // ResetStats atomically replaces the counter instance. TC captures generation
 // before reading attachment fields and rejects late writes from an old instance.
-// Call only under the ownership lock, after publishing all attachment fields.
+// Call only for the current slot owner, after preparing all attachment fields and before dataplane-up publication.
 func (sm *StatsManager) ResetStats(slotID uint32) error {
 	previous, err := sm.GetStats(slotID)
 	if err != nil {

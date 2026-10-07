@@ -431,14 +431,13 @@ func (s *switchContext) Stats(ports []int) (*StatsOutput, error) {
 	}
 
 	for _, sid := range slotIDs {
-		slot := s.mmapSlots.GetSlot(sid)
-		innerIP := s.mmapSlots.GetInnerIP(sid)
-		if !IsSlotAllocated(innerIP) {
+		before := *s.mmapSlots.GetSlot(sid)
+		innerBefore := s.mmapSlots.GetInnerIP(sid)
+		if !IsSlotAllocated(innerBefore) {
 			return nil, fmt.Errorf("port %d: %w", sid+1, ErrPortNotAttached)
 		}
-		// Only switches with the existing options map serialize every ownership
-		// change with this lock. Older contexts cannot prove a coherent read.
-		if s.maps == nil || s.maps.GeneveOpts == nil || atomic.LoadUint32(&slot.StatsReady) != 1 {
+		hasPortUp := s.maps != nil && s.maps.GeneveOpts != nil && cfg.Features&SwitchFPortUp != 0
+		if s.maps == nil || s.maps.GeneveOpts == nil || (hasPortUp && atomic.LoadUint32(&before.Flags)&PortFUp == 0) || atomic.LoadUint32(&before.StatsReady) != 1 {
 			return nil, fmt.Errorf("port %d: %w: current attachment reset is not confirmed", sid+1, ErrStatsUnavailable)
 		}
 		st, err := s.statsMgr.GetStats(sid)
@@ -448,22 +447,30 @@ func (s *switchContext) Stats(ports []int) (*StatsOutput, error) {
 		if st.Generation == 0 {
 			return nil, fmt.Errorf("port %d: %w: counter instance is uninitialized", sid+1, ErrStatsUnavailable)
 		}
-		// Use GetPortMAC to get fixed or per-port derived MAC
+
+		// Attach/Detach share the lifecycle lock with Stats and may run concurrently.
+		// Validate both the slot snapshot and the internal counter generation. A
+		// detach/re-attach, including reuse of the same InnerIP/caller generation,
+		// advances the stats generation and invalidates this observation.
+		after := *s.mmapSlots.GetSlot(sid)
+		innerAfter := s.mmapSlots.GetInnerIP(sid)
+		st2, err := s.statsMgr.GetStats(sid)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrStatsUnavailable, err)
+		}
+		if innerAfter != innerBefore || after.Generation != before.Generation || atomic.LoadUint32(&after.StatsReady) != 1 || (hasPortUp && atomic.LoadUint32(&after.Flags)&PortFUp == 0) || st2.Generation != st.Generation {
+			return nil, fmt.Errorf("port %d: %w: attachment changed during stats read", sid+1, ErrStatsUnavailable)
+		}
+
 		portMAC := GetPortMAC(cfg.SwitchMac[:], cfg.PortMac[:], sid)
 		out.Ports = append(out.Ports, PortStatsOutput{
-			Port:             sid + 1,
-			InnerIP:          bpf.Uint32ToIP(innerIP).String(),
-			FloatingIP:       bpf.Uint32ToIP(FloatingIPForAttachment(cfg.FloatingIpBase, sid, slot.Generation)).String(),
-			Generation:       slot.Generation,
-			PortMAC:          portMAC.String(),
-			MgmtRxPackets:    st.MgmtRxPackets,
-			MgmtRxBytes:      st.MgmtRxBytes,
-			MgmtTxPackets:    st.MgmtTxPackets,
-			MgmtTxBytes:      st.MgmtTxBytes,
-			TransitRxPackets: st.TransitRxPackets,
-			TransitRxBytes:   st.TransitRxBytes,
-			TransitTxPackets: st.TransitTxPackets,
-			TransitTxBytes:   st.TransitTxBytes,
+			Port: sid + 1, InnerIP: bpf.Uint32ToIP(innerAfter).String(),
+			FloatingIP: bpf.Uint32ToIP(FloatingIPForAttachment(cfg.FloatingIpBase, sid, after.Generation)).String(),
+			Generation: after.Generation, PortMAC: portMAC.String(),
+			MgmtRxPackets: st2.MgmtRxPackets, MgmtRxBytes: st2.MgmtRxBytes,
+			MgmtTxPackets: st2.MgmtTxPackets, MgmtTxBytes: st2.MgmtTxBytes,
+			TransitRxPackets: st2.TransitRxPackets, TransitRxBytes: st2.TransitRxBytes,
+			TransitTxPackets: st2.TransitTxPackets, TransitTxBytes: st2.TransitTxBytes,
 		})
 	}
 

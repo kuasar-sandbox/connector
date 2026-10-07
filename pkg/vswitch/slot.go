@@ -30,6 +30,8 @@ const (
 	InnerIPReserved    = bpf.InnerIPReserved
 	PortKindVeth       = bpf.PortKindVeth
 	PortKindTap        = bpf.PortKindTap
+	PortFUp            = bpf.PortFUp
+	SwitchFPortUp      = bpf.SwitchFPortUp
 )
 
 // Function-level re-exports so existing vswitch code can call these without
@@ -83,6 +85,7 @@ func UpdateSwitchConfig(configMap BPFMap, cfg *Config) error {
 	bpfCfg.N_ports = cfg.NumPorts
 	bpfCfg.FloatingIpBase = bpf.IPToUint32(cfg.FloatingIPBase)
 	bpfCfg.GenerationBits = cfg.GenerationBits
+	bpfCfg.Features = SwitchFPortUp
 	bpfCfg.GenevePortBase = uint32(cfg.GenevePortBase)
 	bpfCfg.GeneveLocator = uint8(cfg.GeneveLocator)
 	if cfg.GeneveTLVLocator != nil {

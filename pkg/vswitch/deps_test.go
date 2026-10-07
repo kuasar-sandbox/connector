@@ -42,6 +42,7 @@ func resetDeps() {
 	bpfObjectsPinMaps = func(objects *bpf.Objects, name string) error { return objects.PinMaps(name) }
 	bpfEnsureBPFFS = bpf.EnsureBPFFS
 	acquireControlLockFn = AcquireControlLock
+	acquireSharedControlLockFn = func(name string) (*ControlLock, error) { return acquireSwitchLock(name, syscall.LOCK_SH) }
 	verifyCurrentSwitchFn = verifyCurrentSwitch
 
 	unixMmap = unix.Mmap

@@ -50,6 +50,7 @@ func testSetupMaps(t *testing.T, objs *bpf.Objects) {
 		SwitchMac:      testSwitchMAC,
 		N_ports:        testNumPorts,
 		FloatingIpBase: testFloatingIPBase,
+		Features:       vswitch.SwitchFPortUp,
 		GenevePortBase: testGenevePortBase,
 		GeneveEncapEth: 1, // Ether-over-GENEVE
 	}
@@ -67,6 +68,7 @@ func testSetupMaps(t *testing.T, objs *bpf.Objects) {
 		TransitIp:        0xc0a80a01, // 192.168.10.1
 		TransitGatewayIp: 0xc0a80a02, // 192.168.10.2
 		TransitGeneveVni: 12345,
+		Flags:            vswitch.PortFUp,
 	}
 	// Add management CIDR for metadata service
 	slot.MgmtCidrs0 = vswitch.MgmtCIDR{
@@ -698,6 +700,7 @@ func testSetupMapsMultiCIDR(t *testing.T, objs *bpf.Objects) {
 		SwitchMac:      testSwitchMAC,
 		N_ports:        testNumPorts,
 		FloatingIpBase: testFloatingIPBase,
+		Features:       vswitch.SwitchFPortUp,
 		GenevePortBase: testGenevePortBase,
 		GeneveEncapEth: 1,
 	}
@@ -715,6 +718,7 @@ func testSetupMapsMultiCIDR(t *testing.T, objs *bpf.Objects) {
 		TransitIp:        0xc0a80a01, // 192.168.10.1
 		TransitGatewayIp: 0xc0a80a02, // 192.168.10.2
 		TransitGeneveVni: 12345,
+		Flags:            vswitch.PortFUp,
 	}
 
 	// CIDR 0: 169.254.169.254/32 - metadata service (inline hot entry)
@@ -762,6 +766,7 @@ func testSetupMapsSlot1(t *testing.T, objs *bpf.Objects) {
 		SwitchMac:      testSwitchMAC,
 		N_ports:        testNumPorts,
 		FloatingIpBase: testFloatingIPBase,
+		Features:       vswitch.SwitchFPortUp,
 		GenevePortBase: testGenevePortBase,
 		GeneveEncapEth: 1,
 	}
@@ -780,6 +785,7 @@ func testSetupMapsSlot1(t *testing.T, objs *bpf.Objects) {
 		TransitIp:        0xc0a80a01, // 192.168.10.1
 		TransitGatewayIp: 0xc0a80a02, // 192.168.10.2
 		TransitGeneveVni: 12346,
+		Flags:            vswitch.PortFUp,
 	}
 	slot.MgmtCidrs0 = vswitch.MgmtCIDR{
 		Ip:      0xa9fea9fe, // 169.254.169.254
@@ -1046,6 +1052,7 @@ func TestIngressNxUninitializedSlot(t *testing.T) {
 		SwitchMac:      testSwitchMAC,
 		N_ports:        testNumPorts,
 		FloatingIpBase: testFloatingIPBase,
+		Features:       vswitch.SwitchFPortUp,
 		GenevePortBase: testGenevePortBase,
 		GeneveEncapEth: 1,
 	}
@@ -1622,4 +1629,82 @@ func TestFloatingIPGenerationFencesStaleAttachment(t *testing.T) {
 	if !ipHdr.SrcIP.Equal(current) {
 		t.Fatalf("SNAT src=%v want=%v", ipHdr.SrcIP, current)
 	}
+}
+
+func TestAllocatedDownSlotDropsAllDataplaneDirections(t *testing.T) {
+	ensureBPFEnv(t)
+	objs, err := bpf.LoadObjects()
+	if err != nil {
+		t.Fatalf("LoadObjects: %v", err)
+	}
+	defer objs.Close()
+	testSetupMaps(t, objs)
+
+	key := uint32(testSlotID)
+	var slot vswitch.SlotItem
+	if err := objs.Maps.Slots.Lookup(key, &slot); err != nil {
+		t.Fatal(err)
+	}
+	slot.Flags = 0
+	if err := objs.Maps.Slots.Update(key, &slot, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+
+	sandboxMAC := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
+	mgmtMAC := [6]byte{0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xee}
+	sandboxIP := net.ParseIP("169.254.1.1")
+	mgmtIP := net.ParseIP("169.254.169.254")
+	floatingIP := net.ParseIP("100.100.0.0")
+
+	t.Run("sandbox egress", func(t *testing.T) {
+		pkt := buildIPv4UDPPacket(sandboxMAC, testSwitchMAC, sandboxIP, net.ParseIP("8.8.8.8"), 12345, 53, []byte("x"))
+		ret, _, err := objs.Programs.IngressNX.Test(pkt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ret != TCActShot {
+			t.Fatalf("ret=%d want=%d", ret, TCActShot)
+		}
+	})
+
+	t.Run("management arp", func(t *testing.T) {
+		pkt := buildARPRequest(mgmtMAC, mgmtIP, floatingIP)
+		ret, _, err := objs.Programs.IngressMX.Test(pkt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ret != TCActShot {
+			t.Fatalf("ret=%d want=%d", ret, TCActShot)
+		}
+	})
+
+	t.Run("management ipv4", func(t *testing.T) {
+		pkt := buildIPv4UDPPacket(mgmtMAC, testSwitchMAC, mgmtIP, floatingIP, 80, 12345, []byte("reply"))
+		ret, _, err := objs.Programs.IngressMX.Test(pkt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ret != TCActShot {
+			t.Fatalf("ret=%d want=%d", ret, TCActShot)
+		}
+	})
+
+	t.Run("transit ingress", func(t *testing.T) {
+		inner := buildIPv4UDPPacket(
+			[6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}, portMAC(testSwitchMAC, testSlotID),
+			net.ParseIP("8.8.8.8"), sandboxIP, 53, 12345, []byte("reply"),
+		)
+		pkt := buildGenevePacket(
+			[6]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}, testSwitchMAC,
+			net.ParseIP("192.168.10.2"), net.ParseIP("192.168.10.1"),
+			49152, uint16(testGenevePortBase+testSlotID), 12345, GeneveProtoTEB, inner,
+		)
+		ret, _, err := objs.Programs.IngressTransit.Test(pkt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ret != TCActShot {
+			t.Fatalf("ret=%d want=%d", ret, TCActShot)
+		}
+	})
 }

@@ -130,8 +130,8 @@ func (o *Objects) PinMaps(switchName string) error {
 	pinPath := filepath.Join(BPFPath, switchName)
 
 	// Pin each map
-	if err := o.Maps.Slots.Pin(filepath.Join(pinPath, "slots")); err != nil {
-		return fmt.Errorf("failed to pin slots map: %w", err)
+	if err := o.Maps.Slots.Pin(filepath.Join(pinPath, "slots_v2")); err != nil {
+		return fmt.Errorf("failed to pin slots_v2 map: %w", err)
 	}
 	if err := o.Maps.Config.Pin(filepath.Join(pinPath, "config")); err != nil {
 		return fmt.Errorf("failed to pin config map: %w", err)
@@ -188,7 +188,13 @@ func UnpinMaps(switchName string) error {
 func LoadPinnedMaps(switchName string) (*Maps, error) {
 	pinPath := filepath.Join(BPFPath, switchName)
 
-	slots, err := ebpf.LoadPinnedMap(filepath.Join(pinPath, "slots"), nil)
+	// slots_v2 is the explicit ABI marker for PORT_F_UP-capable switches.
+	// Falling back to slots keeps new userspace compatible with existing pinned
+	// switches, while old userspace fails closed when opening a new switch.
+	slots, err := ebpf.LoadPinnedMap(filepath.Join(pinPath, "slots_v2"), nil)
+	if err != nil && errors.Is(err, os.ErrNotExist) {
+		slots, err = ebpf.LoadPinnedMap(filepath.Join(pinPath, "slots"), nil)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to load slots map: %w", err)
 	}

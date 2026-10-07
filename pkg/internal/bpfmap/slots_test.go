@@ -39,3 +39,34 @@ func TestMmappedSlotsClosePreservesOtherFields(t *testing.T) {
 		t.Errorf("numSlots = %d, want 4", m.numSlots)
 	}
 }
+
+func TestTryAllocateLoserDoesNotMutateStatsReady(t *testing.T) {
+	m := NewMmappedSlotsForTest(1)
+	if !m.TryAllocate(0, 0x0a000001) {
+		t.Fatal("initial allocate")
+	}
+	m.GetSlot(0).StatsReady = 1
+	if m.TryAllocate(0, 0x0a000002) {
+		t.Fatal("second allocate unexpectedly won")
+	}
+	if got := m.GetSlot(0).StatsReady; got != 1 {
+		t.Fatalf("loser changed stats_ready=%d", got)
+	}
+}
+
+func TestTryUnreservePublishesFreeDown(t *testing.T) {
+	m := NewMmappedSlotsForTest(1)
+	if !m.TryReserve(0, InnerIPFree) {
+		t.Fatal("reserve")
+	}
+	m.GetSlot(0).Flags = 1
+	if !m.TryUnreserve(0) {
+		t.Fatal("unreserve")
+	}
+	if got := m.GetInnerIP(0); got != InnerIPFree {
+		t.Fatalf("inner=%#x", got)
+	}
+	if got := m.GetSlot(0).Flags; got != 0 {
+		t.Fatalf("flags=%#x", got)
+	}
+}

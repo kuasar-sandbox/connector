@@ -20,14 +20,14 @@ func (m *MmappedSlots) TryAllocate(slotID uint32, innerIP uint32) bool {
 	if ptr == nil {
 		return false
 	}
-	if atomic.LoadUint32(ptr) != InnerIPFree {
+	if !atomic.CompareAndSwapUint32(ptr, InnerIPFree, innerIP) {
 		return false
 	}
-	// Invalidate before publishing a new owner: a killed attacher releases
-	// flock immediately and must never expose the previous readiness bit.
-	// Modern switch ownership changes hold the existing control flock.
+	// Only the CAS winner may mutate attachment-owned state. Free slots are
+	// dataplane-down on current switches, so readiness can be invalidated after
+	// ownership is acquired without exposing the previous attachment.
 	atomic.StoreUint32(&m.GetSlot(slotID).StatsReady, 0)
-	return atomic.CompareAndSwapUint32(ptr, 0, innerIP)
+	return true
 }
 
 // TryRelease attempts to atomically release a slot using CAS.
@@ -60,6 +60,13 @@ func (m *MmappedSlots) TryUnreserve(slotID uint32) bool {
 	if ptr == nil {
 		return false
 	}
+	if atomic.LoadUint32(ptr) != InnerIPReserved {
+		return false
+	}
+	// Reserved is control-owned and cannot be attached. Clear dataplane
+	// publication before exposing Free so a subsequent Attach always starts
+	// from a fail-closed slot.
+	atomic.StoreUint32(&m.GetSlot(slotID).Flags, 0)
 	return atomic.CompareAndSwapUint32(ptr, InnerIPReserved, InnerIPFree)
 }
 

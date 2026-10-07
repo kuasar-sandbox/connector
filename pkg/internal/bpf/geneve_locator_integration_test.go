@@ -57,6 +57,7 @@ func testSetupGeneveMaps(
 		SwitchMac:      testSwitchMAC,
 		N_ports:        testNumPorts,
 		FloatingIpBase: testFloatingIPBase,
+		Features:       vswitch.SwitchFPortUp,
 		GenevePortBase: testGenevePortBase,
 		GeneveLocator:  uint8(locator),
 		GeneveTlvClass: tlvClass,
@@ -78,6 +79,7 @@ func testSetupGeneveMaps(
 		TransitGeneveVni: transitVNI,
 		TransitMac:       geneveTestTransitMAC,
 		GeneveOptsLen:    uint8(len(opaque)),
+		Flags:            vswitch.PortFUp,
 	}
 	if err := objs.Maps.Slots.Update(geneveTestSlotID, &slot, ebpf.UpdateAny); err != nil {
 		t.Fatalf("update slot: %v", err)
