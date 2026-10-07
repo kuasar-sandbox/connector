@@ -180,7 +180,7 @@ Example `start` output (illustrative configured values, not the result of the pr
   "switch": "sw1",
   "switch_netns": "netns_switch",
   "switch_maps": {
-    "slots":           "/sys/fs/bpf/sw1/slots",
+    "slots":           "/sys/fs/bpf/sw1/slots_v2",
     "config":          "/sys/fs/bpf/sw1/config",
     "stats":           "/sys/fs/bpf/sw1/stats",
     "ifindex_to_slot": "/sys/fs/bpf/sw1/ifindex_to_slot",

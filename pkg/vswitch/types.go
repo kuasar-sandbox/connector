@@ -8,6 +8,11 @@ import (
 
 // Interface is the interface for operating on an opened virtual switch.
 // Use Open() to obtain an instance.
+// Independent slots and competing allocations may run concurrently. For one
+// attachment, callers wait for Attach to return before using its handle or
+// calling Detach, and wait for Detach before reusing that handle. Detach is not
+// cancellation of an in-flight Attach. Administrative takeover is separate and
+// may interrupt attachment work; no switch-wide attachment lock is acquired.
 type Interface interface {
 	// Name returns the switch name.
 	Name() string
