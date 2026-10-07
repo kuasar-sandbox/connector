@@ -28,7 +28,6 @@ func newGeneveAttachTestContext(cfg *SwitchConfig, withOptionsMap bool) (*switch
 		cfg.Features |= SwitchFPortUp
 		maps.GeneveOpts = &ebpf.Map{}
 		acquireControlLockFn = func(string) (*ControlLock, error) { return &ControlLock{}, nil }
-		acquireSharedControlLockFn = func(string) (*ControlLock, error) { return &ControlLock{}, nil }
 		verifyCurrentSwitchFn = func(*switchContext) error { return nil }
 	}
 	return &switchContext{
@@ -102,34 +101,24 @@ func TestAttachGeneveOptionsMapFailureRollsBack(t *testing.T) {
 	}
 }
 
-func TestAttachGeneveControlLockFailureBeforeCAS(t *testing.T) {
+func TestCurrentAttachDetachDoNotUseLifecycleLock(t *testing.T) {
 	defer resetDeps()
 	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
-	acquireSharedControlLockFn = func(string) (*ControlLock, error) {
-		return nil, errors.New("injected lock failure")
+	acquireControlLockFn = func(string) (*ControlLock, error) { t.Fatal("exclusive lifecycle lock used"); return nil, nil }
+	syscallFlock = func(int, int) error {
+		t.Error("flock used on attachment fast path")
+		return errors.New("unexpected flock")
 	}
-	_, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true})
-	if err == nil || !strings.Contains(err.Error(), "injected lock failure") {
-		t.Fatalf("error = %v", err)
+	verifyCurrentSwitchFn = func(*switchContext) error { t.Fatal("switch verification used"); return nil }
+	writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error { return nil }
+	if _, err := s.Attach(AttachOptions{Port: 1, InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true}); err != nil {
+		t.Fatal(err)
 	}
-	if slots.GetInnerIP(0) != InnerIPFree {
-		t.Fatalf("lock failure allocated slot: inner=%#x", slots.GetInnerIP(0))
-	}
-}
-
-func TestAttachGeneveSwitchVerificationFailureBeforeCAS(t *testing.T) {
-	defer resetDeps()
-	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
-	verifyCurrentSwitchFn = func(*switchContext) error {
-		return errors.New("injected stale switch")
-	}
-
-	_, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true})
-	if err == nil || !strings.Contains(err.Error(), "injected stale switch") {
-		t.Fatalf("error = %v", err)
+	if err := s.Detach(DetachOptions{Port: 1, SkipDevice: true}); err != nil {
+		t.Fatal(err)
 	}
 	if slots.GetInnerIP(0) != InnerIPFree {
-		t.Fatalf("switch verification failure allocated slot: inner=%#x", slots.GetInnerIP(0))
+		t.Fatalf("inner=%#x", slots.GetInnerIP(0))
 	}
 }
 
@@ -427,48 +416,6 @@ func TestDetachReleasesDirectlyAndClearsHint(t *testing.T) {
 	}
 }
 
-func TestDetachGeneveControlLockFailurePreservesAttachment(t *testing.T) {
-	defer resetDeps()
-	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
-	innerIP := bpf.IPToUint32(net.ParseIP("10.0.0.1"))
-	if !slots.TryAllocate(0, innerIP) {
-		t.Fatal("allocate slot")
-	}
-	slots.GetSlot(0).GeneveOptsLen = 12
-	acquireSharedControlLockFn = func(string) (*ControlLock, error) {
-		return nil, errors.New("injected lock failure")
-	}
-
-	err := s.Detach(DetachOptions{Port: 1, SkipDevice: true})
-	if err == nil || !strings.Contains(err.Error(), "injected lock failure") {
-		t.Fatalf("error = %v", err)
-	}
-	if slots.GetInnerIP(0) != innerIP || slots.GetSlot(0).GeneveOptsLen != 12 {
-		t.Fatalf("lock failure changed attachment: inner=%#x hint=%d", slots.GetInnerIP(0), slots.GetSlot(0).GeneveOptsLen)
-	}
-}
-
-func TestDetachGeneveSwitchVerificationFailurePreservesAttachment(t *testing.T) {
-	defer resetDeps()
-	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
-	innerIP := bpf.IPToUint32(net.ParseIP("10.0.0.1"))
-	if !slots.TryAllocate(0, innerIP) {
-		t.Fatal("allocate slot")
-	}
-	slots.GetSlot(0).GeneveOptsLen = 12
-	verifyCurrentSwitchFn = func(*switchContext) error {
-		return errors.New("injected stale switch")
-	}
-
-	err := s.Detach(DetachOptions{Port: 1, SkipDevice: true})
-	if err == nil || !strings.Contains(err.Error(), "injected stale switch") {
-		t.Fatalf("error = %v", err)
-	}
-	if slots.GetInnerIP(0) != innerIP || slots.GetSlot(0).GeneveOptsLen != 12 {
-		t.Fatalf("switch verification failure changed attachment: inner=%#x hint=%d", slots.GetInnerIP(0), slots.GetSlot(0).GeneveOptsLen)
-	}
-}
-
 func TestReserveGeneveControlLockFailurePreservesFreeSlot(t *testing.T) {
 	defer resetDeps()
 	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
@@ -531,7 +478,7 @@ func TestAttachPublishesDataplaneUpLast(t *testing.T) {
 	}
 }
 
-func TestConcurrentAttachDifferentSlotsOverlapSharedLifecycleGuard(t *testing.T) {
+func TestConcurrentAttachDifferentSlotsOverlapWithoutControlLock(t *testing.T) {
 	defer resetDeps()
 	s, _ := newGeneveAttachTestContext(&SwitchConfig{N_ports: 2}, true)
 	acquireControlLockFn = func(string) (*ControlLock, error) {
@@ -643,7 +590,6 @@ func TestExistingSwitchWithoutPortUpCapabilityUsesExclusiveLock(t *testing.T) {
 	s.cfg.Features = 0
 	exclusive := false
 	acquireControlLockFn = func(string) (*ControlLock, error) { exclusive = true; return &ControlLock{}, nil }
-	acquireSharedControlLockFn = func(string) (*ControlLock, error) { t.Fatal("legacy switch used shared lock"); return nil, nil }
 	verifyCurrentSwitchFn = func(*switchContext) error { return nil }
 	writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error { return nil }
 	if _, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true}); err != nil {
@@ -651,5 +597,14 @@ func TestExistingSwitchWithoutPortUpCapabilityUsesExclusiveLock(t *testing.T) {
 	}
 	if !exclusive {
 		t.Fatal("legacy switch did not retain exclusive lock")
+	}
+}
+
+func TestAttachRejectsMissingPublicationMap(t *testing.T) {
+	defer resetDeps()
+	s, slots := newGeneveAttachTestContext(&SwitchConfig{Features: SwitchFPortUp}, false)
+	out, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("169.254.0.21"), SkipDevice: true})
+	if err == nil || out != nil || slots.GetInnerIP(0) != InnerIPFree {
+		t.Fatalf("missing map accepted: out=%+v err=%v", out, err)
 	}
 }

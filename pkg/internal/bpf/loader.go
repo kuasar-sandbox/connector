@@ -192,6 +192,7 @@ func LoadPinnedMaps(switchName string) (*Maps, error) {
 	// Falling back to slots keeps new userspace compatible with existing pinned
 	// switches, while old userspace fails closed when opening a new switch.
 	slots, err := ebpf.LoadPinnedMap(filepath.Join(pinPath, "slots_v2"), nil)
+	slotsV2 := err == nil
 	if err != nil && errors.Is(err, os.ErrNotExist) {
 		slots, err = ebpf.LoadPinnedMap(filepath.Join(pinPath, "slots"), nil)
 	}
@@ -250,11 +251,10 @@ func LoadPinnedMaps(switchName string) (*Maps, error) {
 		return nil, fmt.Errorf("failed to load mgmt_svc_rev map: %w", err)
 	}
 
-	// geneve_opts was added after the initial pinned-map ABI. ENOENT alone
-	// identifies a legacy switch and is compatible with port mode plus empty
-	// options; every other error still indicates corrupted state.
+	// Missing options are compatible only with the old slots pin. A slots_v2
+	// switch requires this map; its loss must not silently downgrade the ABI.
 	geneveOpts, err := ebpf.LoadPinnedMap(filepath.Join(pinPath, "geneve_opts"), nil)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err != nil && (slotsV2 || !errors.Is(err, os.ErrNotExist)) {
 		slots.Close()
 		config.Close()
 		stats.Close()

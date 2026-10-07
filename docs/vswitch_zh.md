@@ -42,9 +42,9 @@ CLI、配置、构建、部署与故障排查见 [vSwitch 运维](vswitch-operat
    并可选用静态管理服务地址转换。
 3. **进程生命周期与数据面解耦**:`start`/`attach`/`detach` 返回后用户态退出,转发由
    内核 eBPF 持续执行。
-4. **并发安全**:slot 所有权由 mmap + 原子 CAS 判定;当前 Attach/Detach 仅持共享 switch
-   生命周期锁,不同 slot 可并发;破坏性/force 管理操作继续使用排他侧。旧 switch 缺少
-   `geneve_opts` 时保持原有 CAS-only 路径。
+4. **并发安全**:slot 所有权由 mmap + 原子 CAS 判定;支持 `PORT_F_UP` 的 Attach/Detach
+   不持有任何 switch-wide lock,不同 slot 可并发,也不因管理命令持有 EX 锁而等待。
+   旧 switch 根据能力保留原有兼容路径。
 5. **可观测**:per-port、per-direction、per-class(mgmt/transit)流量计数;状态查询用
    Kubernetes Conditions 风格。
 6. **systemd-native**:`Type=notify` 集成,watchdog keepalive,崩溃重启后经 bpffs
@@ -209,7 +209,7 @@ GENEVE 内层同时识别 IPv4 与 IPv6(管理平面与 `slot.inner_ip` 为 IPv4
 使用算术或固定 locator 布局,不需要通用 slot-index hash/TLV 搜索;管理服务转换
 仍有独立 hash lookup。
 
-Stats 在现有 pin 目录 control flock 上取得非阻塞共享锁,并在计数读取前后核验当前 pinned slots map ID,因此绕过 flock 的 force cleanup 也会使本次读取失败. Attach/detach 使用共享 lifecycle 侧;reserve/force 与交换机替换使用排他侧. 控制操作占用、map 被替换、清零未确认或 map 读取失败时,整个请求批次返回错误. 多个共享读取可以并发. 显式查询 Free/Reserved 端口返回 `ErrPortNotAttached`;省略端口列表时仅选择 Allocated 槽. 确认清零后的 0 是有效观测;清零失败仍允许 attach 成功,但在后续成功 attach 前返回 `ErrStatsUnavailable`. 不新增第二份归属表.
+Stats 在现有 pin 目录 control flock 上取得非阻塞共享锁,并在计数读取前后核验当前 pinned slots map ID,因此绕过 flock 的 force cleanup 也会使本次读取失败. 支持新能力的 Attach/Detach 不参与这把锁;Stats 用两次受内核锁保护的计数代次读取包围原子身份读取,发生变化或准备未完成时返回不可用;管理命令保留自己的排他锁. 控制操作占用、map 被替换、清零未确认或 map 读取失败时,整个请求批次返回错误. 多个共享读取可以并发. 显式查询 Free/Reserved 端口返回 `ErrPortNotAttached`;省略端口列表时仅选择 Allocated 槽. 确认清零后的 0 是有效观测;清零失败仍允许 attach 成功,但在后续成功 attach 前返回 `ErrStatsUnavailable`. 不新增第二份归属表.
 
 slot 仍为 108 字节,mmap stride 仍为 112 字节. 只有赢得 owner CAS 的 Attach 才清 `stats_ready`;在当前计数实例完成 reset 及其它准备前,slot 一直保持 dataplane-down. `stats` 为每槽一个 80 字节 ARRAY value,包含 `bpf_spin_lock` 和内部 64-bit 计数代次. TC 在读取 attachment 字段前取得代次,更新计数时在同一内核锁内验证代次. Attach 在发布 `PORT_F_UP` 前通过 `BPF_F_LOCK` 清零并推进代次;此前已经执行的旧包不能把旧值写回新计数. 查询要求 up 且 stats-ready,并使用 `BPF_F_LOCK` 保证每对包数/字节数的一致读取. 代次耗尽或重置失败仅使统计不可用,不改变 Attach 的成功条件.
 
@@ -415,20 +415,22 @@ stateDiagram-v2
 
 ### 4.4 控制操作并发
 
-单个 slot 的 Free/Reserved/Allocated 所有权仍由 CAS 判定。pin 目录 flock 现在作为 **switch 生命周期 guard**,而不是 attachment 串行锁:
+单个 slot 的 Free/Reserved/Allocated 归属由 CAS 判定。**支持 `PORT_F_UP` 的 Attach/Detach 不获取全局 EX 或 SH 锁**。管理命令持有 EX 锁也不会阻塞这两条发放/释放路径。
 
-| 操作 | flock | CAS |
+| 操作 | flock | 所有权边界 |
 |---|---|---|
-| Start / StartReserved | 排他 | slot 标记 Reserved |
-| Stop / `stop --force` | 排他 | 先 reserve/release slot,再做破坏性清理 |
-| ProvisionPorts | 排他 | 每个完成的 slot Reserved→Free |
-| 当前 switch Attach / Detach | **阻塞式共享锁**;不同 slot 可并发,force/破坏性操作等待它们完成 | 是 |
-| Reserve / `Reserve --force` | 排他 | Free/Allocated→Reserved;force 不会中断正在执行的共享 Attach/Detach |
-| 无 `geneve_opts` 的旧 switch Attach / Detach | 无 lifecycle guard | 原有 CAS-only 路径 |
+| Start / StartReserved / Stop / ReleasePorts | 管理操作之间排他 | 先 reserve 端口,再做全局处理 |
+| ProvisionPorts | 管理操作之间排他 | 完成 Reserved 端口准备后,最后发布 Free |
+| 支持新能力的 Attach / Detach | 无 | Attach 先 CAS 获取;Detach 最后 CAS 释放 |
+| Reserve / Reserve --force | 沿用管理排他锁 | 先 CAS 到 Reserved,成功后再清理 |
+| 有 `geneve_opts` 但无新能力的旧 switch | 沿用旧排他协议 | 重建后启用无全局锁路径 |
+| 无 `geneve_opts` 的旧 switch | 原 CAS-only 路径 | 保持原行为 |
 
-取得共享或排他 lifecycle guard 后都会核验当前 opened slots map 仍是该 switch 名称下 pinned 的 map,因此保留 stale-switch 防护,但 Attach 不再与 Attach 串行。
+Reserve/Stop/Provision 在 Attach/Detach 执行期间接管是设计预期,不通过共享锁阻止,也不保证被接管的操作正常完成。观察到接管后不撤销管理状态。**Reserved→Free 是具有严格进出边界的管理动作**,不是可与旧请求、立即复用任意交错的步骤。本合同不扩展处理旧请求跨越整个管理重新开放/再分配过程的序列,不为此新增 owner token、epoch 表或 lifecycle shared lock。
 
-当前 slot 还在原 cache-line padding(offset 60)中保存 `PORT_F_UP`。Free/Reserved 始终 down;Attach 在 down 状态 CAS 取得 ownership,完成 slot/map/stats/device 准备后最后发布 `PORT_F_UP`;Detach 先清 `PORT_F_UP`,完成 teardown 后最后 CAS→Free。
+只有 Attach 的 CAS 胜者才写 attachment 配置。原 offset 60 的四字节 padding 保存 `PORT_F_UP`;准备期间保持 down,普通 Attach 最后发布 up。Detach 完成可失败的设备操作,清 publication/options hint,最后 CAS→Free;释放后不再写 slot。Attach 回滚只释放自己的 CAS claim,不执行迟到清理。Reserve 先 CAS 获取管理归属再清理。Provision 在 Reserved 状态完成准备,清 up 后最后发布 Free。
+
+新 switch 通过 `SWITCH_F_PORT_UP` 声明能力,slot map pin 使用 `slots_v2`(输出逻辑键仍为 `slots`)。新 userspace 可回退打开旧 `slots` 并保留其排他协议;旧 userspace 不会静默操作新 switch。管理/Stats 的实例检查支持两种 pin 名称。不热替换数据面,不混用不支持新语义的旧客户端。
 
 ### 4.5 两阶段启动
 

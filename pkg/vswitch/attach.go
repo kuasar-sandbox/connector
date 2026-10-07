@@ -42,7 +42,10 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 		return nil, err
 	}
 	hasGeneveOptsMap := s.maps != nil && s.maps.GeneveOpts != nil
-	hasPortUp := hasGeneveOptsMap && cfg.Features&SwitchFPortUp != 0
+	hasPortUp := cfg.Features&SwitchFPortUp != 0
+	if hasPortUp && !hasGeneveOptsMap {
+		return nil, fmt.Errorf("PORT_F_UP switch is missing its required geneve_opts map; rebuild the switch")
+	}
 	if !hasGeneveOptsMap && (locator != GeneveLocatorPort || geneveOptsValue.Len != 0) {
 		return nil, fmt.Errorf("switch lacks the geneve_opts map required by geneve_locator=%s or non-empty transit_geneve_opts; rebuild the switch", locator)
 	}
@@ -57,16 +60,12 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	} else if uint64(opts.Generation) >= (uint64(1) << cfg.GenerationBits) {
 		return nil, fmt.Errorf("generation %d exceeds %d-bit range", opts.Generation, cfg.GenerationBits)
 	}
-	// Current switches use the switch flock only as a lifecycle guard. Shared
-	// holders do not serialize independent attachments; exclusive force/teardown
-	// operations wait for all in-flight Attach/Detach work to finish.
-	if hasGeneveOptsMap {
-		var lock *ControlLock
-		if hasPortUp {
-			lock, err = acquireCurrentSwitchSharedControlLock(s)
-		} else {
-			lock, err = acquireCurrentSwitchControlLock(s)
-		}
+	// Current PORT_F_UP-capable switches do not take a switch-wide lifecycle
+	// lock on the attachment fast path. Administrative Reserve/Provision/Stop
+	// may intentionally take over while Attach is in progress. Existing pinned
+	// switches retain the legacy exclusive protocol until rebuilt.
+	if hasGeneveOptsMap && !hasPortUp {
+		lock, err := acquireCurrentSwitchControlLock(s)
 		if err != nil {
 			return nil, err
 		}
@@ -83,7 +82,10 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 			if s.mmapSlots.GetInnerIP(id) != InnerIPFree {
 				return false
 			}
-			s.mmapSlots.UpdateSlotFields(id, func(slot *SlotItem) { slot.Generation = unpublishedGeneration })
+			s.mmapSlots.UpdateSlotFields(id, func(slot *SlotItem) {
+				atomic.StoreUint32(&slot.StatsReady, 0)
+				atomic.StoreUint32(&slot.Generation, unpublishedGeneration)
+			})
 		}
 		return s.mmapSlots.TryAllocate(id, innerIP)
 	}
@@ -127,7 +129,7 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 		atomic.StoreUint32(&slot.StatsReady, 0)
 		if hasPortUp {
 			atomic.StoreUint32(&slot.Flags, 0)
-			slot.Generation = unpublishedGeneration
+			atomic.StoreUint32(&slot.Generation, unpublishedGeneration)
 		}
 		slot.GeneveOptsLen = 0
 		if opts.TransitGatewayIP != nil {
@@ -142,12 +144,9 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 		}
 	})
 	rollbackClaim := func() {
-		// We still own the slot while the shared lifecycle guard is held. Clear
-		// publication first and release ownership last; never write after release.
-		s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
-			atomic.StoreUint32(&slot.Flags, 0)
-			slot.GeneveOptsLen = 0
-		})
+		// No up/hint has been published on any fallible preparation path.
+		// Release our claim last. If management reserved the port meanwhile,
+		// the CAS fails without modifying control-owned fields.
 		s.mmapSlots.TryRelease(slotID, innerIP)
 	}
 
@@ -210,12 +209,19 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 		}
 	}
 
+	// Management takeover is allowed during preparation. Stop when it is
+	// observed; reopening Reserved ports is a separate management boundary.
+	// This check is not an ownership token or a transaction with management.
+	if hasPortUp && s.mmapSlots.GetInnerIP(slotID) != innerIP {
+		return nil, fmt.Errorf("port %d was taken over during attach", slotID+1)
+	}
+
 	// Publish the opaque length only after the fixed map value, every transit
 	// field, MTU validation, and device movement are complete. Until this point
 	// every failure path can release its claim with the hint still at zero.
 	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
 		slot.GeneveOptsLen = geneveOptsValue.Len
-		slot.Generation = opts.Generation
+		atomic.StoreUint32(&slot.Generation, opts.Generation)
 	})
 	// Publish the new counter generation only after every attachment field and
 	// fallible operation is complete. Packets captured before this point can
@@ -407,14 +413,8 @@ func (s *switchContext) Detach(opts DetachOptions) error {
 	}
 	hasGeneveOptsMap := s.maps != nil && s.maps.GeneveOpts != nil
 	hasPortUp := hasGeneveOptsMap && cfg.Features&SwitchFPortUp != 0
-	if hasGeneveOptsMap {
-		var lock *ControlLock
-		var err error
-		if hasPortUp {
-			lock, err = acquireCurrentSwitchSharedControlLock(s)
-		} else {
-			lock, err = acquireCurrentSwitchControlLock(s)
-		}
+	if hasGeneveOptsMap && !hasPortUp {
+		lock, err := acquireCurrentSwitchControlLock(s)
 		if err != nil {
 			return err
 		}
@@ -462,6 +462,12 @@ func (s *switchContext) Detach(opts DetachOptions) error {
 			}
 		}
 		// else: device already in port namespace, skip move (idempotent)
+	}
+
+	// Respect an observed administrative takeover without clearing its state.
+	// The management Reserved -> Free boundary is not crossed by this operation.
+	if hasPortUp && s.mmapSlots.GetInnerIP(slotID) != currentIP {
+		return nil
 	}
 
 	// All fallible teardown is complete. Revoke dataplane publication only now,

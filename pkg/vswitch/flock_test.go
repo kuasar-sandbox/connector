@@ -165,20 +165,3 @@ func searchString(s, substr string) bool {
 	}
 	return false
 }
-
-func TestSharedControlLockUsesBlockingSharedFlock(t *testing.T) {
-	defer resetDeps()
-	bpfEnsureBPFFS = func() error { return nil }
-	dir := t.TempDir()
-	osOpen = func(string) (*os.File, error) { return os.Open(dir) }
-	var got int
-	syscallFlock = func(_ int, how int) error { got = how; return nil }
-	lock, err := acquireSwitchLock("sw0", syscall.LOCK_SH)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != syscall.LOCK_SH {
-		t.Fatalf("flock operation=%#x want LOCK_SH=%#x", got, syscall.LOCK_SH)
-	}
-	lock.Release()
-}

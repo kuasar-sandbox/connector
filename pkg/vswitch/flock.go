@@ -13,8 +13,8 @@ import (
 )
 
 // ControlLock provides process-level mutual exclusion for control operations.
-// In addition to switch lifecycle operations, ownership changes on switches
-// with a geneve_opts map use it to keep the mmap slot and options map coherent.
+// Management operations and pre-PORT_F_UP switches use this lock.
+// Capable Attach/Detach do not participate; administrative takeover is allowed.
 // It uses flock on the bpffs pin directory.
 type ControlLock struct {
 	f *os.File
@@ -66,22 +66,6 @@ func acquireStatsLock(s *switchContext) (*ControlLock, error) {
 	if err := verifyCurrentSwitchFn(s); err != nil {
 		lock.Release()
 		return nil, fmt.Errorf("%w: %w", ErrStatsUnavailable, err)
-	}
-	return lock, nil
-}
-
-// acquireCurrentSwitchSharedControlLock holds a blocking shared lifecycle guard.
-// Attachment operations use it so independent slots can proceed concurrently,
-// while destructive/force switch control operations using LOCK_EX wait until
-// every in-flight attachment mutation has completed.
-func acquireCurrentSwitchSharedControlLock(s *switchContext) (*ControlLock, error) {
-	lock, err := acquireSharedControlLockFn(s.name)
-	if err != nil {
-		return nil, fmt.Errorf("failed to acquire shared control lock: %w", err)
-	}
-	if err := verifyCurrentSwitchFn(s); err != nil {
-		lock.Release()
-		return nil, fmt.Errorf("failed to verify current switch instance: %w", err)
 	}
 	return lock, nil
 }

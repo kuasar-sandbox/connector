@@ -163,3 +163,56 @@ func TestStatsGenerationExhaustionDoesNotFailAttach(t *testing.T) {
 		t.Fatal("exhausted generation published a current observation", result, err)
 	}
 }
+
+// Tests ordinary completed Detach/Attach churn, not management reopening.
+type statsReadHookMap struct {
+	resettableStatsMap
+	reads int
+	hook  func(int)
+}
+
+func (m *statsReadHookMap) LookupWithFlags(key, out any, flags ebpf.MapLookupFlags) error {
+	if err := m.resettableStatsMap.LookupWithFlags(key, out, flags); err != nil {
+		return err
+	}
+	m.reads++
+	if m.hook != nil {
+		m.hook(m.reads)
+	}
+	return nil
+}
+func TestStatsRejectsOrdinaryChurnDuringSnapshot(t *testing.T) {
+	for _, atRead := range []int{1, 2} {
+		t.Run(string(rune('0'+atRead)), func(t *testing.T) {
+			defer resetDeps()
+			s, _ := newGeneveAttachTestContext(&SwitchConfig{}, true)
+			statsLockFixture(t)
+			writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error { return nil }
+			m := &statsReadHookMap{}
+			s.statsMgr = NewStatsManager(m, s.cfg.N_ports)
+			opts := AttachOptions{Port: 1, InnerIP: net.ParseIP("169.254.0.21"), SkipDevice: true}
+			if _, err := s.Attach(opts); err != nil {
+				t.Fatal(err)
+			}
+			m.reads = 0
+			m.hook = func(read int) {
+				if read != atRead {
+					return
+				}
+				m.hook = nil
+				if err := s.Detach(DetachOptions{Port: 1, SkipDevice: true}); err != nil {
+					t.Fatal(err)
+				}
+				if atRead == 1 {
+					if _, err := s.Attach(opts); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			out, err := s.Stats([]int{1})
+			if out != nil || !errors.Is(err, ErrStatsUnavailable) {
+				t.Fatalf("mixed/changing snapshot accepted: out=%+v err=%v", out, err)
+			}
+		})
+	}
+}

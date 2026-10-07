@@ -431,46 +431,47 @@ func (s *switchContext) Stats(ports []int) (*StatsOutput, error) {
 	}
 
 	for _, sid := range slotIDs {
-		before := *s.mmapSlots.GetSlot(sid)
-		innerBefore := s.mmapSlots.GetInnerIP(sid)
-		if !IsSlotAllocated(innerBefore) {
+		slot := s.mmapSlots.GetSlot(sid)
+		if !IsSlotAllocated(s.mmapSlots.GetInnerIP(sid)) {
 			return nil, fmt.Errorf("port %d: %w", sid+1, ErrPortNotAttached)
 		}
-		hasPortUp := s.maps != nil && s.maps.GeneveOpts != nil && cfg.Features&SwitchFPortUp != 0
-		if s.maps == nil || s.maps.GeneveOpts == nil || (hasPortUp && atomic.LoadUint32(&before.Flags)&PortFUp == 0) || atomic.LoadUint32(&before.StatsReady) != 1 {
+		hasPortUp := cfg.Features&SwitchFPortUp != 0
+		ready := func() bool {
+			return s.maps != nil && s.maps.GeneveOpts != nil &&
+				(!hasPortUp || atomic.LoadUint32(&slot.Flags)&PortFUp != 0) &&
+				atomic.LoadUint32(&slot.StatsReady) == 1
+		}
+		if !ready() {
 			return nil, fmt.Errorf("port %d: %w: current attachment reset is not confirmed", sid+1, ErrStatsUnavailable)
 		}
+		// The existing observation lock does not exclude capable Attach/Detach.
+		// Bracket only the identity fields we use with locked counter-generation
+		// reads; do not copy mutable slot fields with a non-atomic struct load.
+		first, err := s.statsMgr.GetStats(sid)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrStatsUnavailable, err)
+		}
+		innerIP := s.mmapSlots.GetInnerIP(sid)
+		generation := atomic.LoadUint32(&slot.Generation)
 		st, err := s.statsMgr.GetStats(sid)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrStatsUnavailable, err)
 		}
-		if st.Generation == 0 {
-			return nil, fmt.Errorf("port %d: %w: counter instance is uninitialized", sid+1, ErrStatsUnavailable)
-		}
-
-		// Attach/Detach share the lifecycle lock with Stats and may run concurrently.
-		// Validate both the slot snapshot and the internal counter generation. A
-		// detach/re-attach, including reuse of the same InnerIP/caller generation,
-		// advances the stats generation and invalidates this observation.
-		after := *s.mmapSlots.GetSlot(sid)
-		innerAfter := s.mmapSlots.GetInnerIP(sid)
-		st2, err := s.statsMgr.GetStats(sid)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrStatsUnavailable, err)
-		}
-		if innerAfter != innerBefore || after.Generation != before.Generation || atomic.LoadUint32(&after.StatsReady) != 1 || (hasPortUp && atomic.LoadUint32(&after.Flags)&PortFUp == 0) || st2.Generation != st.Generation {
+		if first.Generation == 0 || first.Generation != st.Generation ||
+			!IsSlotAllocated(innerIP) || !ready() ||
+			s.mmapSlots.GetInnerIP(sid) != innerIP ||
+			atomic.LoadUint32(&slot.Generation) != generation {
 			return nil, fmt.Errorf("port %d: %w: attachment changed during stats read", sid+1, ErrStatsUnavailable)
 		}
-
 		portMAC := GetPortMAC(cfg.SwitchMac[:], cfg.PortMac[:], sid)
 		out.Ports = append(out.Ports, PortStatsOutput{
-			Port: sid + 1, InnerIP: bpf.Uint32ToIP(innerAfter).String(),
-			FloatingIP: bpf.Uint32ToIP(FloatingIPForAttachment(cfg.FloatingIpBase, sid, after.Generation)).String(),
-			Generation: after.Generation, PortMAC: portMAC.String(),
-			MgmtRxPackets: st2.MgmtRxPackets, MgmtRxBytes: st2.MgmtRxBytes,
-			MgmtTxPackets: st2.MgmtTxPackets, MgmtTxBytes: st2.MgmtTxBytes,
-			TransitRxPackets: st2.TransitRxPackets, TransitRxBytes: st2.TransitRxBytes,
-			TransitTxPackets: st2.TransitTxPackets, TransitTxBytes: st2.TransitTxBytes,
+			Port: sid + 1, InnerIP: bpf.Uint32ToIP(innerIP).String(),
+			FloatingIP: bpf.Uint32ToIP(FloatingIPForAttachment(cfg.FloatingIpBase, sid, generation)).String(),
+			Generation: generation, PortMAC: portMAC.String(),
+			MgmtRxPackets: st.MgmtRxPackets, MgmtRxBytes: st.MgmtRxBytes,
+			MgmtTxPackets: st.MgmtTxPackets, MgmtTxBytes: st.MgmtTxBytes,
+			TransitRxPackets: st.TransitRxPackets, TransitRxBytes: st.TransitRxBytes,
+			TransitTxPackets: st.TransitTxPackets, TransitTxBytes: st.TransitTxBytes,
 		})
 	}
 
