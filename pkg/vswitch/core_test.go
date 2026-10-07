@@ -1511,6 +1511,7 @@ func TestStatsSpecificPorts(t *testing.T) {
 	for _, slot := range []uint32{0, 1} {
 		slots.TryAllocate(slot, slot+1)
 		slots.GetSlot(slot).StatsReady = 1
+		slots.GetSlot(slot).Flags = PortFUp
 		values.stats[slot] = &SlotStats{Generation: 1}
 	}
 	output, err := s.Stats([]int{1, 2})

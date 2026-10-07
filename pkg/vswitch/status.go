@@ -436,9 +436,10 @@ func (s *switchContext) Stats(ports []int) (*StatsOutput, error) {
 		if !IsSlotAllocated(innerIP) {
 			return nil, fmt.Errorf("port %d: %w", sid+1, ErrPortNotAttached)
 		}
-		// Only switches with the existing options map serialize every ownership
-		// change with this lock. Older contexts cannot prove a coherent read.
-		if s.maps == nil || s.maps.GeneveOpts == nil || atomic.LoadUint32(&slot.StatsReady) != 1 {
+		// A current attachment is observable only after its dataplane and counter
+		// instance have both been published. Shared lifecycle locking prevents
+		// switch replacement but intentionally does not serialize Attach.
+		if s.maps == nil || s.maps.GeneveOpts == nil || atomic.LoadUint32(&slot.Flags)&PortFUp == 0 || atomic.LoadUint32(&slot.StatsReady) != 1 {
 			return nil, fmt.Errorf("port %d: %w: current attachment reset is not confirmed", sid+1, ErrStatsUnavailable)
 		}
 		st, err := s.statsMgr.GetStats(sid)

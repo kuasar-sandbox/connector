@@ -279,7 +279,7 @@ connector-ctl vswitch attach sw0 --inner-ip=169.254.1.1 \
 
 ### 2.5 `connector-ctl vswitch detach`
 
-For a new switch, detach holds the per-switch control flock, directly CASes Allocated→Free, then clears the options fast-path hint. Reserved is reserved for explicit reserve/provision/stop state, not a detach intermediate. Detach leaves the fixed-size options map value and other transit fields for the next Attach to overwrite; free slots are ignored by the data plane. Old switches without `geneve_opts` retain their CAS-only path.
+For a current switch, detach holds a **shared** lifecycle guard (so independent attachment operations remain concurrent), publishes the slot dataplane down, performs device cleanup, clears the options fast-path hint, and finally CASes Allocated→Free. The release CAS is the last old-owner mutation. Reserved remains an explicit reserve/provision/stop state. The fixed-size options map value and retained transit fields may remain for the next Attach to overwrite while the zero hint/down state prevents their use. Legacy switches without `geneve_opts` retain their CAS-only path.
 
 TAP detach performs no device move. For veth, `--from-netns` moves the peer back into port-netns; without it, detach verifies that the peer is already there. Device/namespace failure can prevent completion; inspect the error and slot state.
 

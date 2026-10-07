@@ -22,6 +22,7 @@ const (
 	vswitchExportedU32INNER_IP_RESERVED       vswitchExportedU32 = 4294967295
 	vswitchExportedU32PORT_KIND_VETH          vswitchExportedU32 = 0
 	vswitchExportedU32PORT_KIND_TAP           vswitchExportedU32 = 1
+	vswitchExportedU32PORT_F_UP               vswitchExportedU32 = 1
 	vswitchExportedU32MAX_GENEVE_OPTS_LEN     vswitchExportedU32 = 64
 	vswitchExportedU32GENEVE_PORT             vswitchExportedU32 = 6081
 	vswitchExportedU32GENEVE_LOCATOR_PORT     vswitchExportedU32 = 0
@@ -62,7 +63,7 @@ type vswitchSlotItem struct {
 	MgmtCidrCount    uint32
 	MgmtCidrs0       vswitchMgmtCidr
 	Generation       uint32
-	PadCl0           [4]uint8
+	Flags            uint32
 	MgmtCidrsExt     [2]vswitchMgmtCidr
 	StatsReady       uint32
 }

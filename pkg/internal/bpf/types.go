@@ -23,6 +23,7 @@ const MetadataMaxSize = 4096
 var (
 	_ [108]byte = [unsafe.Sizeof(SlotItem{})]byte{}
 	_ [56]byte  = [unsafe.Offsetof(SlotItem{}.Generation)]byte{}
+	_ [60]byte  = [unsafe.Offsetof(SlotItem{}.Flags)]byte{}
 	_ [104]byte = [unsafe.Offsetof(SlotItem{}.StatsReady)]byte{}
 	_ [40]byte  = [unsafe.Sizeof(SwitchConfig{})]byte{}
 	_ [34]byte  = [unsafe.Offsetof(SwitchConfig{}.GenerationBits)]byte{}
@@ -56,6 +57,7 @@ type PortKind uint8
 const (
 	PortKindVeth PortKind = PortKind(vswitchExportedU32PORT_KIND_VETH) // 0 - default
 	PortKindTap  PortKind = PortKind(vswitchExportedU32PORT_KIND_TAP)  // 1 - tap (sandbox sees fd)
+	PortFUp               = uint32(vswitchExportedU32PORT_F_UP)
 )
 
 // String returns a stable short label for the port kind.

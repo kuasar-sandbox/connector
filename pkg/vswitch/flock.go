@@ -69,11 +69,26 @@ func acquireStatsLock(s *switchContext) (*ControlLock, error) {
 	return lock, nil
 }
 
-// acquireCurrentSwitchControlLock locks the switch and then verifies that the
-// context still refers to the map set currently pinned under that name. The
-// verification is required after flock: while waiting for an old directory
-// inode, StopReleased can remove it and a new switch can be created at the same
-// path with an independent lock.
+// acquireCurrentSwitchSharedControlLock holds a blocking shared lifecycle guard.
+// Attachment operations use it so independent slots can proceed concurrently,
+// while destructive/force switch control operations using LOCK_EX wait until
+// every in-flight attachment mutation has completed.
+func acquireCurrentSwitchSharedControlLock(s *switchContext) (*ControlLock, error) {
+	lock, err := acquireSharedControlLockFn(s.name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire shared control lock: %w", err)
+	}
+	if err := verifyCurrentSwitchFn(s); err != nil {
+		lock.Release()
+		return nil, fmt.Errorf("failed to verify current switch instance: %w", err)
+	}
+	return lock, nil
+}
+
+// acquireCurrentSwitchControlLock takes the exclusive lifecycle side and then
+// verifies that this context still refers to the map set pinned under the name.
+// Verification after waiting is required because StopReleased may replace the
+// directory/map set while an operation is blocked on the old inode.
 func acquireCurrentSwitchControlLock(s *switchContext) (*ControlLock, error) {
 	lock, err := acquireControlLockFn(s.name)
 	if err != nil {

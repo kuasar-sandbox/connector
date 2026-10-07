@@ -30,6 +30,7 @@ const (
 	InnerIPReserved    = bpf.InnerIPReserved
 	PortKindVeth       = bpf.PortKindVeth
 	PortKindTap        = bpf.PortKindTap
+	PortFUp            = bpf.PortFUp
 )
 
 // Function-level re-exports so existing vswitch code can call these without

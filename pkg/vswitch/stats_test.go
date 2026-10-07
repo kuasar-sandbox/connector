@@ -104,6 +104,7 @@ func TestStatsControlContentionAndReplacementFailClosed(t *testing.T) {
 	statsLockFixture(t)
 	slots.TryAllocate(0, 1)
 	slots.GetSlot(0).StatsReady = 1
+	slots.GetSlot(0).Flags = PortFUp
 	lock, err := AcquireControlLock(s.name)
 	if err != nil {
 		t.Fatal(err)
@@ -139,6 +140,7 @@ func TestStatsSkipsReservedAndRejectsUnconfirmedLegacy(t *testing.T) {
 	}
 	slots.TryAllocate(1, 2)
 	slots.GetSlot(1).StatsReady = 1
+	slots.GetSlot(1).Flags = PortFUp
 	if output, err := s.Stats([]int{2}); output != nil || !errors.Is(err, ErrStatsUnavailable) {
 		t.Fatal("legacy unsynchronized ownership accepted", output, err)
 	}

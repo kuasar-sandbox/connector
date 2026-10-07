@@ -41,6 +41,10 @@ _Static_assert(MAX_PORTS == (1U << GENEVE_VNI_LOCATOR_BITS),
 // Existing pre-mode-bit slots have mode==0 → veth (backward compatible default).
 #define PORT_KIND_VETH 0
 #define PORT_KIND_TAP  1
+
+// Per-slot dataplane publication flags. Zero is fail-closed and is retained by
+// Free/Reserved slots; Attach publishes PORT_F_UP only after preparation.
+#define PORT_F_UP       (1U << 0)
 #define ETH_P_IP 0x0800
 #define ETH_P_ARP 0x0806
 #define ETH_P_IPV6 0x86DD
@@ -146,7 +150,7 @@ struct slot_item {
     __u32 mgmt_cidr_count;    // offset 32 - Number of management routes
     struct mgmt_cidr mgmt_cidrs_0;  // offset 36-55 (20B) - Inline first mgmt_cidr (hot entry)
     __u32 generation;         // offset 56-59 - Caller-supplied attachment generation
-    __u8  _pad_cl0[4];        // offset 60-63 - Pad to 64 bytes
+    __u32 flags;              // offset 60-63 - PORT_F_* dataplane publication
 
     // ═══════════════════════════════════════════════════════════
     // Cache Line 1 (44 bytes) - Extended mgmt_cidrs (cold path)
@@ -204,6 +208,7 @@ enum exported_u32 {
     __INNER_IP_RESERVED = INNER_IP_RESERVED,
     __PORT_KIND_VETH = PORT_KIND_VETH,
     __PORT_KIND_TAP = PORT_KIND_TAP,
+    __PORT_F_UP = PORT_F_UP,
     __MAX_GENEVE_OPTS_LEN = MAX_GENEVE_OPTS_LEN,
     __GENEVE_PORT = GENEVE_PORT,
     __GENEVE_LOCATOR_PORT = GENEVE_LOCATOR_PORT,
