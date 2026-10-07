@@ -189,8 +189,9 @@ func LoadPinnedMaps(switchName string) (*Maps, error) {
 	pinPath := filepath.Join(BPFPath, switchName)
 
 	// slots_v2 is the explicit ABI marker for PORT_F_UP-capable switches.
-	// Falling back to slots keeps new userspace compatible with existing pinned
-	// switches, while old userspace fails closed when opening a new switch.
+	// Falling back to slots allows inspection and management cleanup of old
+	// instances. Attach/Detach require the new capability and reject them;
+	// old userspace fails closed when opening a new switch.
 	slots, err := ebpf.LoadPinnedMap(filepath.Join(pinPath, "slots_v2"), nil)
 	slotsV2 := err == nil
 	if err != nil && errors.Is(err, os.ErrNotExist) {

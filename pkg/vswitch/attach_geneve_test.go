@@ -40,32 +40,6 @@ func newGeneveAttachTestContext(cfg *SwitchConfig, withOptionsMap bool) (*switch
 	}, slots
 }
 
-func TestAttachLegacySwitchWithoutGeneveOptsMap(t *testing.T) {
-	defer resetDeps()
-	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, false)
-	if _, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true}); err != nil {
-		t.Fatalf("legacy empty attach: %v", err)
-	}
-	if slots.GetSlot(0).GeneveOptsLen != 0 {
-		t.Fatalf("legacy hint = %d", slots.GetSlot(0).GeneveOptsLen)
-	}
-
-	if err := s.Detach(DetachOptions{Port: 1, SkipDevice: true}); err != nil {
-		t.Fatal(err)
-	}
-	_, err := s.Attach(AttachOptions{
-		InnerIP:           net.ParseIP("10.0.0.2"),
-		SkipDevice:        true,
-		TransitGeneveOpts: []GeneveOption{{Class: 1, Type: 2}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "rebuild the switch") {
-		t.Fatalf("legacy non-empty options error = %v", err)
-	}
-	if slots.GetInnerIP(0) != 0 {
-		t.Fatal("non-empty options validation allocated a legacy slot")
-	}
-}
-
 func TestAttachFixedLocatorRequiresGeneveOptsMap(t *testing.T) {
 	for _, locator := range []GeneveLocator{GeneveLocatorVNI, GeneveLocatorTLV} {
 		t.Run(locator.String(), func(t *testing.T) {
@@ -584,27 +558,66 @@ func TestAttachGenerationPublishesOnlyAfterFalliblePreparation(t *testing.T) {
 	}
 }
 
-func TestExistingSwitchWithoutPortUpCapabilityUsesExclusiveLock(t *testing.T) {
-	defer resetDeps()
-	s, _ := newGeneveAttachTestContext(&SwitchConfig{}, true)
-	s.cfg.Features = 0
-	exclusive := false
-	acquireControlLockFn = func(string) (*ControlLock, error) { exclusive = true; return &ControlLock{}, nil }
-	verifyCurrentSwitchFn = func(*switchContext) error { return nil }
-	writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error { return nil }
-	if _, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true}); err != nil {
-		t.Fatal(err)
-	}
-	if !exclusive {
-		t.Fatal("legacy switch did not retain exclusive lock")
-	}
-}
-
 func TestAttachRejectsMissingPublicationMap(t *testing.T) {
 	defer resetDeps()
 	s, slots := newGeneveAttachTestContext(&SwitchConfig{Features: SwitchFPortUp}, false)
 	out, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("169.254.0.21"), SkipDevice: true})
 	if err == nil || out != nil || slots.GetInnerIP(0) != InnerIPFree {
 		t.Fatalf("missing map accepted: out=%+v err=%v", out, err)
+	}
+}
+
+// Rejecting an unsupported ABI is not a fallback execution path. No lock,
+// device operation, map update or slot mutation is allowed on either method.
+func TestAttachmentRejectsUnsupportedSwitchBeforeMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		features   uint8
+		optionsMap bool
+	}{
+		{"old-with-options", 0, true},
+		{"old-without-options", 0, false},
+		{"missing-required-options", SwitchFPortUp, false},
+	} {
+		for _, detach := range []bool{false, true} {
+			op := "attach"
+			if detach {
+				op = "detach"
+			}
+			t.Run(tc.name+"/"+op, func(t *testing.T) {
+				defer resetDeps()
+				s, slots := newGeneveAttachTestContext(&SwitchConfig{}, tc.optionsMap)
+				s.cfg.Features = tc.features
+				if detach && !slots.TryAllocate(0, 0x0a000001) {
+					t.Fatal("seed old attachment")
+				}
+				slot := slots.GetSlot(0)
+				slot.Generation, slot.StatsReady, slot.Flags, slot.GeneveOptsLen = 3, 1, PortFUp, 12
+				before := *slot
+				calls := 0
+				unexpected := errors.New("unexpected attachment side effect")
+				acquireControlLockFn = func(string) (*ControlLock, error) { calls++; return nil, unexpected }
+				syscallFlock = func(int, int) error { calls++; return unexpected }
+				verifyCurrentSwitchFn = func(*switchContext) error { calls++; return unexpected }
+				writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error { calls++; return unexpected }
+				netnsGetByName = func(string) (*netns.NetNS, error) { calls++; return nil, unexpected }
+				var err error
+				if detach {
+					err = s.Detach(DetachOptions{Port: 1, FromNetNS: "sandbox"})
+				} else {
+					var out *AttachOutput
+					out, err = s.Attach(AttachOptions{Port: 1, InnerIP: net.ParseIP("10.0.0.1"), ToNetNS: "sandbox"})
+					if out != nil {
+						t.Fatalf("unsupported Attach returned success: %+v", out)
+					}
+				}
+				if err == nil || !strings.Contains(err.Error(), "rebuild the switch") {
+					t.Fatalf("error=%v", err)
+				}
+				if calls != 0 || *slot != before {
+					t.Fatalf("unsupported %s changed state or used fallback: calls=%d before=%+v after=%+v", op, calls, before, *slot)
+				}
+			})
+		}
 	}
 }

@@ -415,7 +415,7 @@ stateDiagram-v2
 
 ### 4.4 控制操作并发
 
-单个 slot 的 Free/Reserved/Allocated 归属由 CAS 判定。**支持 `PORT_F_UP` 的 Attach/Detach 不获取全局 EX 或 SH 锁**。管理命令持有 EX 锁也不会阻塞这两条发放/释放路径。
+attachment 全局锁是非预期引入的实现缺陷,不是可选优化。**Attach/Detach 不保留任何全局 EX 或 SH 执行分支**。缺少新数据面能力的旧实例在修改状态前报错,必须通过管理流程重建。单个 slot 的归属仍由 CAS 判定,管理 EX 锁不阻塞正常发放/释放路径。
 
 | 操作 | flock | 所有权边界 |
 |---|---|---|
@@ -423,14 +423,13 @@ stateDiagram-v2
 | ProvisionPorts | 管理操作之间排他 | 完成 Reserved 端口准备后,最后发布 Free |
 | 支持新能力的 Attach / Detach | 无 | Attach 先 CAS 获取;Detach 最后 CAS 释放 |
 | Reserve / Reserve --force | 沿用管理排他锁 | 先 CAS 到 Reserved,成功后再清理 |
-| 有 `geneve_opts` 但无新能力的旧 switch | 沿用旧排他协议 | 重建后启用无全局锁路径 |
-| 无 `geneve_opts` 的旧 switch | 原 CAS-only 路径 | 保持原行为 |
+| 缺少新能力的旧 switch,无论是否有 `geneve_opts` | Attach/Detach 直接拒绝,不加锁、不改状态 | 先通过管理流程重建;仍可查询和执行管理清理 |
 
 Reserve/Stop/Provision 在 Attach/Detach 执行期间接管是设计预期,不通过共享锁阻止,也不保证被接管的操作正常完成。观察到接管后不撤销管理状态。**Reserved→Free 是具有严格进出边界的管理动作**,不是可与旧请求、立即复用任意交错的步骤。本合同不扩展处理旧请求跨越整个管理重新开放/再分配过程的序列,不为此新增 owner token、epoch 表或 lifecycle shared lock。
 
 只有 Attach 的 CAS 胜者才写 attachment 配置。原 offset 60 的四字节 padding 保存 `PORT_F_UP`;准备期间保持 down,普通 Attach 最后发布 up。Detach 完成可失败的设备操作,清 publication/options hint,最后 CAS→Free;释放后不再写 slot。Attach 回滚只释放自己的 CAS claim,不执行迟到清理。Reserve 先 CAS 获取管理归属再清理。Provision 在 Reserved 状态完成准备,清 up 后最后发布 Free。
 
-新 switch 通过 `SWITCH_F_PORT_UP` 声明能力,slot map pin 使用 `slots_v2`(输出逻辑键仍为 `slots`)。新 userspace 可回退打开旧 `slots` 并保留其排他协议;旧 userspace 不会静默操作新 switch。管理/Stats 的实例检查支持两种 pin 名称。不热替换数据面,不混用不支持新语义的旧客户端。
+新 switch 通过 `SWITCH_F_PORT_UP` 声明能力,slot map pin 使用 `slots_v2`(输出逻辑键仍为 `slots`)。新 userspace 可打开旧 `slots` 用于查询和管理清理,但 Attach/Detach 对缺少 `SWITCH_F_PORT_UP` 的实例明确报错、要求重建;旧 userspace 不会静默操作新 switch。管理/Stats 的实例检查支持两种 pin 名称。不热替换数据面,不混用不支持新语义的旧客户端。
 
 ### 4.5 两阶段启动
 

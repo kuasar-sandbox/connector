@@ -328,7 +328,7 @@ Failed operations attempt to undo their own claim or device movement, without ov
 
 ### 4.4 Control-operation concurrency
 
-CAS arbitrates per-slot Free/Reserved/Allocated ownership. **PORT_F_UP-capable Attach/Detach take neither an exclusive nor a shared switch-wide flock.** A management LOCK_EX does not gate these fast paths.
+Switch-wide attachment locking was an unintended implementation defect, not an optional optimization. **Attach/Detach contain no exclusive or shared switch-wide flock path.** They require the publication-aware switch ABI; unsupported old instances are rejected before mutation and must be rebuilt. CAS arbitrates per-slot ownership, and a management LOCK_EX does not gate these fast paths.
 
 | Operation | flock | Ownership boundary |
 |---|---|---|
@@ -336,14 +336,13 @@ CAS arbitrates per-slot Free/Reserved/Allocated ownership. **PORT_F_UP-capable A
 | ProvisionPorts | Exclusive among management operations. | Prepare Reserved ports; publish Free last. |
 | Capable Attach / Detach | None. | Attach acquires by CAS first; Detach releases by CAS last. |
 | Reserve / Reserve --force | Existing exclusive management lock. | CAS to Reserved first, then control-owned cleanup. |
-| Pre-capability switches with `geneve_opts` | Legacy exclusive attachment protocol. | Rebuild to enable the lock-free fast path. |
-| Legacy switches without `geneve_opts` | Existing CAS-only path. | Existing behavior. |
+| Pre-capability switches, with or without `geneve_opts` | Attach/Detach rejected without locking or mutation. | Rebuild before attachment operations; reads and management cleanup remain available. |
 
 Management takeover during an in-progress Attach/Detach is intentional. Such calls are not guaranteed uninterrupted success, and an observed takeover is not undone. **Reserved→Free is a management action with strict entry/exit boundaries**, not an arbitrary step interleaved with old requests and immediate reallocation. Handling an old request that survives that entire management reopening/reallocation sequence is outside this contract; no owner-token table or lifecycle shared lock is introduced for it.
 
 Only an Attach CAS winner may initialize per-slot configuration. The previous four-byte padding at offset 60 holds `PORT_F_UP`. The slot remains down through preparation; ordinary Attach publishes up last. Detach completes fallible device work, clears publication and the options hint, then releases Free by CAS, with no writes after release. Rollback releases its own claim without late cleanup writes. Reserve first acquires control ownership by CAS. Provision initializes the Reserved port and clears up before publishing Free.
 
-New switches advertise `SWITCH_F_PORT_UP` and pin the slot map as `slots_v2` (reported under the logical `slots` key). New userspace falls back to the legacy `slots` pin for older switches and preserves their exclusive protocol; old userspace cannot silently open new publication-aware switches. Management/Stats identity checks support both pin names. Do not hot-swap the data plane or mix unsupported old clients into a new switch.
+New switches advertise `SWITCH_F_PORT_UP` and pin the slot map as `slots_v2` (reported under the logical `slots` key). New userspace can open the legacy `slots` pin for inspection and management cleanup, but Attach/Detach reject instances without `SWITCH_F_PORT_UP` and require a managed rebuild; old userspace cannot silently open new publication-aware switches. Management/Stats identity checks support both pin names. Do not hot-swap the data plane or mix unsupported old clients into a new switch.
 
 ### 4.5 Two-phase startup
 

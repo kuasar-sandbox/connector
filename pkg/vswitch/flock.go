@@ -13,7 +13,7 @@ import (
 )
 
 // ControlLock provides process-level mutual exclusion for control operations.
-// Management operations and pre-PORT_F_UP switches use this lock.
+// Management operations use this lock; attachment operations never do.
 // Capable Attach/Detach do not participate; administrative takeover is allowed.
 // It uses flock on the bpffs pin directory.
 type ControlLock struct {

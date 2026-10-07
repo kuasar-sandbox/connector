@@ -14,6 +14,29 @@ import (
 	"github.com/kuasar-sandbox/connector/pkg/netns"
 )
 
+// The wrapper tests still exercise openSwitch and its error paths. Add the
+// supported options-map marker only after Open succeeds; the marker has no
+// kernel FD, so remove it before delegating Close. Real map behavior is covered
+// by the privileged integration fixtures.
+type attachmentTestHandle struct{ Interface }
+
+func (h *attachmentTestHandle) Close() error {
+	h.Maps().GeneveOpts = nil
+	return h.Interface.Close()
+}
+
+func mockAttachmentHandleOpen() {
+	openSwitchFn = func(name string) (Interface, error) {
+		sw, err := openSwitch(name)
+		if err != nil {
+			return nil, err
+		}
+		sw.Maps().GeneveOpts = &ebpf.Map{}
+		return &attachmentTestHandle{Interface: sw}, nil
+	}
+	writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error { return nil }
+}
+
 // mockBPFMapWithError is a mock BPFMap that returns an error on Lookup
 type mockBPFMapWithError struct {
 	err error
@@ -349,6 +372,7 @@ func TestStatusNetNSNotFound(t *testing.T) {
 
 func TestAttachSwitchNotExist(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return false, nil
@@ -368,6 +392,7 @@ func TestAttachSwitchNotExist(t *testing.T) {
 
 func TestAttachLoadPinnedMapsError(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -392,6 +417,7 @@ func TestAttachLoadPinnedMapsError(t *testing.T) {
 
 func TestDetachSwitchNotExist(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return false, nil
@@ -408,6 +434,7 @@ func TestDetachSwitchNotExist(t *testing.T) {
 
 func TestDetachInvalidPort(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -416,7 +443,7 @@ func TestDetachInvalidPort(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{}, nil
@@ -439,6 +466,7 @@ func TestDetachInvalidPort(t *testing.T) {
 
 func TestDetachLoadPinnedMapsError(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -499,6 +527,7 @@ func TestStatsLoadPinnedMapsError(t *testing.T) {
 
 func TestAttachZeroInnerIP(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -507,7 +536,7 @@ func TestAttachZeroInnerIP(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 256}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 256}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{}, nil
@@ -533,6 +562,7 @@ func TestAttachZeroInnerIP(t *testing.T) {
 
 func TestAttachGetSwitchConfigError(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -558,6 +588,7 @@ func TestAttachGetSwitchConfigError(t *testing.T) {
 
 func TestAttachMmapSlotsError(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -566,7 +597,7 @@ func TestAttachMmapSlotsError(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{}, nil
@@ -589,6 +620,7 @@ func TestAttachMmapSlotsError(t *testing.T) {
 
 func TestAttachPortOutOfRange(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -597,7 +629,7 @@ func TestAttachPortOutOfRange(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{}, nil
@@ -624,6 +656,7 @@ func TestAttachPortOutOfRange(t *testing.T) {
 
 func TestAttachPortAlreadyAllocated(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -632,7 +665,7 @@ func TestAttachPortAlreadyAllocated(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{}, nil
@@ -659,6 +692,7 @@ func TestAttachPortAlreadyAllocated(t *testing.T) {
 
 func TestAttachNoFreeSlotsAvailable(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -667,7 +701,7 @@ func TestAttachNoFreeSlotsAvailable(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 2}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 2}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{}, nil
@@ -695,6 +729,7 @@ func TestAttachNoFreeSlotsAvailable(t *testing.T) {
 
 func TestAttachSuccessWithoutNamespace(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -703,7 +738,7 @@ func TestAttachSuccessWithoutNamespace(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		cfg := &SwitchConfig{N_ports: 4, FloatingIpBase: 0x64646000} // 100.100.96.0
+		cfg := &SwitchConfig{Features: SwitchFPortUp, N_ports: 4, FloatingIpBase: 0x64646000} // 100.100.96.0
 		return cfg, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
@@ -737,6 +772,7 @@ func TestAttachSuccessWithoutNamespace(t *testing.T) {
 
 func TestAttachSuccessWithTransit(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -745,7 +781,7 @@ func TestAttachSuccessWithTransit(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4, FloatingIpBase: 0x64646000, GenevePortBase: 6080}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4, FloatingIpBase: 0x64646000, GenevePortBase: 6080}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{TransitDev: "eth0"}, nil
@@ -779,6 +815,7 @@ func TestAttachSuccessWithTransit(t *testing.T) {
 
 func TestAttachWithToNetNSPortNsError(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -787,7 +824,7 @@ func TestAttachWithToNetNSPortNsError(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{PortNetNS: "port_ns"}, nil
@@ -822,6 +859,7 @@ func TestAttachWithToNetNSPortNsError(t *testing.T) {
 
 func TestAttachWithToNetNSTargetNsError(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -830,7 +868,7 @@ func TestAttachWithToNetNSTargetNsError(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{PortNetNS: "port_ns"}, nil
@@ -870,6 +908,7 @@ func TestAttachWithToNetNSTargetNsError(t *testing.T) {
 
 func TestAttachWithToNetNSMoveDeviceError(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -878,7 +917,7 @@ func TestAttachWithToNetNSMoveDeviceError(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{PortNetNS: "port_ns"}, nil
@@ -916,6 +955,7 @@ func TestAttachWithToNetNSMoveDeviceError(t *testing.T) {
 
 func TestAttachWithToNetNSSuccess(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -924,7 +964,7 @@ func TestAttachWithToNetNSSuccess(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4, FloatingIpBase: 0x64646000}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4, FloatingIpBase: 0x64646000}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{PortNetNS: "port_ns"}, nil
@@ -959,6 +999,7 @@ func TestAttachWithToNetNSSuccess(t *testing.T) {
 
 func TestDetachGetSwitchConfigError(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -981,6 +1022,7 @@ func TestDetachGetSwitchConfigError(t *testing.T) {
 
 func TestDetachPortOutOfRange(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -989,7 +1031,7 @@ func TestDetachPortOutOfRange(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{}, nil
@@ -1013,6 +1055,7 @@ func TestDetachPortOutOfRange(t *testing.T) {
 
 func TestDetachMmapSlotsError(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -1021,7 +1064,7 @@ func TestDetachMmapSlotsError(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{}, nil
@@ -1041,6 +1084,7 @@ func TestDetachMmapSlotsError(t *testing.T) {
 
 func TestDetachPortNotAttached(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -1049,7 +1093,7 @@ func TestDetachPortNotAttached(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{}, nil
@@ -1070,6 +1114,7 @@ func TestDetachPortNotAttached(t *testing.T) {
 
 func TestDetachGetPortNsError(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -1078,7 +1123,7 @@ func TestDetachGetPortNsError(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{PortNetNS: "port_ns"}, nil
@@ -1104,6 +1149,7 @@ func TestDetachGetPortNsError(t *testing.T) {
 
 func TestDetachDeviceNotInPortNsNoFromNetNS(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -1112,7 +1158,7 @@ func TestDetachDeviceNotInPortNsNoFromNetNS(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{PortNetNS: "port_ns"}, nil
@@ -1142,6 +1188,7 @@ func TestDetachDeviceNotInPortNsNoFromNetNS(t *testing.T) {
 
 func TestDetachDeviceNotInPortNsFromNetNSError(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -1150,7 +1197,7 @@ func TestDetachDeviceNotInPortNsFromNetNSError(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{PortNetNS: "port_ns"}, nil
@@ -1185,6 +1232,7 @@ func TestDetachDeviceNotInPortNsFromNetNSError(t *testing.T) {
 
 func TestDetachMoveDeviceBackError(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -1193,7 +1241,7 @@ func TestDetachMoveDeviceBackError(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{PortNetNS: "port_ns"}, nil
@@ -1224,6 +1272,7 @@ func TestDetachMoveDeviceBackError(t *testing.T) {
 
 func TestDetachSuccessDeviceAlreadyInPortNs(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -1232,7 +1281,7 @@ func TestDetachSuccessDeviceAlreadyInPortNs(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{PortNetNS: "port_ns"}, nil
@@ -1262,6 +1311,7 @@ func TestDetachSuccessDeviceAlreadyInPortNs(t *testing.T) {
 
 func TestDetachWithFromNetNSMoveSuccess(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -1270,7 +1320,7 @@ func TestDetachWithFromNetNSMoveSuccess(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{PortNetNS: "port_ns"}, nil
@@ -1305,6 +1355,7 @@ func TestDetachWithFromNetNSMoveSuccess(t *testing.T) {
 func TestDetachCASFailSlotAlreadyFree(t *testing.T) {
 	// Test CAS failure path when slot is already free
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -1313,7 +1364,7 @@ func TestDetachCASFailSlotAlreadyFree(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{PortNetNS: "port_ns"}, nil
@@ -1343,6 +1394,7 @@ func TestDetachCASFailSlotAlreadyFree(t *testing.T) {
 func TestDetachCASFailSlotReattached(t *testing.T) {
 	// Test CAS failure path when slot was reattached
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) {
 		return true, nil
@@ -1351,7 +1403,7 @@ func TestDetachCASFailSlotReattached(t *testing.T) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{PortNetNS: "port_ns"}, nil
@@ -1530,13 +1582,14 @@ func TestStatsSpecificPorts(t *testing.T) {
 
 func TestAttachSkipDevice(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) { return true, nil }
 	bpfLoadPinnedMaps = func(name string) (*bpf.Maps, error) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4, FloatingIpBase: 0x64646000}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4, FloatingIpBase: 0x64646000}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{PortNetNS: "port_ns"}, nil
@@ -1573,13 +1626,14 @@ func TestAttachSkipDevice(t *testing.T) {
 
 func TestDetachSkipDevice(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) { return true, nil }
 	bpfLoadPinnedMaps = func(name string) (*bpf.Maps, error) {
 		return &bpf.Maps{}, nil
 	}
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{PortNetNS: "port_ns"}, nil
@@ -1624,10 +1678,11 @@ func TestDetachSkipDevice(t *testing.T) {
 
 func TestAttachGenerationValidationPrecedesSlotMutation(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 	bpfPinPathExists = func(string) (bool, error) { return true, nil }
 	bpfLoadPinnedMaps = func(string) (*bpf.Maps, error) { return &bpf.Maps{}, nil }
 	getSwitchConfigFn = func(BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4, FloatingIpBase: 0x64640000, GenerationBits: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4, FloatingIpBase: 0x64640000, GenerationBits: 4}, nil
 	}
 	getSwitchMetadataFn = func(BPFMap) (*SwitchMetadata, error) { return &SwitchMetadata{}, nil }
 	slots := newMmappedSlotsForTest(4)
@@ -1643,10 +1698,11 @@ func TestAttachGenerationValidationPrecedesSlotMutation(t *testing.T) {
 
 func TestAttachGenerationChangesFloatingIdentity(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 	bpfPinPathExists = func(string) (bool, error) { return true, nil }
 	bpfLoadPinnedMaps = func(string) (*bpf.Maps, error) { return &bpf.Maps{}, nil }
 	getSwitchConfigFn = func(BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4, FloatingIpBase: 0x64640000, GenerationBits: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4, FloatingIpBase: 0x64640000, GenerationBits: 4}, nil
 	}
 	getSwitchMetadataFn = func(BPFMap) (*SwitchMetadata, error) { return &SwitchMetadata{}, nil }
 	slots := newMmappedSlotsForTest(4)

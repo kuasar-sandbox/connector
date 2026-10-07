@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
 )
 
 // An actual directory LOCK_EX must not gate capable attachment operations.
@@ -130,43 +133,99 @@ func TestReserveTakesOverInFlightAttachWithoutLifecycleWait(t *testing.T) {
 	t.Log("Reserve acquired the allocated port while Attach was still in preparation; the management boundary remained closed")
 }
 
-// A same-binary comparison against the legacy EX path. This measures the SDK
-// with real mmap/options/stats maps, not VM startup, TAP-FD or netns movement.
+// Measures the repaired SDK with real maps, not VM startup or netns movement.
+// Historical comparisons must run the old revision separately, never preserve
+// an executable defective fallback in the current implementation.
 func BenchmarkAttachmentCycleConcurrent(b *testing.B) {
-	for _, legacy := range []bool{true, false} {
-		label := "cas-no-flock"
-		if legacy {
-			label = "legacy-exclusive-flock"
+	s := nativeStatsFixture(b)
+	ports := make(chan int, 32)
+	for p := 1; p <= 32; p++ {
+		ports <- p
+	}
+	innerIP := net.ParseIP("169.254.0.21")
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			p := <-ports
+			_, err := s.Attach(AttachOptions{Port: p, InnerIP: innerIP, SkipDevice: true})
+			if err == nil {
+				err = s.Detach(DetachOptions{Port: p, SkipDevice: true})
+			}
+			ports <- p
+			if err != nil {
+				b.Error(fmt.Errorf("port %d: %w", p, err))
+				return
+			}
 		}
-		b.Run(label, func(b *testing.B) {
-			s := nativeStatsFixture(b)
-			if legacy {
-				s.cfg.Features = 0
+	})
+}
+
+func TestUnsupportedPinnedSwitchRejectsAttachmentWithoutWaiting(t *testing.T) {
+	for _, options := range []bool{true, false} {
+		t.Run(fmt.Sprintf("options=%t", options), func(t *testing.T) {
+			s := nativeStatsFixture(t)
+			cfg := *s.cfg
+			cfg.Features = 0
+			if err := s.maps.Config.Update(uint32(0), &cfg, ebpf.UpdateAny); err != nil {
+				t.Fatal(err)
 			}
-			if err := s.maps.Config.Update(uint32(0), s.cfg, ebpf.UpdateAny); err != nil {
-				b.Fatal(err)
+			pinDir := filepath.Join(bpf.BPFPath, s.name)
+			if err := os.Rename(filepath.Join(pinDir, "slots_v2"), filepath.Join(pinDir, "slots")); err != nil {
+				t.Fatal(err)
 			}
-			ports := make(chan int, 32)
-			for p := 1; p <= 32; p++ {
-				ports <- p
-			}
-			innerIP := net.ParseIP("169.254.0.21")
-			b.ReportAllocs()
-			b.ResetTimer()
-			b.RunParallel(func(pb *testing.PB) {
-				for pb.Next() {
-					p := <-ports
-					_, err := s.Attach(AttachOptions{Port: p, InnerIP: innerIP, SkipDevice: true})
-					if err == nil {
-						err = s.Detach(DetachOptions{Port: p, SkipDevice: true})
-					}
-					ports <- p
-					if err != nil {
-						b.Error(fmt.Errorf("port %d: %w", p, err))
-						return
-					}
+			if !options {
+				if err := os.Remove(filepath.Join(pinDir, "geneve_opts")); err != nil {
+					t.Fatal(err)
 				}
-			})
+			}
+			// Simulate a live attachment retained across a userspace upgrade.
+			if !s.mmapSlots.TryAllocate(1, 0x0a000001) {
+				t.Fatal("seed attachment")
+			}
+			s.mmapSlots.GetSlot(1).StatsReady = 1
+			beforeFree, beforeAllocated := *s.mmapSlots.GetSlot(0), *s.mmapSlots.GetSlot(1)
+			sw, err := Open(s.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sw.Close()
+			if _, err := sw.Status(); err != nil {
+				t.Fatalf("old instance inspection: %v", err)
+			}
+			lock, err := AcquireControlLock(s.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lock.Release()
+			done := make(chan error, 1)
+			go func() {
+				out, attachErr := sw.Attach(AttachOptions{Port: 1, InnerIP: net.ParseIP("10.0.0.2"), SkipDevice: true})
+				detachErr := sw.Detach(DetachOptions{Port: 2, SkipDevice: true})
+				if out != nil || attachErr == nil || detachErr == nil ||
+					!strings.Contains(attachErr.Error(), "rebuild the switch") || !strings.Contains(detachErr.Error(), "rebuild the switch") {
+					done <- fmt.Errorf("unsupported attachment not rejected: out=%+v attach=%v detach=%v", out, attachErr, detachErr)
+					return
+				}
+				done <- nil
+			}()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(2 * time.Second):
+				lock.Release()
+				select {
+				case <-done:
+				case <-time.After(3 * time.Second):
+					t.Fatal("request remained blocked after unlock")
+				}
+				t.Fatal("unsupported instance entered an attachment lock fallback")
+			}
+			if *s.mmapSlots.GetSlot(0) != beforeFree || *s.mmapSlots.GetSlot(1) != beforeAllocated {
+				t.Fatal("unsupported attachment mutated existing pinned slots")
+			}
 		})
 	}
 }
