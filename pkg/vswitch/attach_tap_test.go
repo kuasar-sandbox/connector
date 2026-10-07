@@ -24,11 +24,12 @@ func stubMmapAttachTest(t *testing.T, numSlots uint32, init func(*MmappedSlots))
 // must refuse with ErrPortNotProvisioned, leaving the slot Free (no leak).
 func TestAttachTapUnprovisioned(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) { return true, nil }
 	bpfLoadPinnedMaps = func(name string) (*bpf.Maps, error) { return &bpf.Maps{}, nil }
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4, FloatingIpBase: 0x64646000}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4, FloatingIpBase: 0x64646000}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{SwitchNetNS: "sw_ns"}, nil
@@ -66,11 +67,12 @@ func TestAttachTapUnprovisioned(t *testing.T) {
 // the unset hook would panic / return zero netns.
 func TestAttachTapProvisionedSkipsDeviceMove(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) { return true, nil }
 	bpfLoadPinnedMaps = func(name string) (*bpf.Maps, error) { return &bpf.Maps{}, nil }
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4, FloatingIpBase: 0x64646000, SwitchMac: [6]uint8{2, 0, 0, 0, 0, 1}}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4, FloatingIpBase: 0x64646000, SwitchMac: [6]uint8{2, 0, 0, 0, 0, 1}}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{SwitchNetNS: "sw_ns"}, nil
@@ -113,11 +115,12 @@ func TestAttachTapProvisionedSkipsDeviceMove(t *testing.T) {
 // and must not touch port-netns even when SkipDevice is false.
 func TestDetachTapSkipsDeviceMove(t *testing.T) {
 	defer resetDeps()
+	mockAttachmentHandleOpen()
 
 	bpfPinPathExists = func(name string) (bool, error) { return true, nil }
 	bpfLoadPinnedMaps = func(name string) (*bpf.Maps, error) { return &bpf.Maps{}, nil }
 	getSwitchConfigFn = func(configMap BPFMap) (*SwitchConfig, error) {
-		return &SwitchConfig{N_ports: 4}, nil
+		return &SwitchConfig{Features: SwitchFPortUp, N_ports: 4}, nil
 	}
 	getSwitchMetadataFn = func(metadataMap BPFMap) (*SwitchMetadata, error) {
 		return &SwitchMetadata{SwitchNetNS: "sw_ns"}, nil

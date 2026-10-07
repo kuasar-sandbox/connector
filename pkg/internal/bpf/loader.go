@@ -130,8 +130,8 @@ func (o *Objects) PinMaps(switchName string) error {
 	pinPath := filepath.Join(BPFPath, switchName)
 
 	// Pin each map
-	if err := o.Maps.Slots.Pin(filepath.Join(pinPath, "slots")); err != nil {
-		return fmt.Errorf("failed to pin slots map: %w", err)
+	if err := o.Maps.Slots.Pin(filepath.Join(pinPath, "slots_v2")); err != nil {
+		return fmt.Errorf("failed to pin slots_v2 map: %w", err)
 	}
 	if err := o.Maps.Config.Pin(filepath.Join(pinPath, "config")); err != nil {
 		return fmt.Errorf("failed to pin config map: %w", err)
@@ -188,7 +188,15 @@ func UnpinMaps(switchName string) error {
 func LoadPinnedMaps(switchName string) (*Maps, error) {
 	pinPath := filepath.Join(BPFPath, switchName)
 
-	slots, err := ebpf.LoadPinnedMap(filepath.Join(pinPath, "slots"), nil)
+	// slots_v2 is the explicit ABI marker for PORT_F_UP-capable switches.
+	// Falling back to slots allows inspection and management cleanup of old
+	// instances. Attach/Detach require the new capability and reject them;
+	// old userspace fails closed when opening a new switch.
+	slots, err := ebpf.LoadPinnedMap(filepath.Join(pinPath, "slots_v2"), nil)
+	slotsV2 := err == nil
+	if err != nil && errors.Is(err, os.ErrNotExist) {
+		slots, err = ebpf.LoadPinnedMap(filepath.Join(pinPath, "slots"), nil)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to load slots map: %w", err)
 	}
@@ -244,11 +252,10 @@ func LoadPinnedMaps(switchName string) (*Maps, error) {
 		return nil, fmt.Errorf("failed to load mgmt_svc_rev map: %w", err)
 	}
 
-	// geneve_opts was added after the initial pinned-map ABI. ENOENT alone
-	// identifies a legacy switch and is compatible with port mode plus empty
-	// options; every other error still indicates corrupted state.
+	// Missing options are compatible only with the old slots pin. A slots_v2
+	// switch requires this map; its loss must not silently downgrade the ABI.
 	geneveOpts, err := ebpf.LoadPinnedMap(filepath.Join(pinPath, "geneve_opts"), nil)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err != nil && (slotsV2 || !errors.Is(err, os.ErrNotExist)) {
 		slots.Close()
 		config.Close()
 		stats.Close()

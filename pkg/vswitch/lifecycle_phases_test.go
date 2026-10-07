@@ -555,7 +555,11 @@ func TestBuildStartOutputSwitchMaps(t *testing.T) {
 		t.Errorf("switch_maps count: got %d, want %d (%v)", len(output.SwitchMaps), len(wantMaps), output.SwitchMaps)
 	}
 	for _, m := range wantMaps {
-		want := "/sys/fs/bpf/sw0/" + m
+		pin := m
+		if m == "slots" {
+			pin = "slots_v2"
+		}
+		want := "/sys/fs/bpf/sw0/" + pin
 		if output.SwitchMaps[m] != want {
 			t.Errorf("switch_maps[%s]: got %q, want %q", m, output.SwitchMaps[m], want)
 		}

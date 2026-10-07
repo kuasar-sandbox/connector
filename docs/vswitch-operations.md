@@ -180,7 +180,7 @@ Example `start` output (illustrative configured values, not the result of the pr
   "switch": "sw1",
   "switch_netns": "netns_switch",
   "switch_maps": {
-    "slots":           "/sys/fs/bpf/sw1/slots",
+    "slots":           "/sys/fs/bpf/sw1/slots_v2",
     "config":          "/sys/fs/bpf/sw1/config",
     "stats":           "/sys/fs/bpf/sw1/stats",
     "ifindex_to_slot": "/sys/fs/bpf/sw1/ifindex_to_slot",
@@ -279,7 +279,7 @@ connector-ctl vswitch attach sw0 --inner-ip=169.254.1.1 \
 
 ### 2.5 `connector-ctl vswitch detach`
 
-For a new switch, detach holds the per-switch control flock, directly CASes Allocated→Free, then clears the options fast-path hint. Reserved is reserved for explicit reserve/provision/stop state, not a detach intermediate. Detach leaves the fixed-size options map value and other transit fields for the next Attach to overwrite; free slots are ignored by the data plane. Old switches without `geneve_opts` retain their CAS-only path.
+For a PORT_F_UP-capable switch, Attach/Detach take no switch-wide lock, even while management holds LOCK_EX. Detach completes fallible device work, revokes publication, clears the options hint and CASes Allocated→Free last; it performs no per-slot writes after release. Management takeover is intentional. Reserved→Free has a separate management entry/exit boundary, not arbitrary reuse racing an old request. Switch-wide attachment locking was an implementation defect and has no compatibility fallback. Attach/Detach reject old pinned switches lacking PORT_F_UP before any mutation; rebuild through the management workflow. Inspection and management cleanup remain available. Fixed options values may remain inactive; the next Attach overwrites them before publication.
 
 TAP detach performs no device move. For veth, `--from-netns` moves the peer back into port-netns; without it, detach verifies that the peer is already there. Device/namespace failure can prevent completion; inspect the error and slot state.
 

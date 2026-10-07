@@ -42,9 +42,9 @@ CLI、配置、构建、部署与故障排查见 [vSwitch 运维](vswitch-operat
    并可选用静态管理服务地址转换。
 3. **进程生命周期与数据面解耦**:`start`/`attach`/`detach` 返回后用户态退出,转发由
    内核 eBPF 持续执行。
-4. **并发安全**:slot 所有权由 mmap + 原子 CAS 判定;含 `geneve_opts` map 的新 switch
-   还用 per-switch flock 串行化 Attach/Detach/Reserve 的复合更新。旧 switch 缺少该 map
-   时保持原有 CAS-only 路径。
+4. **并发安全**:slot 所有权由 mmap + 原子 CAS 判定;支持 `PORT_F_UP` 的 Attach/Detach
+   不持有任何 switch-wide lock,不同 slot 可并发,也不因管理命令持有 EX 锁而等待。
+   旧 switch 可供查询和管理清理;缺少发布能力时 Attach/Detach 直接报错,不保留错误的锁分支。
 5. **可观测**:per-port、per-direction、per-class(mgmt/transit)流量计数;状态查询用
    Kubernetes Conditions 风格。
 6. **systemd-native**:`Type=notify` 集成,watchdog keepalive,崩溃重启后经 bpffs
@@ -194,10 +194,10 @@ GENEVE 内层同时识别 IPv4 与 IPv6(管理平面与 `slot.inner_ip` 为 IPv4
 
 ### 3.2 Pinned maps(`/sys/fs/bpf/<sw>/`)
 
-| map | 类型 | 规格 | nx | mx | transit | 内容 |
+| pin 名称 | 类型 | 规格 | nx | mx | transit | 内容 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `slots` | ARRAY + MMAPABLE | 4096 × 108 B value(112 B mmap stride) | R | R | R | per-slot 配置;用户态 mmap 后对 `inner_ip` 做原子 CAS 完成分配/释放(§4.3) |
-| `config` | ARRAY | 1 × 40 B | R | R | R | `switch_mac`/`n_ports`/`floating_ip_base`/Geneve locator/`geneve_encap_eth`/`transit_nexthop`/`port_mac` |
+| `slots_v2` | ARRAY + MMAPABLE | 4096 × 108 B value(112 B mmap stride) | R | R | R | per-slot 配置;用户态 mmap 后对 `inner_ip` 做原子 CAS 完成分配/释放(§4.3) |
+| `config` | ARRAY | 1 × 40 B | R | R | R | `switch_mac`/`n_ports`/`floating_ip_base`/Geneve locator/`geneve_encap_eth`/`transit_nexthop`/`port_mac`/发布能力 `features` |
 | `metadata` | ARRAY | 1 × 4096 B | – | – | – | JSON 编码的 `SwitchMetadata`,仅用户态读写;新增字段无需重编译 BPF |
 | `stats` | ARRAY | 4096 × 80 B | W | W | W | per-slot `mgmt_{rx,tx}` + `transit_{rx,tx}` 包/字节计数,沙箱视角;attach 在 `slots.stats_ready` 中确认清零;清零失败不使 attach 失败,但 Stats 不发布保留的旧计数;detach 保留存储值,不作为当前 attachment 发布 |
 | `ifindex_to_slot` | HASH | – | R | – | – | 入口 ifindex → slot_id 反查,仅出方向无法用 IP/UDP 推导时使用 |
@@ -205,15 +205,17 @@ GENEVE 内层同时识别 IPv4 与 IPv6(管理平面与 `slot.inner_ip` 为 IPv4
 | `mgmt_svc_fwd` | HASH | 静态 service entries | R | – | – | `{VIP,vport,proto}→{targetIP,targetPort}`,每条 service 按 TCP/UDP 各一条 |
 | `mgmt_svc_rev` | HASH | 静态 reverse entries | – | R | – | `{targetIP,targetPort,proto}→{VIP,vport}` |
 
+内核 map 名和 JSON `switch_maps` 的逻辑键仍为 `slots`,当前 pin 路径为 `/sys/fs/bpf/<sw>/slots_v2`。旧 `slots` pin 仅保留查询和管理清理能力,不允许 Attach/Detach。
+
 新 switch 即使没有 service 配置也会创建并 pin 两张 service map。入站 slot 定位
 使用算术或固定 locator 布局,不需要通用 slot-index hash/TLV 搜索;管理服务转换
 仍有独立 hash lookup。
 
-Stats 在现有 pin 目录 control flock 上取得非阻塞共享锁,并在计数读取前后核验当前 pinned slots map ID,因此绕过 flock 的 force cleanup 也会使本次读取失败. Attach/detach/reserve 和交换机替换复用原有排他侧. 控制操作占用、map 被替换、清零未确认或 map 读取失败时,整个请求批次返回错误. 多个共享读取可以并发. 显式查询 Free/Reserved 端口返回 `ErrPortNotAttached`;省略端口列表时仅选择 Allocated 槽. 确认清零后的 0 是有效观测;清零失败仍允许 attach 成功,但在后续成功 attach 前返回 `ErrStatsUnavailable`. 不新增第二份归属表.
+Stats 在现有 pin 目录 control flock 上取得非阻塞共享锁,并在计数读取前后核验当前 pinned slots map ID,因此绕过 flock 的 force cleanup 也会使本次读取失败. 支持新能力的 Attach/Detach 不参与这把锁;Stats 用两次受内核锁保护的计数代次读取包围原子身份读取,发生变化或准备未完成时返回不可用;管理命令保留自己的排他锁. 控制操作占用、map 被替换、清零未确认或 map 读取失败时,整个请求批次返回错误. 多个共享读取可以并发. 显式查询 Free/Reserved 端口返回 `ErrPortNotAttached`;省略端口列表时仅选择 Allocated 槽. 确认清零后的 0 是有效观测;清零失败仍允许 attach 成功,但在后续成功 attach 前返回 `ErrStatsUnavailable`. 不新增第二份归属表.
 
-清零标记使用 offset 104 原有的四个 padding 字节,slot 仍为 108 字节,mmap stride 仍为 112 字节. 分配在发布新 owner 的 CAS 前清除此标记,即使进程紧接着退出也不会沿用旧 readiness. `stats` 改为每槽一个 80 字节 ARRAY value,包含 `bpf_spin_lock` 和内部 64-bit 计数代次. TC 在读取 attachment 字段前取得代次,更新计数时在同一内核锁内验证代次. Attach 完成全部字段与可能失败的设备操作后,通过 `BPF_F_LOCK` 同时清零并推进代次;此前已经执行的旧包不能把旧值写回新计数. 查询也使用 `BPF_F_LOCK`,保证每对包数/字节数的一致读取. 代次耗尽或重置失败仅使统计不可用,不改变 Attach 的成功条件.
+slot 仍为 108 字节,mmap stride 仍为 112 字节. 只有赢得 owner CAS 的 Attach 才清 `stats_ready`;在当前计数实例完成 reset 及其它准备前,slot 一直保持 dataplane-down. `stats` 为每槽一个 80 字节 ARRAY value,包含 `bpf_spin_lock` 和内部 64-bit 计数代次. TC 在读取 attachment 字段前取得代次,更新计数时在同一内核锁内验证代次. Attach 在发布 `PORT_F_UP` 前通过 `BPF_F_LOCK` 清零并推进代次;此前已经执行的旧包不能把旧值写回新计数. 查询要求 up 且 stats-ready,并使用 `BPF_F_LOCK` 保证每对包数/字节数的一致读取. 代次耗尽或重置失败仅使统计不可用,不改变 Attach 的成功条件.
 
-此 map ABI 要求重新创建使用旧 PERCPU_ARRAY 的交换机;不会热替换旧 map 或添加兼容统计路径. 缺少 `geneve_opts` 的旧交换机仍沿用原有生命周期能力,但不能提供一致 Stats. 计数代次不作为沙箱身份、公开字段或生命周期账本发布. 转发、NAT、GENEVE 和设备交付规则保持现有语义.
+此 map ABI 要求重新创建使用旧 PERCPU_ARRAY 的交换机;不会热替换旧 map 或添加兼容统计路径. 旧实例仍可查询和管理清理;缺少发布 ABI 时 Attach/Detach 明确拒绝,缺少 `geneve_opts` 时不能提供一致 Stats. 计数代次不作为沙箱身份、公开字段或生命周期账本发布. 转发、NAT、GENEVE 和设备交付规则保持现有语义.
 
 ### 3.3 数据面 ABI
 
@@ -235,7 +237,7 @@ struct slot_item {                          // 108 字节,cache-line 优化
     __u32 mgmt_cidr_count;                  // offset 32
     struct mgmt_cidr mgmt_cidrs_0;          // offset 36 (20B) — 内联第一条(热路径)
     __u32 generation;                       // offset 56 — 调用方提供的 attachment generation
-    __u8  _pad_cl0[4];                      // offset 60
+    __u32 flags;                            // offset 60 — PORT_F_UP dataplane publication
     // ── cache line 1 (cold path) ────────────────────────────────
     struct mgmt_cidr mgmt_cidrs_ext[MAX_MGMT_CIDR_EXT]; // offset 64 (40B)
     __u32 stats_ready;                      // offset 104 — userspace confirmed current-attach reset
@@ -252,7 +254,7 @@ struct switch_config {                      // 40 字节
     __u32 transit_nexthop;
     __u8  port_mac[6];                      // 全零 → 派生;非零 → 固定
     __u8  generation_bits;                  // FloatingIP identity 高位;0=legacy
-    __u8  _pad4;
+    __u8  features;                         // offset 35 — SWITCH_F_PORT_UP 发布能力
     __u8  geneve_locator;                   // 0=port,1=vni,2=tlv
     __u8  geneve_tlv_type;                  // 精确 8-bit wire type
     __u16 geneve_tlv_class;
@@ -283,12 +285,7 @@ attach/show JSON 则报告总 wire 长度。slot mmap stride 是 112 bytes,C val
 既非 Free 也非 Reserved)、ifindex 非零、slot_id<n_ports。**外层 transit IPv4**
 要求 ihl==5,不能泛化为全部管理/inner-IP 解析路径。transit 回程还校验 gateway 源 IP 与 VNI。
 
-新 switch 总会创建并 pin `geneve_opts`。为兼容旧 pinned switch,仅当该 pin path 为
-ENOENT 时 `Open` 将其视为可选 map(`Maps.GeneveOpts=nil`);其它加载错误仍表示 switch
-损坏。旧 config 末尾四字节 padding 全零,自然解释为 `geneve_locator=port`。因此旧
-switch 可继续 Open/status/show、空 options Attach、Detach 与 Stop;非空 options 或
-vni/tlv locator 必须先 stop 并以新版本重建。本实现不为活动 switch 临时创建 map,
-也不替换已挂载 TC program。
+新 switch 使用 `slots_v2` pin,创建必需的 `geneve_opts` map,并声明 `SWITCH_F_PORT_UP`。此 ABI 缺少 `geneve_opts` pin 时直接报错,不能降级为旧实例。`Open` 可以读取旧 `slots` pin 供 status/show 和显式管理清理使用;仅这种旧 pin 允许 options map 为 ENOENT。**缺少发布能力的旧实例不能执行 Attach/Detach,即使使用空 options 和 port locator 也会在修改状态或加锁前报错。** 必须经过管理边界停止、重建后才能执行 attachment 操作。本实现不向活动旧 switch 临时添加 map,也不替换已挂载的 TC program。
 
 ## 4. 关键机制
 
@@ -384,7 +381,7 @@ ARP 缓存;内层(仅 Ether-over-GENEVE)目标 MAC 取 `--transit-mac-addr`(未�
 并发 attach 下,BPF map 的 Lookup + Update 是两次 syscall,经典 TOCTOU:两个进程同时
 读到 slot 空闲,后写者覆盖先写者。解决:`slots` map 启用 `BPF_F_MMAPABLE`,用户态把
 整个 array mmap 进进程,对 inner_ip 做 atomic.CompareAndSwapUint32。原子 claim
-本身无需锁;新 switch 的复合控制操作还会持有 flock(§4.4)。
+及完整 Attach/Detach 路径均不持有全局 flock;管理命令之间的协调独立处理(§4.4)。
 
 | inner_ip | 状态 | 含义 |
 |---|---|---|
@@ -405,7 +402,7 @@ stateDiagram-v2
 | 操作 | 语义 | CAS |
 | --- | --- | --- |
 | Attach | Free → Allocated | `CAS(inner_ip, 0, innerIP)` |
-| Detach | Allocated → Free | `CAS(inner_ip, currentIP, 0)`;新 switch 在持有 control flock 时清零 hint,map value 留给下一次 Attach 覆盖;不经过 Reserved |
+| Detach | Allocated → Free | 先发布 dataplane-down 并清零 options hint,最后执行 `CAS(inner_ip, currentIP, 0)`;release CAS 后旧 owner 不再写 slot;不经过 Reserved |
 | Reserve | Free → Reserved | `CAS(inner_ip, 0, 0xFFFFFFFF)` |
 | Provision 完成 | Reserved → Free | `CAS(inner_ip, 0xFFFFFFFF, 0)` |
 
@@ -413,23 +410,25 @@ stateDiagram-v2
 数据面字段的原子发布,而回滚/设备操作本身也可能失败。调用方应依据操作结果,
 在出错后检查并协调实际状态(§5.4)。
 
-### 4.4 控制操作互斥
+### 4.4 控制操作并发
 
-CAS 只保证单 slot 所有权原子;多 slot/多资源的控制操作,以及新 switch 上跨 mmap slot
-与 `geneve_opts` map 的复合更新,经 `flock(LOCK_EX)` 在 bpffs pin 目录
-`/sys/fs/bpf/<sw>/` 上互斥:
+attachment 全局锁是非预期引入的实现缺陷,不是可选优化。**Attach/Detach 不保留任何全局 EX 或 SH 执行分支**。缺少新数据面能力的旧实例在修改状态前报错,必须通过管理流程重建。单个 slot 的归属仍由 CAS 判定,管理 EX 锁不阻塞正常发放/释放路径。
 
-| 操作 | flock | CAS |
-| --- | --- | --- |
-| Start(StartReserved) | ✓ | ✓(所有 slot 置 Reserved) |
-| Stop / `stop --force` | ✓ | – |
-| ProvisionPorts | ✓ | ✓(逐槽 Reserved→Free) |
-| Attach / Detach / Reserve(新 switch) | ✓ | ✓;锁覆盖 claim、map/MTU/device 更新与 hint 发布/回收 |
-| Attach / Detach / Reserve(旧 switch,无 `geneve_opts`) | – | ✓(兼容的 CAS-only 路径) |
+| 操作 | flock | 所有权边界 |
+|---|---|---|
+| Start / StartReserved / Stop / ReleasePorts | 管理操作之间排他 | 先 reserve 端口,再做全局处理 |
+| ProvisionPorts | 管理操作之间排他 | 完成 Reserved 端口准备后,最后发布 Free |
+| 支持新能力的 Attach / Detach | 无 | Attach 先 CAS 获取;Detach 最后 CAS 释放 |
+| Reserve / Reserve --force | 沿用管理排他锁 | 先 CAS 到 Reserved,成功后再清理 |
+| 缺少新能力的旧 switch,无论是否有 `geneve_opts` | Attach/Detach 直接拒绝,不加锁、不改状态 | 先通过管理流程重建;仍可查询和执行管理清理 |
 
-新 switch 的 Attach、Detach、Reserve 在取得 flock 后、执行任何 CAS 前,会把已打开
-`slots` map 的 kernel map ID 与当前 pin path 中的 map ID 比较。同名 switch 若在等待锁时
-已被 `StopReleased` 并重建,旧 context 会失败并要求重新 Open,不会修改已 unpin 的旧 map。
+Reserve/Stop/Provision 在 Attach/Detach 执行期间接管是设计预期,不通过共享锁阻止,也不保证被接管的操作正常完成。观察到接管后不撤销管理状态。**Reserved→Free 是具有严格进出边界的管理动作**,不是可与旧请求、立即复用任意交错的步骤。本合同不扩展处理旧请求跨越整个管理重新开放/再分配过程的序列,不为此新增 owner token、epoch 表或 lifecycle shared lock。
+
+普通 attachment 调用由调用方按同一归属的生命周期排序:Attach 返回端口句柄后才使用或 Detach,Detach 完成后才复用该句柄。Detach 不是取消仍在执行的 Attach,即使 Attach 指定了端口号也一样。多个分配请求仍由 CAS 选出一个胜者;不同 slot 继续并发。非常规管理接管遵守上述独立管理边界,不等待这些调用。
+
+只有 Attach 的 CAS 胜者才写 attachment 配置。原 offset 60 的四字节 padding 保存 `PORT_F_UP`;准备期间保持 down,普通 Attach 最后发布 up。Detach 完成可失败的设备操作,清 publication/options hint,最后 CAS→Free;释放后不再写 slot。Attach 回滚只释放自己的 CAS claim,不执行迟到清理。Reserve 先 CAS 获取管理归属再清理。Provision 在 Reserved 状态完成准备,清 up 后最后发布 Free。
+
+新 switch 通过 `SWITCH_F_PORT_UP` 声明能力,slot map pin 使用 `slots_v2`(输出逻辑键仍为 `slots`)。新 userspace 可打开旧 `slots` 用于查询和管理清理,但 Attach/Detach 对缺少 `SWITCH_F_PORT_UP` 的实例明确报错、要求重建;旧 userspace 不会静默操作新 switch。管理/Stats 的实例检查支持两种 pin 名称。不热替换数据面,不混用不支持新语义的旧客户端。
 
 ### 4.5 两阶段启动
 
@@ -611,7 +610,7 @@ TC/设备管理仍需对应网络权限。
 | L4 | MAX_PORTS=4096 | 扩大容量需同步 BPF/Go 边界和固定 12-bit locator ABI,不只是修改一个常量。 |
 | L5 | 宽 extraction CIDR 引入非预期管理流量,slot 合计只容纳三个 CIDR。 | 使用 /32 等窄匹配并检查实际 slots。 |
 | L6 | mgmt-service target 不可达,特别是 loopback。 | 校验 VIP/extraction 与 target 唯一性,部署仍需路由/listener/loopback route_localnet。 |
-| L7 | 旧 switch 缺 geneve_opts | no-option port 模式继续支持;vni/tlv/opaque 前 stop/recreate,无在线 map/program 迁移。 |
+| L7 | 旧 switch 缺少发布 ABI,或当前 switch 缺少必需的 geneve_opts map | Attach/Detach 在修改状态前拒绝;经管理流程查询、停止并重建。无旧 attachment 回退、无在线 map/program 迁移。 |
 | L8 | --mtu 不传播到新 provision 的 TAP/veth 端口 | 检查实际设备 MTU 与完整 underlay budget(§4.8);初始检查或旧版帮助文字不证明端口值已生效。 |
 
 ## 6. 可靠性

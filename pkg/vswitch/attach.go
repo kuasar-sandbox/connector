@@ -20,6 +20,20 @@ func Attach(switchName string, opts AttachOptions) (*AttachOutput, error) {
 	return sw.Attach(opts)
 }
 
+// requireAttachmentABI rejects switches that cannot enforce preparation-down.
+// An unsupported pinned switch must be rebuilt; attachment operations must never
+// fall back to the defective switch-wide flock path. Reading and management
+// cleanup of old instances remain available through Open/Status/Stop.
+func (s *switchContext) requireAttachmentABI() error {
+	if s.cfg.Features&SwitchFPortUp == 0 {
+		return fmt.Errorf("switch %s lacks PORT_F_UP support; rebuild the switch before attach/detach", s.name)
+	}
+	if s.maps == nil || s.maps.GeneveOpts == nil {
+		return fmt.Errorf("PORT_F_UP switch is missing its required geneve_opts map; rebuild the switch")
+	}
+	return nil
+}
+
 // Attach implements Interface.Attach.
 // Allocates a port to a sandbox using the pre-loaded context.
 func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
@@ -41,10 +55,6 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	if err != nil {
 		return nil, err
 	}
-	hasGeneveOptsMap := s.maps != nil && s.maps.GeneveOpts != nil
-	if !hasGeneveOptsMap && (locator != GeneveLocatorPort || geneveOptsValue.Len != 0) {
-		return nil, fmt.Errorf("switch lacks the geneve_opts map required by geneve_locator=%s or non-empty transit_geneve_opts; rebuild the switch", locator)
-	}
 	innerIP := bpf.IPToUint32(opts.InnerIP)
 	if innerIP == 0 {
 		return nil, fmt.Errorf("inner-ip cannot be 0.0.0.0")
@@ -56,65 +66,29 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	} else if uint64(opts.Generation) >= (uint64(1) << cfg.GenerationBits) {
 		return nil, fmt.Errorf("generation %d exceeds %d-bit range", opts.Generation, cfg.GenerationBits)
 	}
-	// The options map and the mmap'd slot are two separate kernel objects. New
-	// switches serialize slot ownership changes with the existing per-switch
-	// control flock so Detach/Reserve cannot release and reassign a slot between
-	// those writes. Old switches have no options map and keep their legacy path.
-	if hasGeneveOptsMap {
-		lock, err := acquireCurrentSwitchControlLock(s)
-		if err != nil {
-			return nil, err
-		}
-		defer lock.Release()
+	if err := s.requireAttachmentABI(); err != nil {
+		return nil, err
 	}
 
+	// CAS alone acquires slot ownership. Contenders must not write any
+	// attachment fields before winning it. No switch-wide lock is involved.
 	var slotID uint32
-	// Generation is the final attachment publication fence. On modern switches
-	// the control lock serializes ownership changes; write an out-of-range
-	// sentinel while the slot is still Free, then publish the caller generation
-	// only after every fallible Attach step completes. Thus neither the previous
-	// nor the new FloatingIP can identify a partially prepared attachment.
-	const unpublishedGeneration = ^uint32(0)
-	claim := func(id uint32) bool {
-		if hasGeneveOptsMap {
-			if s.mmapSlots.GetInnerIP(id) != InnerIPFree {
-				return false
-			}
-			s.mmapSlots.UpdateSlotFields(id, func(slot *SlotItem) {
-				slot.Generation = unpublishedGeneration
-			})
-		}
-		return s.mmapSlots.TryAllocate(id, innerIP)
-	}
-
-	// Allocate slot using atomic CAS.
 	if opts.Port > 0 {
 		slotID = uint32(opts.Port - 1)
 		if slotID >= cfg.N_ports {
 			return nil, fmt.Errorf("port %d: %w (max %d)", opts.Port, ErrPortOutOfRange, cfg.N_ports)
 		}
-		if !claim(slotID) {
+		if !s.mmapSlots.TryAllocate(slotID, innerIP) {
 			return nil, fmt.Errorf("port %d: %w", opts.Port, ErrPortAllocated)
 		}
-	} else if hasGeneveOptsMap {
-		found := false
-		for id := uint32(0); id < cfg.N_ports; id++ {
-			if claim(id) {
-				slotID, found = id, true
-				break
-			}
-		}
-		if !found {
-			return nil, fmt.Errorf("no free slots available")
-		}
 	} else {
-		// Legacy switches have no generation-aware data path.
 		var err error
 		slotID, err = s.mmapSlots.FindFreeSlot(innerIP)
 		if err != nil {
 			return nil, err
 		}
 	}
+	const unpublishedGeneration = ^uint32(0)
 
 	// From this point the claim is ours. As the first mmap update, suppress the
 	// old option lookup and overwrite every retained transit field. This happens
@@ -124,6 +98,8 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	// as a transient Attach state.
 	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
 		atomic.StoreUint32(&slot.StatsReady, 0)
+		atomic.StoreUint32(&slot.Flags, 0)
+		atomic.StoreUint32(&slot.Generation, unpublishedGeneration)
 		slot.GeneveOptsLen = 0
 		if opts.TransitGatewayIP != nil {
 			slot.TransitGatewayIp = bpf.IPToUint32(opts.TransitGatewayIP)
@@ -137,9 +113,9 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 		}
 	})
 	rollbackClaim := func() {
-		// The hint is not published until all fallible Attach work completes.
-		// Release only our CAS claim; if another operation already changed the
-		// owner, the CAS fails without touching that owner's state.
+		// No up/hint has been published on any fallible preparation path.
+		// Release our claim last. If management reserved the port meanwhile,
+		// the CAS fails without modifying control-owned fields.
 		s.mmapSlots.TryRelease(slotID, innerIP)
 	}
 
@@ -152,13 +128,11 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 		return nil, fmt.Errorf("port %d: %w (tap mode requires provision first)", slotID+1, ErrPortNotProvisioned)
 	}
 
-	// A new switch always has the map. Overwrite the entire fixed-size value,
-	// including the zero value for empty options, before publishing any hint.
-	if hasGeneveOptsMap {
-		if err := writeGeneveOptsFn(s.maps.GeneveOpts, slotID, &geneveOptsValue); err != nil {
-			rollbackClaim()
-			return nil, fmt.Errorf("write GENEVE options for port %d: %w", slotID+1, err)
-		}
+	// Overwrite the entire fixed-size value, including empty options, before
+	// publishing any hint. The required map was validated before claiming.
+	if err := writeGeneveOptsFn(s.maps.GeneveOpts, slotID, &geneveOptsValue); err != nil {
+		rollbackClaim()
+		return nil, fmt.Errorf("write GENEVE options for port %d: %w", slotID+1, err)
 	}
 
 	// Fixed locator overhead was checked at switch start. Recheck every non-zero
@@ -202,12 +176,19 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 		}
 	}
 
+	// Management takeover is allowed during preparation. Stop when it is
+	// observed; reopening Reserved ports is a separate management boundary.
+	// This check is not an ownership token or a transaction with management.
+	if s.mmapSlots.GetInnerIP(slotID) != innerIP {
+		return nil, fmt.Errorf("port %d was taken over during attach", slotID+1)
+	}
+
 	// Publish the opaque length only after the fixed map value, every transit
 	// field, MTU validation, and device movement are complete. Until this point
 	// every failure path can release its claim with the hint still at zero.
 	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
 		slot.GeneveOptsLen = geneveOptsValue.Len
-		slot.Generation = opts.Generation
+		atomic.StoreUint32(&slot.Generation, opts.Generation)
 	})
 	// Publish the new counter generation only after every attachment field and
 	// fallible operation is complete. Packets captured before this point can
@@ -216,6 +197,9 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	if s.statsMgr.ResetStats(slotID) == nil {
 		atomic.StoreUint32(&s.mmapSlots.GetSlot(slotID).StatsReady, 1)
 	}
+	// Dataplane-up is the final publication step. All fallible preparation and
+	// every field consumed by TC is complete before this store.
+	atomic.StoreUint32(&s.mmapSlots.GetSlot(slotID).Flags, PortFUp)
 
 	// Calculate derived values
 	floatingIP := bpf.Uint32ToIP(FloatingIPForAttachment(cfg.FloatingIpBase, slotID, opts.Generation))
@@ -340,6 +324,12 @@ func (s *switchContext) Reserve(opts ReserveOptions) (*ReserveOutput, error) {
 				break
 			}
 			if s.mmapSlots.TryReserve(slotID, current) {
+				if hasGeneveOptsMap && s.cfg.Features&SwitchFPortUp != 0 && IsSlotAllocated(current) {
+					s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
+						atomic.StoreUint32(&slot.Flags, 0)
+						slot.GeneveOptsLen = 0
+					})
+				}
 				break
 			}
 			// CAS failed, retry
@@ -386,13 +376,8 @@ func (s *switchContext) Detach(opts DetachOptions) error {
 	if slotID >= cfg.N_ports {
 		return fmt.Errorf("port %d: %w", opts.Port, ErrPortOutOfRange)
 	}
-	hasGeneveOptsMap := s.maps != nil && s.maps.GeneveOpts != nil
-	if hasGeneveOptsMap {
-		lock, err := acquireCurrentSwitchControlLock(s)
-		if err != nil {
-			return err
-		}
-		defer lock.Release()
+	if err := s.requireAttachmentABI(); err != nil {
+		return err
 	}
 
 	// Read current InnerIP atomically
@@ -400,7 +385,6 @@ func (s *switchContext) Detach(opts DetachOptions) error {
 	if IsSlotFreeOrReserved(currentIP) {
 		return fmt.Errorf("port %d: %w", opts.Port, ErrPortNotAttached)
 	}
-
 	// Tap-mode ports never move between namespaces (the sandbox holds an fd,
 	// not a kernel netdev), so detach is a pure slot operation for tap.
 	// For veth, optionally move the port device back to the port namespace.
@@ -439,6 +423,25 @@ func (s *switchContext) Detach(opts DetachOptions) error {
 		// else: device already in port namespace, skip move (idempotent)
 	}
 
+	// Respect an observed administrative takeover without clearing its state.
+	// The management Reserved -> Free boundary is not crossed by this operation.
+	if observed := s.mmapSlots.GetInnerIP(slotID); observed != currentIP {
+		if IsSlotFreeOrReserved(observed) {
+			return nil
+		}
+		return fmt.Errorf("port %d was reattached by another process", opts.Port)
+	}
+
+	// All fallible teardown is complete. Revoke dataplane publication only now,
+	// so a failed Detach leaves the current attachment usable.
+	atomic.StoreUint32(&s.mmapSlots.GetSlot(slotID).Flags, 0)
+
+	// Clear attachment publication before the ownership release CAS. Once Free,
+	// a new Attach may claim immediately and this Detach must never write again.
+	s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
+		slot.GeneveOptsLen = 0
+	})
+
 	// Release ownership directly. Reserved is an explicit
 	// reserve/provision/stop state and is never a transient Detach state.
 	if !s.mmapSlots.TryRelease(slotID, currentIP) {
@@ -450,17 +453,6 @@ func (s *switchContext) Detach(opts DetachOptions) error {
 			return nil
 		}
 		return fmt.Errorf("port %d was reattached by another process", opts.Port)
-	}
-
-	// Once inner_ip is Free, the data plane no longer reads this slot. New
-	// switches still hold the control lock, so clear only the fast-path hint
-	// without racing a new Attach. Keep the fixed map value and retained transit
-	// fields for the next Attach to overwrite in full. Old switches have no
-	// geneve_opts map or hint to manage and retain their legacy Detach path.
-	if hasGeneveOptsMap {
-		s.mmapSlots.UpdateSlotFields(slotID, func(slot *SlotItem) {
-			slot.GeneveOptsLen = 0
-		})
 	}
 
 	return nil

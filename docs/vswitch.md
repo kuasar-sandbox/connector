@@ -28,7 +28,7 @@ Forwarding decisions are concentrated in [bpf/switch_kern.c](../bpf/switch_kern.
 1. **Local isolation:** no direct port-to-port forwarding branch; ARP replies and output MAC addresses are controlled by the switch.
 2. **Stateless forwarding:** no connection table; decisions use slot configuration and IP/UDP/GENEVE locator arithmetic, with optional static management-service translation.
 3. **Independent process lifecycle:** `start`, `attach` and `detach` return while the in-kernel data plane continues.
-4. **Concurrent ownership:** mmap and atomic CAS establish slot ownership. New switches with `geneve_opts` also serialize compound Attach/Detach/Reserve updates with a per-switch flock; legacy switches without that map retain the CAS-only path.
+4. **Concurrent ownership:** mmap and atomic CAS establish per-slot ownership. PORT_F_UP-capable Attach/Detach use no switch-wide lock. Independent slots proceed concurrently, including while a management command holds its control flock.
 5. **Observability:** per-port, per-direction, management/transit packet and byte counters; status uses Kubernetes-style Conditions.
 6. **systemd integration:** `Type=notify`, watchdog keepalives and reopening pinned resources after restart.
 
@@ -150,10 +150,10 @@ GENEVE inner traffic can be IPv4 or IPv6; management translation and slot.inner_
 
 ### 3.2 Pinned maps (`/sys/fs/bpf/<sw>/`)
 
-| Map | Type | Shape | nx | mx | transit | Contents |
+| Pin name | Type | Shape | nx | mx | transit | Contents |
 |---|---|---|---|---|---|---|
-| `slots` | ARRAY + MMAPABLE | 4096 × 108-byte value, 112-byte mmap stride. | R | R | R | Slot configuration; userspace CAS on inner_ip allocates/releases ownership (§4.3). |
-| `config` | ARRAY | 1 × 40 bytes. | R | R | R | Switch MAC, port count, floating base, GENEVE locator/encapsulation, transit nexthop and port MAC. |
+| `slots_v2` | ARRAY + MMAPABLE | 4096 × 108-byte value, 112-byte mmap stride. | R | R | R | Slot configuration; userspace CAS on inner_ip allocates/releases ownership (§4.3). |
+| `config` | ARRAY | 1 × 40 bytes. | R | R | R | Switch MAC, port count, floating base, GENEVE locator/encapsulation, transit nexthop, port MAC and publication capability (`features`). |
 | `metadata` | ARRAY | 1 × 4096 bytes. | — | — | — | JSON SwitchMetadata for userspace only; additive fields do not alter BPF layout. |
 | `stats` | ARRAY | 4096 × 80 bytes. | W | W | W | Management/transit receive/transmit packet/byte counters. Attach confirms a reset in `slots.stats_ready`; reset failure is nonfatal for attach but prevents Stats from publishing retained counters. Detach retains stored counters without publishing them as a current attachment. |
 | `ifindex_to_slot` | HASH | Ingress-device mapping. | R | — | — | ifindex→slot lookup on outbound port ingress. |
@@ -161,13 +161,15 @@ GENEVE inner traffic can be IPv4 or IPv6; management translation and slot.inner_
 | `mgmt_svc_fwd` | HASH | Static service entries. | R | — | — | `{VIP,vport,proto}` → `{targetIP,targetPort}`, TCP and UDP entries per service. |
 | `mgmt_svc_rev` | HASH | Static reverse entries. | — | R | — | `{targetIP,targetPort,proto}` → `{VIP,vport}`. |
 
+The kernel map and the JSON `switch_maps` key are still named `slots`; the current pin is `/sys/fs/bpf/<sw>/slots_v2`. A legacy `slots` pin is readable for inspection and management cleanup, not Attach/Detach.
+
 New switches create/pin the service maps even when no service mapping is configured. Slot lookup on inbound traffic uses arithmetic or the fixed locator layout, without a generic inbound slot-index hash or TLV search. Management-service translation still has its separate hash maps.
 
-Stats takes a nonblocking shared lock on the existing pin-directory control flock and verifies the current pinned slots map ID before and after reading counters, so force cleanup that bypasses flock also invalidates the observation. Attach/detach/reserve and switch replacement use its existing exclusive side. A busy control operation, replaced map, unconfirmed reset or failed map read produces an error for the entire requested batch. Shared readers can proceed concurrently. Explicit free/reserved ports return `ErrPortNotAttached`; an omitted port list selects only allocated slots. A confirmed reset makes zero valid; reset failure leaves attach successful and reports `ErrStatsUnavailable` until a later successful attach. No second ownership table is introduced.
+Stats takes a nonblocking shared lock on the existing pin-directory control flock and verifies the current pinned slots map ID before and after reading counters, so force cleanup that bypasses flock also invalidates the observation. Capable Attach/Detach do not take this flock. Stats brackets atomic slot-identity reads with locked counter-generation reads and rejects changed or unconfirmed observations; management operations retain their own exclusive lock. A busy control operation, replaced map, unconfirmed reset or failed map read produces an error for the entire requested batch. Shared readers can proceed concurrently. Explicit free/reserved ports return `ErrPortNotAttached`; an omitted port list selects only allocated slots. A confirmed reset makes zero valid; reset failure leaves attach successful and reports `ErrStatsUnavailable` until a later successful attach. No second ownership table is introduced.
 
-The reset flag uses the former four padding bytes at offset 104; the slot remains 108 bytes with a 112-byte mmap stride. Allocation clears readiness before the owner CAS, so immediate process death cannot retain the previous readiness. The `stats` map becomes an ARRAY with one 80-byte value per slot, including `bpf_spin_lock` and an internal 64-bit counter generation. TC captures that generation before reading attachment fields, then checks it under the same kernel lock when updating counters. After all attachment fields and fallible device operations complete, Attach uses `BPF_F_LOCK` to reset counters and advance generation atomically. An old packet already executing cannot write retained values into the new instance. Queries use `BPF_F_LOCK` for coherent packet/byte pairs. Generation exhaustion or reset failure makes statistics unavailable without changing Attach success.
+The slot remains 108 bytes with a 112-byte mmap stride. Only the winning owner CAS clears `stats_ready`; the slot remains dataplane-down until Attach has reset the current counter instance and completed all other preparation. The `stats` map is an ARRAY with one 80-byte value per slot, including `bpf_spin_lock` and an internal 64-bit counter generation. TC captures that generation before reading attachment fields, then checks it under the same kernel lock when updating counters. Attach uses `BPF_F_LOCK` to reset counters and advance generation before publishing `PORT_F_UP`. An old packet already executing cannot write retained values into the new instance. Queries require both up and stats-ready and use `BPF_F_LOCK` for coherent packet/byte pairs. Generation exhaustion or reset failure makes statistics unavailable without changing Attach success.
 
-This map ABI requires recreating switches that use the old PERCPU_ARRAY. Maps are not hot-swapped and there is no compatibility statistics path. Legacy switches without `geneve_opts` retain their existing lifecycle operations but cannot provide coherent Stats. Counter generation is not published as sandbox identity, a public field or a lifecycle ledger. Existing forwarding, NAT, GENEVE and device handoff semantics are preserved.
+This map ABI requires recreating switches that use the old PERCPU_ARRAY. Maps are not hot-swapped and there is no compatibility statistics path. Legacy instances remain available for inspection and management cleanup. Attach/Detach reject instances without the publication ABI, and instances without `geneve_opts` cannot provide coherent Stats. Counter generation is not published as sandbox identity, a public field or a lifecycle ledger. Existing forwarding, NAT, GENEVE and device handoff semantics are preserved.
 
 ### 3.3 Data-plane ABI
 
@@ -188,7 +190,7 @@ struct slot_item {                          // 108 bytes, cache-line layout
     __u32 mgmt_cidr_count;                  // offset 32
     struct mgmt_cidr mgmt_cidrs_0;          // offset 36 (20B) — first inline CIDR (hot path)
     __u32 generation;                       // offset 56 — caller-supplied attachment generation
-    __u8  _pad_cl0[4];                      // offset 60
+    __u32 flags;                            // offset 60 — PORT_F_UP dataplane publication
     // Cache line 1 (cold path)
     struct mgmt_cidr mgmt_cidrs_ext[MAX_MGMT_CIDR_EXT]; // offset 64 (40B)
     __u32 stats_ready;                      // offset 104 — userspace confirmed current-attach reset
@@ -205,7 +207,7 @@ struct switch_config {                      // 40 bytes
     __u32 transit_nexthop;
     __u8  port_mac[6];                      // all zero: derive; nonzero: fixed
     __u8  generation_bits;                  // high FloatingIP identity bits; 0 = legacy
-    __u8  _pad4;
+    __u8  features;                         // offset 35 — SWITCH_F_PORT_UP publication capability
     __u8  geneve_locator;                   // 0=port,1=vni,2=tlv
     __u8  geneve_tlv_type;                  // exact 8-bit wire type
     __u16 geneve_tlv_class;
@@ -233,7 +235,7 @@ struct slot_stats {                         // 80 bytes, one locked instance per
 
 Program paths check packet bounds and slot validity before use: Ethernet and relevant IP/header bounds, decapsulation extent, allocated inner_ip (neither Free nor Reserved), nonzero ifindex and `slot_id<n_ports`. **The outer transit IPv4 decoder** requires `ihl==5`; this must not be generalized to every management/inner-IP parsing path. Transit return also checks configured gateway source IP and VNI.
 
-A new switch always creates and pins geneve_opts. Opening a legacy pinned switch treats that map as optional **only on ENOENT**; other load errors mean damage. Zero bytes in the old config's trailing padding decode as the legacy `port` locator. Thus old switches remain usable for Open/status/show, empty-option Attach, Detach and Stop. Nonempty opaque options or vni/tlv locator require stop and recreation with the new implementation. No map is added to an active old switch and no attached TC program is replaced in place.
+A new switch pins `slots_v2` and the mandatory `geneve_opts` map, and advertises `SWITCH_F_PORT_UP`. A missing `geneve_opts` pin on this ABI is an error, not permission to downgrade. `Open` can read an old `slots` pin for status/show and explicit management cleanup; only for that legacy pin may an absent options map (`ENOENT`) be accepted. **Attach and Detach reject old instances without the publication capability, even for empty options and the port locator, before changing state or acquiring a lock.** Retire and recreate those instances through the management boundary before using attachment operations. No map is added to an active old switch and no attached TC program is replaced in place.
 
 ## 4. Key mechanisms
 
@@ -299,7 +301,7 @@ Packet-capture commands and field inspection belong to [Operations §3.1](vswitc
 
 ### 4.3 Slot allocation and state machine
 
-Separate BPF Lookup and Update syscalls permit a TOCTOU race: two processes can observe a free slot and overwrite each other. The slots array uses BPF_F_MMAPABLE; userspace maps it and uses atomic.CompareAndSwapUint32 on inner_ip for atomic ownership. The atomic claim itself needs no lock, while new-switch compound operations also use flock (§4.4).
+Separate BPF Lookup and Update syscalls permit a TOCTOU race: two processes can observe a free slot and overwrite each other. The slots array uses BPF_F_MMAPABLE; userspace maps it and uses atomic.CompareAndSwapUint32 on inner_ip for atomic ownership. Attach/Detach use this ownership CAS without a switch-wide flock; coordination between management commands is separate (§4.4).
 
 | inner_ip | State | Meaning |
 |---|---|---|
@@ -320,25 +322,31 @@ stateDiagram-v2
 | Operation | Transition | CAS |
 |---|---|---|
 | Attach | Free→Allocated. | CAS(inner_ip, 0, innerIP). |
-| Detach | Allocated→Free. | CAS(inner_ip, currentIP, 0); on new switches clear the hint under control flock, retaining map bytes for the next Attach. No Reserved intermediate. |
+| Detach | Allocated→Free. | Publish dataplane-down and clear the options hint first, then CAS(inner_ip, currentIP, 0) last. No old-owner writes occur after the release CAS. |
 | Reserve | Free→Reserved; force can replace Allocated. | CAS to 0xFFFFFFFF. |
 | Provision complete | Reserved→Free. | CAS(inner_ip, 0xFFFFFFFF, 0). |
 
 Failed operations attempt to undo their own claim or device movement, without overwriting a different owner. A CAS claim is not an atomic publication of every data-plane field, and rollback/device operations can themselves fail. Callers must use operation results and inspect/reconcile state after an error (§5.4).
 
-### 4.4 Control-operation serialization
+### 4.4 Control-operation concurrency
 
-CAS protects one slot's ownership. Multi-resource operations and new-switch updates spanning mmap slots plus geneve_opts use `flock(LOCK_EX)` on `/sys/fs/bpf/<sw>/`:
+Switch-wide attachment locking was an unintended implementation defect, not an optional optimization. **Attach/Detach contain no exclusive or shared switch-wide flock path.** They require the publication-aware switch ABI; unsupported old instances are rejected before mutation and must be rebuilt. CAS arbitrates per-slot ownership, and a management LOCK_EX does not gate these fast paths.
 
-| Operation | flock | CAS |
+| Operation | flock | Ownership boundary |
 |---|---|---|
-| Start / StartReserved | Yes. | Mark slots Reserved. |
-| Stop / stop --force | Yes. | The stop cleanup phase is not a single slot CAS; forced release is a separate step. |
-| ProvisionPorts | Yes. | Reserved→Free per completed slot. |
-| New-switch Attach / Detach / Reserve | Yes, covering claim, map/MTU/device work and hint publication/retraction. | Yes. |
-| Legacy Attach / Detach / Reserve without geneve_opts | No. | Existing CAS-only path. |
+| Start / StartReserved / Stop / ReleasePorts | Exclusive among management operations. | Reserve ports before global cleanup. |
+| ProvisionPorts | Exclusive among management operations. | Prepare Reserved ports; publish Free last. |
+| Capable Attach / Detach | None. | Attach acquires by CAS first; Detach releases by CAS last. |
+| Reserve / Reserve --force | Existing exclusive management lock. | CAS to Reserved first, then control-owned cleanup. |
+| Pre-capability switches, with or without `geneve_opts` | Attach/Detach rejected without locking or mutation. | Rebuild before attachment operations; reads and management cleanup remain available. |
 
-After acquiring flock and before CAS, new-switch Attach/Detach/Reserve compare the opened slots map's kernel ID with the map currently pinned at that name. If the switch was stopped/recreated while the operation waited, the old context fails and must be reopened; it does not mutate an unpinned obsolete map.
+Management takeover during an in-progress Attach/Detach is intentional. Such calls are not guaranteed uninterrupted success, and an observed takeover is not undone. **Reserved→Free is a management action with strict entry/exit boundaries**, not an arbitrary step interleaved with old requests and immediate reallocation. Handling an old request that survives that entire management reopening/reallocation sequence is outside this contract; no owner-token table or lifecycle shared lock is introduced for it.
+
+Ordinary per-attachment calls are ordered by the caller: wait for Attach to return its port handle before using or detaching that attachment, and wait for Detach to finish before reusing the handle. Detach is not cancellation of a still-running Attach, including when an explicit port was requested. Competing allocation requests still use CAS to select one winner; independent slots remain concurrent. Exceptional administrative takeover follows the separate management boundary above and does not wait for these calls.
+
+Only an Attach CAS winner may initialize per-slot configuration. The previous four-byte padding at offset 60 holds `PORT_F_UP`. The slot remains down through preparation; ordinary Attach publishes up last. Detach completes fallible device work, clears publication and the options hint, then releases Free by CAS, with no writes after release. Rollback releases its own claim without late cleanup writes. Reserve first acquires control ownership by CAS. Provision initializes the Reserved port and clears up before publishing Free.
+
+New switches advertise `SWITCH_F_PORT_UP` and pin the slot map as `slots_v2` (reported under the logical `slots` key). New userspace can open the legacy `slots` pin for inspection and management cleanup, but Attach/Detach reject instances without `SWITCH_F_PORT_UP` and require a managed rebuild; old userspace cannot silently open new publication-aware switches. Management/Stats identity checks support both pin names. Do not hot-swap the data plane or mix unsupported old clients into a new switch.
 
 ### 4.5 Two-phase startup
 
@@ -477,7 +485,7 @@ Linux 5.8+ separates some BPF privileges into CAP_BPF, but this does not replace
 | L4 | MAX_PORTS=4096. | Increasing capacity requires synchronized BPF/Go bounds and the fixed 12-bit locator ABI, not merely editing one constant. |
 | L5 | Broad extraction CIDRs admit unintended management traffic; the slot stores only three CIDRs total. | Prefer narrow routes such as /32 and inspect the actual programmed slots. |
 | L6 | Unreachable management-service target, especially loopback. | Validate VIP/extraction and target uniqueness; deployment still supplies routing/listeners and route_localnet for loopback. |
-| L7 | Legacy switch lacks geneve_opts. | Existing no-option port-mode operations remain supported; stop/recreate before vni/tlv or opaque options. No online map/program migration. |
+| L7 | Legacy switch lacks the publication ABI, or a current switch is missing its required geneve_opts map. | Attach/Detach reject it before mutation; inspect and retire/recreate through management. No old attachment fallback or online map/program migration. |
 | L8 | Requested --mtu is not propagated into newly provisioned TAP/veth ports. | Check actual device MTUs and the full underlay budget (§4.8); initial startup validation and CLI help from older versions are not proof of the port value. |
 
 ## 6. Reliability

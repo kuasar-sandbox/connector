@@ -46,7 +46,7 @@ func nativeStatsFixture(t testing.TB) *switchContext {
 	if err := objects.PinMaps(name); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &SwitchConfig{N_ports: 64, FloatingIpBase: bpf.IPToUint32(net.ParseIP("198.18.0.1"))}
+	cfg := &SwitchConfig{N_ports: 64, Features: SwitchFPortUp, FloatingIpBase: bpf.IPToUint32(net.ParseIP("198.18.0.1"))}
 	if err := objects.Maps.Config.Update(uint32(0), cfg, ebpf.UpdateAny); err != nil {
 		t.Fatal(err)
 	}

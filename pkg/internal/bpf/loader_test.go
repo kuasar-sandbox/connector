@@ -175,6 +175,10 @@ func TestLoadPinnedMapsAllowsMissingLegacyGeneveOpts(t *testing.T) {
 	objs.Close()
 	defer bpf.UnpinMaps(switchName)
 
+	// Model the actual legacy ABI rather than a corrupted slots_v2 switch.
+	if err := os.Rename(filepath.Join(bpf.BPFPath, switchName, "slots_v2"), filepath.Join(bpf.BPFPath, switchName, "slots")); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Remove(filepath.Join(bpf.BPFPath, switchName, "geneve_opts")); err != nil {
 		t.Fatalf("remove geneve_opts pin: %v", err)
 	}
@@ -390,4 +394,30 @@ func TestLoadPinnedMapsIfindexFailure(t *testing.T) {
 	}
 
 	bpf.UnpinMaps(switchName)
+}
+
+func TestLoadPinnedMapsRejectsMissingV2GeneveOpts(t *testing.T) {
+	ensureBPFEnv(t)
+	name := "test-loadpinned-v2-missing-options"
+	objs, err := bpf.LoadObjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer objs.Close()
+	createPinDir(t, name)
+	defer bpf.UnpinMaps(name)
+	if err := objs.PinMaps(name); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(bpf.BPFPath, name, "geneve_opts")); err != nil {
+		t.Fatal(err)
+	}
+	maps, err := bpf.LoadPinnedMaps(name)
+	if maps != nil {
+		maps.Close()
+		t.Fatal("accepted incomplete publication-aware switch")
+	}
+	if err == nil {
+		t.Fatal("missing options map did not fail closed")
+	}
 }

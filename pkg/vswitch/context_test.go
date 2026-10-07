@@ -2,6 +2,7 @@ package vswitch
 
 import (
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
@@ -35,11 +36,21 @@ func TestLegacySwitchWithoutGeneveOptsMapManagementPaths(t *testing.T) {
 	if got := len(sw.Ports(false)); got != 2 {
 		t.Fatalf("show slots source has %d ports, want 2", got)
 	}
-	if _, err := sw.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true}); err != nil {
-		t.Fatalf("Attach legacy switch: %v", err)
+	if _, err := sw.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true}); err == nil || !strings.Contains(err.Error(), "rebuild the switch") {
+		t.Fatalf("legacy Attach must require rebuild: %v", err)
 	}
-	if err := sw.Detach(DetachOptions{Port: 1, SkipDevice: true}); err != nil {
-		t.Fatalf("Detach legacy switch: %v", err)
+	// Seed an attachment that existed before upgrading userspace.
+	if !slots.TryAllocate(0, 0x0a000001) {
+		t.Fatal("seed old attachment")
+	}
+	if err := sw.Detach(DetachOptions{Port: 1, SkipDevice: true}); err == nil || !strings.Contains(err.Error(), "rebuild the switch") {
+		t.Fatalf("legacy Detach must require rebuild: %v", err)
+	}
+	if slots.GetInnerIP(0) != 0x0a000001 {
+		t.Fatal("rejected Detach modified old attachment")
+	}
+	if _, err := sw.Reserve(ReserveOptions{Port: 1, Force: true}); err != nil {
+		t.Fatalf("legacy management cleanup must remain available: %v", err)
 	}
 }
 

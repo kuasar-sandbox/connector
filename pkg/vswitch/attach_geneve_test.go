@@ -3,12 +3,12 @@ package vswitch
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
-	vnetlink "github.com/vishvananda/netlink"
 
 	"github.com/kuasar-sandbox/connector/pkg/internal/bpf"
 	connectornetlink "github.com/kuasar-sandbox/connector/pkg/netlink"
@@ -25,6 +25,7 @@ func newGeneveAttachTestContext(cfg *SwitchConfig, withOptionsMap bool) (*switch
 	slots := newMmappedSlotsForTest(cfg.N_ports)
 	maps := &bpf.Maps{}
 	if withOptionsMap {
+		cfg.Features |= SwitchFPortUp
 		maps.GeneveOpts = &ebpf.Map{}
 		acquireControlLockFn = func(string) (*ControlLock, error) { return &ControlLock{}, nil }
 		verifyCurrentSwitchFn = func(*switchContext) error { return nil }
@@ -37,32 +38,6 @@ func newGeneveAttachTestContext(cfg *SwitchConfig, withOptionsMap bool) (*switch
 		mmapSlots: slots,
 		statsMgr:  NewStatsManager(&mockBPFMapWithSlot{}, cfg.N_ports),
 	}, slots
-}
-
-func TestAttachLegacySwitchWithoutGeneveOptsMap(t *testing.T) {
-	defer resetDeps()
-	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, false)
-	if _, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true}); err != nil {
-		t.Fatalf("legacy empty attach: %v", err)
-	}
-	if slots.GetSlot(0).GeneveOptsLen != 0 {
-		t.Fatalf("legacy hint = %d", slots.GetSlot(0).GeneveOptsLen)
-	}
-
-	if err := s.Detach(DetachOptions{Port: 1, SkipDevice: true}); err != nil {
-		t.Fatal(err)
-	}
-	_, err := s.Attach(AttachOptions{
-		InnerIP:           net.ParseIP("10.0.0.2"),
-		SkipDevice:        true,
-		TransitGeneveOpts: []GeneveOption{{Class: 1, Type: 2}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "rebuild the switch") {
-		t.Fatalf("legacy non-empty options error = %v", err)
-	}
-	if slots.GetInnerIP(0) != 0 {
-		t.Fatal("non-empty options validation allocated a legacy slot")
-	}
 }
 
 func TestAttachFixedLocatorRequiresGeneveOptsMap(t *testing.T) {
@@ -100,63 +75,24 @@ func TestAttachGeneveOptionsMapFailureRollsBack(t *testing.T) {
 	}
 }
 
-func TestAttachGeneveControlLockFailureBeforeCAS(t *testing.T) {
+func TestCurrentAttachDetachDoNotUseLifecycleLock(t *testing.T) {
 	defer resetDeps()
 	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
-	acquireControlLockFn = func(string) (*ControlLock, error) {
-		return nil, errors.New("injected lock failure")
+	acquireControlLockFn = func(string) (*ControlLock, error) { t.Fatal("exclusive lifecycle lock used"); return nil, nil }
+	syscallFlock = func(int, int) error {
+		t.Error("flock used on attachment fast path")
+		return errors.New("unexpected flock")
 	}
-	_, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true})
-	if err == nil || !strings.Contains(err.Error(), "injected lock failure") {
-		t.Fatalf("error = %v", err)
+	verifyCurrentSwitchFn = func(*switchContext) error { t.Fatal("switch verification used"); return nil }
+	writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error { return nil }
+	if _, err := s.Attach(AttachOptions{Port: 1, InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Detach(DetachOptions{Port: 1, SkipDevice: true}); err != nil {
+		t.Fatal(err)
 	}
 	if slots.GetInnerIP(0) != InnerIPFree {
-		t.Fatalf("lock failure allocated slot: inner=%#x", slots.GetInnerIP(0))
-	}
-}
-
-func TestAttachGeneveSwitchVerificationFailureBeforeCAS(t *testing.T) {
-	defer resetDeps()
-	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
-	verifyCurrentSwitchFn = func(*switchContext) error {
-		return errors.New("injected stale switch")
-	}
-
-	_, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true})
-	if err == nil || !strings.Contains(err.Error(), "injected stale switch") {
-		t.Fatalf("error = %v", err)
-	}
-	if slots.GetInnerIP(0) != InnerIPFree {
-		t.Fatalf("switch verification failure allocated slot: inner=%#x", slots.GetInnerIP(0))
-	}
-}
-
-func TestAttachRollbackDoesNotClearConcurrentOwnerHint(t *testing.T) {
-	defer resetDeps()
-	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
-	firstIP := bpf.IPToUint32(net.ParseIP("10.0.0.1"))
-	secondIP := bpf.IPToUint32(net.ParseIP("10.0.0.2"))
-	writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error {
-		if !slots.TryRelease(0, firstIP) || !slots.TryAllocate(0, secondIP) {
-			t.Fatal("simulate concurrent slot reattach")
-		}
-		slots.GetSlot(0).GeneveOptsLen = 12
-		return errors.New("injected stale attach failure")
-	}
-
-	_, err := s.Attach(AttachOptions{
-		InnerIP:           net.ParseIP("10.0.0.1"),
-		SkipDevice:        true,
-		TransitGeneveOpts: []GeneveOption{{Class: 1, Type: 2}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "injected stale attach failure") {
-		t.Fatalf("error = %v", err)
-	}
-	if got := slots.GetInnerIP(0); got != secondIP {
-		t.Fatalf("concurrent owner inner IP = %#x, want %#x", got, secondIP)
-	}
-	if got := slots.GetSlot(0).GeneveOptsLen; got != 12 {
-		t.Fatalf("concurrent owner's GENEVE options hint = %d, want 12", got)
+		t.Fatalf("inner=%#x", slots.GetInnerIP(0))
 	}
 }
 
@@ -444,54 +380,13 @@ func TestDetachReleasesDirectlyAndClearsHint(t *testing.T) {
 		t.Fatal("allocate slot")
 	}
 	slots.GetSlot(0).GeneveOptsLen = 12
+	slots.GetSlot(0).Flags = PortFUp
 
 	if err := s.Detach(DetachOptions{Port: 1, SkipDevice: true}); err != nil {
 		t.Fatal(err)
 	}
-	if slots.GetInnerIP(0) != InnerIPFree || slots.GetSlot(0).GeneveOptsLen != 0 {
+	if slots.GetInnerIP(0) != InnerIPFree || slots.GetSlot(0).GeneveOptsLen != 0 || slots.GetSlot(0).Flags != 0 {
 		t.Fatalf("detach state: inner=%#x hint=%d", slots.GetInnerIP(0), slots.GetSlot(0).GeneveOptsLen)
-	}
-}
-
-func TestDetachGeneveControlLockFailurePreservesAttachment(t *testing.T) {
-	defer resetDeps()
-	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
-	innerIP := bpf.IPToUint32(net.ParseIP("10.0.0.1"))
-	if !slots.TryAllocate(0, innerIP) {
-		t.Fatal("allocate slot")
-	}
-	slots.GetSlot(0).GeneveOptsLen = 12
-	acquireControlLockFn = func(string) (*ControlLock, error) {
-		return nil, errors.New("injected lock failure")
-	}
-
-	err := s.Detach(DetachOptions{Port: 1, SkipDevice: true})
-	if err == nil || !strings.Contains(err.Error(), "injected lock failure") {
-		t.Fatalf("error = %v", err)
-	}
-	if slots.GetInnerIP(0) != innerIP || slots.GetSlot(0).GeneveOptsLen != 12 {
-		t.Fatalf("lock failure changed attachment: inner=%#x hint=%d", slots.GetInnerIP(0), slots.GetSlot(0).GeneveOptsLen)
-	}
-}
-
-func TestDetachGeneveSwitchVerificationFailurePreservesAttachment(t *testing.T) {
-	defer resetDeps()
-	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
-	innerIP := bpf.IPToUint32(net.ParseIP("10.0.0.1"))
-	if !slots.TryAllocate(0, innerIP) {
-		t.Fatal("allocate slot")
-	}
-	slots.GetSlot(0).GeneveOptsLen = 12
-	verifyCurrentSwitchFn = func(*switchContext) error {
-		return errors.New("injected stale switch")
-	}
-
-	err := s.Detach(DetachOptions{Port: 1, SkipDevice: true})
-	if err == nil || !strings.Contains(err.Error(), "injected stale switch") {
-		t.Fatalf("error = %v", err)
-	}
-	if slots.GetInnerIP(0) != innerIP || slots.GetSlot(0).GeneveOptsLen != 12 {
-		t.Fatalf("switch verification failure changed attachment: inner=%#x hint=%d", slots.GetInnerIP(0), slots.GetSlot(0).GeneveOptsLen)
 	}
 }
 
@@ -527,31 +422,105 @@ func TestReserveGeneveSwitchVerificationFailurePreservesFreeSlot(t *testing.T) {
 	}
 }
 
-func TestDetachDoesNotUndoConcurrentForceReserve(t *testing.T) {
+func TestAttachPublishesDataplaneUpLast(t *testing.T) {
 	defer resetDeps()
 	s, slots := newGeneveAttachTestContext(&SwitchConfig{}, true)
-	s.meta.PortNetNS = "port-ns"
-	innerIP := bpf.IPToUint32(net.ParseIP("10.0.0.1"))
-	if !slots.TryAllocate(0, innerIP) {
-		t.Fatal("allocate slot")
-	}
-	slots.GetSlot(0).GeneveOptsLen = 12
-
-	// Simulate force-reserve winning after Detach reads currentIP but before its
-	// release CAS. The second load in Detach must observe and preserve Reserved.
-	netnsGetByName = func(string) (*netns.NetNS, error) { return &netns.NetNS{}, nil }
-	netnsGetLinkInNs = func(*netns.NetNS, string) (vnetlink.Link, error) {
-		if !slots.TryReserve(0, innerIP) {
-			t.Fatal("simulate concurrent force-reserve")
+	writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error {
+		if got := slots.GetSlot(0).Flags; got != 0 {
+			t.Fatalf("flags during options write=%#x", got)
 		}
-		return &vnetlink.Dummy{}, nil
+		return nil
 	}
-
-	if err := s.Detach(DetachOptions{Port: 1}); err != nil {
+	validateAttachMTUFn = func(*switchContext, uint32, PortKind, int) error {
+		if got := slots.GetSlot(0).Flags; got != 0 {
+			t.Fatalf("flags during MTU validation=%#x", got)
+		}
+		return nil
+	}
+	out, err := s.Attach(AttachOptions{
+		InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true,
+		TransitGeneveOpts: []GeneveOption{{Class: 1, Type: 2}},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if slots.GetInnerIP(0) != InnerIPReserved || slots.GetSlot(0).GeneveOptsLen != 12 {
-		t.Fatalf("detach/reserve state: inner=%#x hint=%d", slots.GetInnerIP(0), slots.GetSlot(0).GeneveOptsLen)
+	if out.Port != 1 {
+		t.Fatalf("port=%d", out.Port)
+	}
+	if got := slots.GetSlot(0).Flags; got != PortFUp {
+		t.Fatalf("final flags=%#x want=%#x", got, PortFUp)
+	}
+}
+
+func TestConcurrentAttachDifferentSlotsOverlapWithoutControlLock(t *testing.T) {
+	defer resetDeps()
+	s, _ := newGeneveAttachTestContext(&SwitchConfig{N_ports: 2}, true)
+	acquireControlLockFn = func(string) (*ControlLock, error) {
+		t.Fatal("Attach must not acquire the exclusive switch control lock")
+		return nil, errors.New("unexpected exclusive lock")
+	}
+
+	entered := make(chan uint32, 2)
+	release := make(chan struct{})
+	writeGeneveOptsFn = func(_ BPFMap, slotID uint32, _ *GeneveOptsValue) error {
+		entered <- slotID
+		<-release
+		return nil
+	}
+
+	errCh := make(chan error, 2)
+	go func() {
+		_, err := s.Attach(AttachOptions{Port: 1, InnerIP: net.ParseIP("10.0.0.1"), SkipDevice: true})
+		errCh <- err
+	}()
+	go func() {
+		_, err := s.Attach(AttachOptions{Port: 2, InnerIP: net.ParseIP("10.0.0.2"), SkipDevice: true})
+		errCh <- err
+	}()
+
+	first := <-entered
+	second := <-entered
+	if first == second {
+		t.Fatalf("both attaches entered slot %d", first)
+	}
+	close(release)
+	for range 2 {
+		if err := <-errCh; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestConcurrentAttachSameSlotSingleCASWinner(t *testing.T) {
+	defer resetDeps()
+	s, _ := newGeneveAttachTestContext(&SwitchConfig{N_ports: 1}, true)
+	writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error { return nil }
+	start := make(chan struct{})
+	errCh := make(chan error, 2)
+	for i := range 2 {
+		i := i
+		go func() {
+			<-start
+			_, err := s.Attach(AttachOptions{Port: 1, InnerIP: net.ParseIP(fmt.Sprintf("10.0.0.%d", i+1)), SkipDevice: true})
+			errCh <- err
+		}()
+	}
+	close(start)
+	var success, allocated int
+	for range 2 {
+		err := <-errCh
+		if err == nil {
+			success++
+			continue
+		}
+		if errors.Is(err, ErrPortAllocated) {
+			allocated++
+			continue
+		}
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if success != 1 || allocated != 1 {
+		t.Fatalf("success=%d allocated=%d", success, allocated)
 	}
 }
 
@@ -586,5 +555,69 @@ func TestAttachGenerationPublishesOnlyAfterFalliblePreparation(t *testing.T) {
 	}
 	if out.Generation != 4 || slots.GetSlot(0).Generation != 4 {
 		t.Fatalf("final generation output=%d slot=%d", out.Generation, slots.GetSlot(0).Generation)
+	}
+}
+
+func TestAttachRejectsMissingPublicationMap(t *testing.T) {
+	defer resetDeps()
+	s, slots := newGeneveAttachTestContext(&SwitchConfig{Features: SwitchFPortUp}, false)
+	out, err := s.Attach(AttachOptions{InnerIP: net.ParseIP("169.254.0.21"), SkipDevice: true})
+	if err == nil || out != nil || slots.GetInnerIP(0) != InnerIPFree {
+		t.Fatalf("missing map accepted: out=%+v err=%v", out, err)
+	}
+}
+
+// Rejecting an unsupported ABI is not a fallback execution path. No lock,
+// device operation, map update or slot mutation is allowed on either method.
+func TestAttachmentRejectsUnsupportedSwitchBeforeMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		features   uint8
+		optionsMap bool
+	}{
+		{"old-with-options", 0, true},
+		{"old-without-options", 0, false},
+		{"missing-required-options", SwitchFPortUp, false},
+	} {
+		for _, detach := range []bool{false, true} {
+			op := "attach"
+			if detach {
+				op = "detach"
+			}
+			t.Run(tc.name+"/"+op, func(t *testing.T) {
+				defer resetDeps()
+				s, slots := newGeneveAttachTestContext(&SwitchConfig{}, tc.optionsMap)
+				s.cfg.Features = tc.features
+				if detach && !slots.TryAllocate(0, 0x0a000001) {
+					t.Fatal("seed old attachment")
+				}
+				slot := slots.GetSlot(0)
+				slot.Generation, slot.StatsReady, slot.Flags, slot.GeneveOptsLen = 3, 1, PortFUp, 12
+				before := *slot
+				calls := 0
+				unexpected := errors.New("unexpected attachment side effect")
+				acquireControlLockFn = func(string) (*ControlLock, error) { calls++; return nil, unexpected }
+				syscallFlock = func(int, int) error { calls++; return unexpected }
+				verifyCurrentSwitchFn = func(*switchContext) error { calls++; return unexpected }
+				writeGeneveOptsFn = func(BPFMap, uint32, *GeneveOptsValue) error { calls++; return unexpected }
+				netnsGetByName = func(string) (*netns.NetNS, error) { calls++; return nil, unexpected }
+				var err error
+				if detach {
+					err = s.Detach(DetachOptions{Port: 1, FromNetNS: "sandbox"})
+				} else {
+					var out *AttachOutput
+					out, err = s.Attach(AttachOptions{Port: 1, InnerIP: net.ParseIP("10.0.0.1"), ToNetNS: "sandbox"})
+					if out != nil {
+						t.Fatalf("unsupported Attach returned success: %+v", out)
+					}
+				}
+				if err == nil || !strings.Contains(err.Error(), "rebuild the switch") {
+					t.Fatalf("error=%v", err)
+				}
+				if calls != 0 || *slot != before {
+					t.Fatalf("unsupported %s changed state or used fallback: calls=%d before=%+v after=%+v", op, calls, before, *slot)
+				}
+			})
+		}
 	}
 }

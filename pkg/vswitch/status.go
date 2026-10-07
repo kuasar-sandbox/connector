@@ -432,38 +432,46 @@ func (s *switchContext) Stats(ports []int) (*StatsOutput, error) {
 
 	for _, sid := range slotIDs {
 		slot := s.mmapSlots.GetSlot(sid)
-		innerIP := s.mmapSlots.GetInnerIP(sid)
-		if !IsSlotAllocated(innerIP) {
+		if !IsSlotAllocated(s.mmapSlots.GetInnerIP(sid)) {
 			return nil, fmt.Errorf("port %d: %w", sid+1, ErrPortNotAttached)
 		}
-		// Only switches with the existing options map serialize every ownership
-		// change with this lock. Older contexts cannot prove a coherent read.
-		if s.maps == nil || s.maps.GeneveOpts == nil || atomic.LoadUint32(&slot.StatsReady) != 1 {
+		hasPortUp := cfg.Features&SwitchFPortUp != 0
+		ready := func() bool {
+			return s.maps != nil && s.maps.GeneveOpts != nil &&
+				(!hasPortUp || atomic.LoadUint32(&slot.Flags)&PortFUp != 0) &&
+				atomic.LoadUint32(&slot.StatsReady) == 1
+		}
+		if !ready() {
 			return nil, fmt.Errorf("port %d: %w: current attachment reset is not confirmed", sid+1, ErrStatsUnavailable)
 		}
+		// The existing observation lock does not exclude capable Attach/Detach.
+		// Bracket only the identity fields we use with locked counter-generation
+		// reads; do not copy mutable slot fields with a non-atomic struct load.
+		first, err := s.statsMgr.GetStats(sid)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrStatsUnavailable, err)
+		}
+		innerIP := s.mmapSlots.GetInnerIP(sid)
+		generation := atomic.LoadUint32(&slot.Generation)
 		st, err := s.statsMgr.GetStats(sid)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrStatsUnavailable, err)
 		}
-		if st.Generation == 0 {
-			return nil, fmt.Errorf("port %d: %w: counter instance is uninitialized", sid+1, ErrStatsUnavailable)
+		if first.Generation == 0 || first.Generation != st.Generation ||
+			!IsSlotAllocated(innerIP) || !ready() ||
+			s.mmapSlots.GetInnerIP(sid) != innerIP ||
+			atomic.LoadUint32(&slot.Generation) != generation {
+			return nil, fmt.Errorf("port %d: %w: attachment changed during stats read", sid+1, ErrStatsUnavailable)
 		}
-		// Use GetPortMAC to get fixed or per-port derived MAC
 		portMAC := GetPortMAC(cfg.SwitchMac[:], cfg.PortMac[:], sid)
 		out.Ports = append(out.Ports, PortStatsOutput{
-			Port:             sid + 1,
-			InnerIP:          bpf.Uint32ToIP(innerIP).String(),
-			FloatingIP:       bpf.Uint32ToIP(FloatingIPForAttachment(cfg.FloatingIpBase, sid, slot.Generation)).String(),
-			Generation:       slot.Generation,
-			PortMAC:          portMAC.String(),
-			MgmtRxPackets:    st.MgmtRxPackets,
-			MgmtRxBytes:      st.MgmtRxBytes,
-			MgmtTxPackets:    st.MgmtTxPackets,
-			MgmtTxBytes:      st.MgmtTxBytes,
-			TransitRxPackets: st.TransitRxPackets,
-			TransitRxBytes:   st.TransitRxBytes,
-			TransitTxPackets: st.TransitTxPackets,
-			TransitTxBytes:   st.TransitTxBytes,
+			Port: sid + 1, InnerIP: bpf.Uint32ToIP(innerIP).String(),
+			FloatingIP: bpf.Uint32ToIP(FloatingIPForAttachment(cfg.FloatingIpBase, sid, generation)).String(),
+			Generation: generation, PortMAC: portMAC.String(),
+			MgmtRxPackets: st.MgmtRxPackets, MgmtRxBytes: st.MgmtRxBytes,
+			MgmtTxPackets: st.MgmtTxPackets, MgmtTxBytes: st.MgmtTxBytes,
+			TransitRxPackets: st.TransitRxPackets, TransitRxBytes: st.TransitRxBytes,
+			TransitTxPackets: st.TransitTxPackets, TransitTxBytes: st.TransitTxBytes,
 		})
 	}
 

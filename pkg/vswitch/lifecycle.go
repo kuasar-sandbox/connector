@@ -465,14 +465,18 @@ func configureTransitDevice(cfg *Config, switchNs *netns.NetNS, objects *bpf.Obj
 // switchMapPaths returns the bpffs pin path of every map a switch pins, keyed
 // by map name. Kept in one place so command output stays in sync with
 // Objects.PinMaps / LoadPinnedMaps.
-func switchMapPaths(name string, includeGeneveOpts bool) map[string]string {
+func switchMapPaths(name string, includeGeneveOpts, slotsV2 bool) map[string]string {
 	maps := []string{"slots", "config", "stats", "ifindex_to_slot", "metadata", "mgmt_svc_fwd", "mgmt_svc_rev"}
 	if includeGeneveOpts {
 		maps = append(maps, "geneve_opts")
 	}
 	out := make(map[string]string, len(maps))
 	for _, m := range maps {
-		out[m] = fmt.Sprintf("%s/%s/%s", bpf.BPFPath, name, m)
+		pin := m
+		if m == "slots" && slotsV2 {
+			pin = "slots_v2"
+		}
+		out[m] = fmt.Sprintf("%s/%s/%s", bpf.BPFPath, name, pin)
 	}
 	return out
 }
@@ -488,7 +492,7 @@ func buildStartOutput(cfg *Config, mgmtPlanes []MgmtPlaneInfo, transitDevIP stri
 	output := &StartOutput{
 		Switch:         cfg.Name,
 		SwitchNetNS:    cfg.SwitchNetNS,
-		SwitchMaps:     switchMapPaths(cfg.Name, true),
+		SwitchMaps:     switchMapPaths(cfg.Name, true, true),
 		PortNetNS:      cfg.PortNetNS,
 		Ports:          cfg.NumPorts,
 		PortsUsed:      0,
@@ -709,7 +713,7 @@ func getExistingSwitch(switchName string, requestedCfg *Config) (*StartOutput, e
 	out := &StartOutput{
 		Switch:         switchName,
 		SwitchNetNS:    meta.SwitchNetnsName(),
-		SwitchMaps:     switchMapPaths(switchName, sw.Maps().GeneveOpts != nil),
+		SwitchMaps:     switchMapPaths(switchName, sw.Maps().GeneveOpts != nil, cfg.Features&SwitchFPortUp != 0),
 		PortNetNS:      meta.PortNetnsName(),
 		Ports:          cfg.N_ports,
 		PortsUsed:      used,
