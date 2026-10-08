@@ -555,7 +555,7 @@ transit device eth1 MTU 1570 is too small for port sw0-n1:
 
 ### 延迟启用端口
 
-数据面通过零掩码原子操作以 acquire 顺序读取现有 up 位,管理 DNAT 在其后重新读取 InnerIP,避免复用临时 A 或弱内存序读取半成品。没有新增 slot 字段或 attachment 锁。现有 config capability byte 增加 `SWITCH_F_DEFERRED_UP`;AdminDown/SetPortUp 在修改前拒绝旧读侧(包括未重建的 #81 switch),要求管理重建。#81 实例上的普通 Attach 不变。
+数据面单次读取现有 up 位并掩码为 0/1。down 分支退出后,使用基础 BPF 指令计算 `pointer + up - 1`: up=1 时地址不变,但读取地址实际依赖 up 的读取结果。slot 字段和独立的 GENEVE-options value 都通过依赖指针读取,管理 DNAT 在 gate 后重新读取 InnerIP。内联汇编防止 LLVM 将依赖折叠为常量,测试同时检查生成指令和内核重写后的指令。该机制在 AMD64/ARM64 上与用户态 release 发布配对,属于依赖读序,不是通用 acquire 屏障;不需要原子读改写、额外锁或提高 Linux 基线。参见 [Linux 地址依赖说明](https://www.kernel.org/doc/html/latest/core-api/wrappers/memory-barriers.html)。没有新增 slot 字段或 attachment 锁。现有 config capability byte 增加 `SWITCH_F_DEFERRED_UP`;AdminDown/SetPortUp 在修改前拒绝旧读侧(包括未重建的 #81 switch),要求管理重建。#81 实例上的普通 Attach 不变。
 
 `AttachOptions.AdminDown` 默认 false。为 true 时,Attach 仍分配端口、完成初始配置、初始化本 attachment 的统计实例并返回正常资源,但不发布 `PORT_F_UP`。它是 **Allocated/down**,不是 Free 或 Reserved。初始 InnerIP 必须是 IPv4,且不能为表示归属状态的 0.0.0.0 或 255.255.255.255。
 

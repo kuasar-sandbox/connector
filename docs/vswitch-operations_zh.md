@@ -8,14 +8,14 @@
 
 ### 1.1 系统要求
 
-- 文档基线为 Linux **5.18+**,需相应 TC/BPF 配置,且 `/sys/kernel/btf/vmlinux`
+- 文档基线为 Linux **5.10+**,需相应 TC/BPF 配置,且 `/sys/kernel/btf/vmlinux`
   可访问。应验证实际内核配置与特权测试,版本号本身不足以保证可用。
 - bpffs 挂载在 `/sys/fs/bpf`(`mount -t bpf bpf /sys/fs/bpf`)。
 - 特权路径以具有所需能力的 root 运行;能力裁剪条件见 [§5.3](vswitch_zh.md#53-所需权限)。
 - 构建:**Go 1.26.1+**;重新生成 eBPF 字节码额外需 **Clang/LLVM 12+**。
 
 
-延迟端口发布使用 BPF 32-bit fetch-atomic acquire,需要内核解释器/JIT 支持该指令;上游 ARM64 的共同基线为 5.18,带 backport 的发行版仍须通过特权集成测试。验证覆盖 AMD64 与 ARM64 实机,其中 ARM64 使用 Linux 6.6。
+延迟发布在 AMD64/ARM64 上使用普通 BPF 读取和显式地址依赖,不使用 fetch-atomic 指令或 `-mcpu=v3`,保持原 Linux 5.10 基线。生成指令及内核重写后的指令必须保留 up 到读取地址的依赖,并在 up 后重新读取 InnerIP;通过特权报文与 TAP-FD 测试验证实际行为。
 
 ### 1.2 构建
 
