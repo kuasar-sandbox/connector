@@ -39,6 +39,7 @@ var (
 	attachTransitGeneveVNI  uint32
 	attachTransitGeneveOpts []string
 	attachTransitMACAddr    string
+	attachAdminDown         bool
 	attachSkipDevice        bool
 	attachOpenPort          bool
 )
@@ -52,6 +53,7 @@ func init() {
 	attachCmd.Flags().Uint32Var(&attachTransitGeneveVNI, "transit-geneve-vni", 0, "GENEVE VNI")
 	attachCmd.Flags().StringArrayVar(&attachTransitGeneveOpts, "transit-geneve-opt", nil, "Opaque outbound GENEVE option CLASS:TYPE:DATA (repeatable; DATA length must be a multiple of 4 bytes)")
 	attachCmd.Flags().StringVar(&attachTransitMACAddr, "transit-mac-addr", "", "Transit destination MAC address (default: broadcast)")
+	attachCmd.Flags().BoolVar(&attachAdminDown, "admin-down", false, "Keep attached port dataplane down until set-port-up")
 	attachCmd.Flags().BoolVar(&attachSkipDevice, "skip-device", false, "Skip port device movement (pure BPF slot operation, veth only)")
 	attachCmd.Flags().BoolVar(&attachOpenPort, "open-port", false, "Tap mode only: after slot allocation, send the tap fd via SCM_RIGHTS to $TAPFD_SOCKET (combines attach + open-port)")
 }
@@ -86,6 +88,7 @@ func runAttach(cmd *cobra.Command, args []string) error {
 		InnerIP:          innerIP,
 		TransitGeneveVNI: attachTransitGeneveVNI,
 		SkipDevice:       attachSkipDevice,
+		AdminDown:        attachAdminDown,
 	}
 	for i, value := range attachTransitGeneveOpts {
 		option, err := vswitch.ParseGeneveOption(value)

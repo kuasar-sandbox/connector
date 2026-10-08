@@ -30,6 +30,8 @@ type Interface interface {
 
 	// Attach allocates a port to a sandbox.
 	Attach(opts AttachOptions) (*AttachOutput, error)
+	// SetPortUp commits final configuration for a completed down attachment.
+	SetPortUp(opts PortUpOptions) error
 	// Reserve reserves a port slot.
 	Reserve(opts ReserveOptions) (*ReserveOutput, error)
 	// Detach releases a port from a sandbox.
@@ -61,6 +63,7 @@ type AttachOptions struct {
 	TransitGeneveVNI  uint32           // GENEVE VNI
 	TransitGeneveOpts []GeneveOption   `json:"transit_geneve_opts,omitempty"` // Opaque connector -> gateway GENEVE options
 	TransitMAC        net.HardwareAddr // Transit destination MAC (nil for broadcast)
+	AdminDown         bool             // Keep dataplane down after successful Attach
 	SkipDevice        bool             // --skip-device: pure BPF slot operation, skip all device movement/checks
 }
 
@@ -230,4 +233,15 @@ type MgmtServiceInfo struct {
 	TargetIP   string `json:"target_ip"`
 	TargetPort uint16 `json:"target_port"`
 	Protocols  string `json:"protocols"`
+}
+
+// PortUpOptions supplies the complete final configuration for a down attachment.
+// The caller must complete Attach before SetPortUp and not concurrently Detach.
+type PortUpOptions struct {
+	Port              int
+	InnerIP           net.IP
+	TransitGatewayIP  net.IP
+	TransitGeneveVNI  uint32
+	TransitGeneveOpts []GeneveOption
+	TransitMAC        net.HardwareAddr
 }

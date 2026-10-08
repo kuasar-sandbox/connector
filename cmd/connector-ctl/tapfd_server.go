@@ -295,6 +295,9 @@ func prepareAttachOptions(req *tapfd.Request) (vswitch.AttachOptions, error) {
 		return vswitch.AttachOptions{}, fmt.Errorf("invalid inner_ip %q", innerText)
 	}
 	opts := vswitch.AttachOptions{InnerIP: innerIP}
+	if down := requestField(req, "admin_down", "ADMIN_DOWN"); down != "" {
+		opts.AdminDown = down == "1" || strings.EqualFold(down, "true")
+	}
 	if generationText := requestField(req, "generation", "GENERATION"); generationText != "" {
 		generation, err := strconv.ParseUint(generationText, 10, 32)
 		if err != nil {

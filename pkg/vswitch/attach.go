@@ -199,7 +199,9 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	}
 	// Dataplane-up is the final publication step. All fallible preparation and
 	// every field consumed by TC is complete before this store.
-	atomic.StoreUint32(&s.mmapSlots.GetSlot(slotID).Flags, PortFUp)
+	if !opts.AdminDown {
+		atomic.StoreUint32(&s.mmapSlots.GetSlot(slotID).Flags, PortFUp)
+	}
 
 	// Calculate derived values
 	floatingIP := bpf.Uint32ToIP(FloatingIPForAttachment(cfg.FloatingIpBase, slotID, opts.Generation))
