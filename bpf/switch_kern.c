@@ -12,16 +12,37 @@
 #include "stats.h"
 
 
-// Acquire the userspace publication before reading final attachment fields.
-// On supported kernels a zero-mask atomic RMW is the portable BPF acquire
-// primitive: it preserves every flag bit and pairs with the userspace release
-// store. This is a packet-side visibility fence, not an attachment lock/claim.
-static __always_inline int slot_dataplane_up(struct slot_item *slot,
-                                            const struct switch_config *cfg)
+// The inline BPF immediates below are checked against the shared ABI.
+_Static_assert(__builtin_offsetof(struct slot_item, flags) == 60, "publication flag offset");
+_Static_assert(PORT_F_UP == 1, "publication flag mask");
+
+// Read the publication bit without a read-modify-write instruction. Keep the
+// load/mask opaque to LLVM: it must not replace a nonzero token with constant 1
+// after the branch and thereby erase the address dependency below.
+static __always_inline __u64 slot_publication_token(struct slot_item *slot,
+                                                   const struct switch_config *cfg)
 {
     if (!(cfg->features & SWITCH_F_PORT_UP))
-        return 1;
-    return (__sync_fetch_and_or(&slot->flags, 0) & PORT_F_UP) != 0;
+        return PORT_F_UP;
+    __u64 up;
+    asm volatile("%0 = *(u32 *)(%1 + 60); %0 &= 1;"
+                 : "=&r"(up) : "r"(slot) : "memory");
+    return up;
+}
+
+// Use a signed positive-range check at each call site: older verifiers do
+// not refine !=0 to exactly 1 after the opaque mask, but do refine >=1.
+// Called only after the token is positive. Its value is then exactly 1, so the
+// address is unchanged, but it depends on the actual publication load. AMD64
+// and ARM64 order these dependent reads after the userspace release store.
+// This is dependency ordering, not a general acquire barrier. Apply it to BOTH
+// the slot and the separate options-map value before consuming final fields.
+// Only baseline BPF load/ALU instructions are used; no fetch-atomic is needed.
+static __always_inline void *published_value(void *value, __u64 up)
+{
+    asm volatile("%0 += %1; %0 += -1;"
+                 : "+r"(value) : "r"(up) : "memory");
+    return value;
 }
 
 // Map definitions
@@ -267,8 +288,10 @@ int tc_ingress_nx(struct __sk_buff *skb)
     __u64 generation = stats_generation(slot_id);
     if (!slot || is_slot_free(slot->inner_ip))
         return TC_ACT_OK;
-    if (!slot_dataplane_up(slot, cfg))
+    __u64 publication = slot_publication_token(slot, cfg);
+    if ((__s64)publication <= 0)
         return TC_ACT_SHOT;
+    slot = published_value(slot, publication);
     if (cfg->generation_bits > 20 || slot->generation >= (1U << cfg->generation_bits))
         return TC_ACT_OK;
 
@@ -469,7 +492,10 @@ int tc_ingress_nx(struct __sk_buff *skb)
             (geneve_opts_len & 3) != 0)
             return TC_ACT_OK;
         user_opts = bpf_map_lookup_elem(&geneve_opts, &slot_id);
-        if (!user_opts || user_opts->len != geneve_opts_len ||
+        if (!user_opts)
+            return TC_ACT_OK;
+        user_opts = published_value(user_opts, publication);
+        if (user_opts->len != geneve_opts_len ||
             user_opts->len > MAX_GENEVE_OPTS_LEN ||
             (user_opts->len & 3) != 0 || user_opts->critical > 1)
             return TC_ACT_OK;
@@ -725,8 +751,10 @@ int tc_ingress_mx(struct __sk_buff *skb)
                 struct slot_item *slot = bpf_map_lookup_elem(&slots, &sid);
                 if (slot && slot->generation == attachment_generation &&
                     !is_slot_free(slot->inner_ip)) {
-                    if (!slot_dataplane_up(slot, cfg))
+                    __u64 publication = slot_publication_token(slot, cfg);
+                    if ((__s64)publication <= 0)
                         return TC_ACT_SHOT;
+                    slot = published_value(slot, publication);
                     get_port_mac(reply_mac, cfg, sid);
                     matched = 1;
                 }
@@ -767,12 +795,14 @@ int tc_ingress_mx(struct __sk_buff *skb)
     __u64 generation = stats_generation(slot_id);
     if (!slot || slot->generation != attachment_generation || is_slot_free(slot->inner_ip) || slot->ifindex == 0)
         return TC_ACT_OK;
-    if (!slot_dataplane_up(slot, cfg))
+    __u64 publication = slot_publication_token(slot, cfg);
+    if ((__s64)publication <= 0)
         return TC_ACT_SHOT;
+    slot = published_value(slot, publication);
 
     // Cache slot values
     // Do not reuse the provisional address read for the pre-gate state check.
-    // SetPortUp may have committed A -> B before the acquire above saw up.
+    // SetPortUp may have committed A -> B before the publication load above saw up.
     __u32 inner_ip = *(volatile __u32 *)&slot->inner_ip;
     __u32 target_ifindex = slot->ifindex;
 
@@ -1001,8 +1031,10 @@ int tc_ingress_transit(struct __sk_buff *skb)
     __u64 generation = stats_generation(slot_id);
     if (!slot || is_slot_free(slot->inner_ip) || slot->ifindex == 0)
         return TC_ACT_OK;
-    if (!slot_dataplane_up(slot, cfg))
+    __u64 publication = slot_publication_token(slot, cfg);
+    if ((__s64)publication <= 0)
         return TC_ACT_SHOT;
+    slot = published_value(slot, publication);
 
     __u32 target_ifindex = slot->ifindex;
     __u32 expected_vni = slot->transit_geneve_vni;

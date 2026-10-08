@@ -64,7 +64,7 @@ Product E2E uses the platform-owned runner: prebuilt products -> `e2e prepare` -
 
 Runtime requirements:
 
-- Linux 5.18 or newer with BTF and TC BPF support;
+- Linux 5.10 or newer with BTF and TC BPF support;
 - root or the equivalent required capabilities;
 - network namespaces, TAP, veth, routing, and TC support;
 - Go 1.26.1 or newer for source builds;

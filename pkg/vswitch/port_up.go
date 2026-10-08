@@ -98,7 +98,7 @@ func (s *switchContext) SetPortUp(opts PortUpOptions) error {
 }
 
 // The #81 dataplane understands up/down but may cache InnerIP before testing
-// up. Deferred A-to-B commit requires the acquire-ordered reader as well.
+// up. Deferred A-to-B commit requires an ordered publication reader as well.
 // This bit is in the existing config capability byte; no map/slot layout grows.
 func (s *switchContext) requireDeferredAttachmentABI() error {
 	if err := s.requireAttachmentABI(); err != nil {
