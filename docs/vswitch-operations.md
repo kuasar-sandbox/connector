@@ -8,10 +8,13 @@ Use this guide to build, configure, deploy, inspect and maintain a connector vSw
 
 ### 1.1 System requirements
 
-- Documented kernel baseline: Linux **5.10+**, with the needed TC/BPF features and BTF available at `/sys/kernel/btf/vmlinux`. Verify the actual kernel configuration and privileged tests; a version number alone is insufficient.
+- Documented kernel baseline: Linux **5.18+**, with the needed TC/BPF features and BTF available at `/sys/kernel/btf/vmlinux`. Verify the actual kernel configuration and privileged tests; a version number alone is insufficient.
 - bpffs mounted at `/sys/fs/bpf`, for example `mount -t bpf bpf /sys/fs/bpf`.
 - Root execution for the privileged BPF/network/namespace paths, with capability requirements discussed in [required privileges](vswitch.md#53-required-privileges).
 - **Go 1.26.1+** for building; regenerating BPF bytecode additionally needs **Clang/LLVM 12+**.
+
+
+Deferred publication requires BPF 32-bit fetch-atomic acquire support in the interpreter/JIT (upstream ARM64 common baseline: 5.18). Distribution backports must pass the privileged integration tests; validation here covers AMD64 and ARM64 (the ARM64 host runs Linux 6.6).
 
 ### 1.2 Build
 
@@ -171,7 +174,7 @@ connector-ctl vswitch stop sw1
 | Flag | Meaning |
 |---|---|
 | `--watch-interval` | Health-check interval, default 30s. |
-| `--tapfd-listen` | Persistent switch/TAPFD Unix socket. Accepts `TAPFD/1 PREPARE`, `OPEN`, `RELEASE`; OPEN returns `TAPFD/1 OK`, metadata and SCM_RIGHTS. See tapfd.md §4. |
+| `--tapfd-listen` | Persistent switch/TAPFD Unix socket. Accepts `TAPFD/1 PREPARE`, `OPEN`, `SET_PORT_UP`, `RELEASE`; OPEN returns `TAPFD/1 OK`, metadata and SCM_RIGHTS. See tapfd.md §4. |
 
 Example `start` output (illustrative configured values, not the result of the preceding 128-port command):
 
@@ -477,6 +480,21 @@ With `--config`, the positional switch name overrides the file's name, but ordin
 }
 ```
 
+
+### 2.15 `connector-ctl vswitch set-port-up`
+
+`attach --admin-down` returns an allocated port with traffic blocked (`admin_down: true`). Omit the flag for ordinary immediately-up Attach. A down TAP port still permits `open-port`/SCM_RIGHTS handoff. Then commit the entire final network configuration:
+
+```bash
+connector-ctl vswitch attach sw0 --port=3 --inner-ip=169.254.1.1 --admin-down
+# The owner may now hand off the TAP FD and prepare the guest's final address.
+connector-ctl vswitch set-port-up sw0 --port=3 --inner-ip=169.254.2.2 \
+  --transit-gateway-ip=10.0.0.2 --transit-geneve-vni=42 \
+  --transit-geneve-opt=0102:02:0000002a --transit-mac-addr=02:00:00:00:00:09
+connector-ctl vswitch show slots sw0 2
+```
+
+`--port` and `--inner-ip` are required. The transit flags are optional final values; omission clears provisional transit values/options. `set-port-up` returns success without reallocation or another FD. It rejects Free, Reserved and already-up ports. Preparation failures retain down; a lost success reply does not undo publication. Same-port calls must be ordered by the owner; no switch-wide lock is added. Detach accepts both up and completed down attachments. See [the architecture contract](vswitch.md#deferred-port-activation) and [TAPFD requests](tapfd.md#deferred-attachment-requests).
 
 ## 3. Troubleshooting
 

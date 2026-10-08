@@ -1157,6 +1157,7 @@ func (m *mockSwitch) Reserve(_ vswitch.ReserveOptions) (*vswitch.ReserveOutput, 
 	return nil, nil
 }
 func (m *mockSwitch) Detach(_ vswitch.DetachOptions) error        { return nil }
+func (m *mockSwitch) SetPortUp(_ vswitch.PortUpOptions) error     { return nil }
 func (m *mockSwitch) Stats(_ []int) (*vswitch.StatsOutput, error) { return nil, nil }
 func (m *mockSwitch) Ports(_ bool) []vswitch.PortSlot             { return nil }
 

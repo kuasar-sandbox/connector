@@ -46,6 +46,7 @@ _Static_assert(MAX_PORTS == (1U << GENEVE_VNI_LOCATOR_BITS),
 // Free/Reserved slots; Attach publishes PORT_F_UP only after preparation.
 #define PORT_F_UP       (1U << 0)
 #define SWITCH_F_PORT_UP (1U << 0)
+#define SWITCH_F_DEFERRED_UP (1U << 1) // acquire-ordered final configuration reads
 #define ETH_P_IP 0x0800
 #define ETH_P_ARP 0x0806
 #define ETH_P_IPV6 0x86DD
@@ -211,6 +212,7 @@ enum exported_u32 {
     __PORT_KIND_TAP = PORT_KIND_TAP,
     __PORT_F_UP = PORT_F_UP,
     __SWITCH_F_PORT_UP = SWITCH_F_PORT_UP,
+    __SWITCH_F_DEFERRED_UP = SWITCH_F_DEFERRED_UP,
     __MAX_GENEVE_OPTS_LEN = MAX_GENEVE_OPTS_LEN,
     __GENEVE_PORT = GENEVE_PORT,
     __GENEVE_LOCATOR_PORT = GENEVE_LOCATOR_PORT,

@@ -435,6 +435,20 @@ transit device eth1 MTU 1570 is too small for port sw0-n1:
 
 For transit auto-addressing, StartReserved runs DHCP after bringing transit up. Router Option 3 is used when present. Otherwise the implementation infers the subnet's first usable address, for example 192.168.1.100/24 → 192.168.1.1, and logs that fallback. This supports DHCP servers that omit a router, but the heuristic does not prove a router actually exists there; configure an explicit gateway when the network differs.
 
+### Deferred port activation
+
+The existing up bit is read with an acquire-ordered zero-mask atomic operation, and management DNAT reloads InnerIP after this gate. This prevents both compiler reuse of provisional A and weakly ordered reads of final fields. No new slot field or attachment lock is added. The existing config capability byte advertises `SWITCH_F_DEFERRED_UP`; AdminDown/SetPortUp reject older readers (including a retained #81 switch) before mutation and require managed recreation. Ordinary Attach on a #81-compatible switch is unchanged.
+
+`AttachOptions.AdminDown` defaults to false. With true, Attach still allocates the port, prepares its complete initial configuration, initializes its statistics instance and returns the normal resources, but leaves `PORT_F_UP` clear. This is **Allocated/down**, not Free or Reserved. The provisional InnerIP must be IPv4 and cannot be either ownership sentinel (0.0.0.0 or 255.255.255.255).
+
+After Attach returns, the owner may hand off the TAP FD, then call `SetPortUp(PortUpOptions)` to replace the complete final InnerIP/transit/GENEVE configuration and publish up last. Nil gateway/MAC, VNI zero and empty options replace/clear provisional values rather than retaining them. GENEVE locator/VNI/options and nonzero wire-option MTU constraints are the same as Attach. An up port is rejected; there is no live-update or SetPortDown operation.
+
+InnerIP may change A→B without changing the slot, ifindex, TAP device/FD, port MAC, caller attachment generation, or statistics counter generation/readiness. FloatingIP remains `floating_ip_base + (generation << 12) + slot_id`. `SetPortUp` never resets statistics. Down traffic is not counted; the existing Stats API reports unavailable while down, not fabricated zeros. A failed Attach counter reset remains unavailable after SetPortUp.
+
+Same-attachment calls are sequential: wait for Attach, then SetPortUp, then Detach; do not overlap two SetPortUp calls or use Detach to cancel one. Different slots remain concurrent. SetPortUp takes no EX/SH/per-slot lock and adds no CONFIGURING state or owner token. Administrative takeover remains allowed, and Reserved→Free retains its strict management boundary. Checks detect observed takeover; they are not an atomic transaction with management.
+
+Validation/map/MTU failures leave the attachment down for retry or Detach. A lost response after successful up publication is not rollback: inspect `show slots` (`admin_down: true` only while an allocated port is down) before deciding how to recover. The FD metadata is a handoff-time snapshot; updating connector InnerIP does not configure the guest. The owner must align guest configuration through its runtime channel before enabling traffic, not through the blocked management path. Old pinned switches remain rejected for attachment operations; old TAPFD providers are not supported by this deferred flow.
+
 ## 5. Security and isolation
 
 ### 5.1 Threat model

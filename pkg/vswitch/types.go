@@ -10,7 +10,8 @@ import (
 // Use Open() to obtain an instance.
 // Independent slots and competing allocations may run concurrently. For one
 // attachment, callers wait for Attach to return before using its handle or
-// calling Detach, and wait for Detach before reusing that handle. Detach is not
+// calling SetPortUp/Detach. SetPortUp and Detach on that attachment do not overlap;
+// wait for Detach before reusing that handle. Detach is not
 // cancellation of an in-flight Attach. Administrative takeover is separate and
 // may interrupt attachment work; no switch-wide attachment lock is acquired.
 type Interface interface {
@@ -30,6 +31,8 @@ type Interface interface {
 
 	// Attach allocates a port to a sandbox.
 	Attach(opts AttachOptions) (*AttachOutput, error)
+	// SetPortUp commits final configuration for a completed down attachment.
+	SetPortUp(opts PortUpOptions) error
 	// Reserve reserves a port slot.
 	Reserve(opts ReserveOptions) (*ReserveOutput, error)
 	// Detach releases a port from a sandbox.
@@ -61,6 +64,7 @@ type AttachOptions struct {
 	TransitGeneveVNI  uint32           // GENEVE VNI
 	TransitGeneveOpts []GeneveOption   `json:"transit_geneve_opts,omitempty"` // Opaque connector -> gateway GENEVE options
 	TransitMAC        net.HardwareAddr // Transit destination MAC (nil for broadcast)
+	AdminDown         bool             // Keep dataplane down after successful Attach
 	SkipDevice        bool             // --skip-device: pure BPF slot operation, skip all device movement/checks
 }
 
@@ -72,6 +76,7 @@ type ReserveOptions struct {
 
 // AttachOutput represents the JSON output of the attach command.
 type AttachOutput struct {
+	AdminDown        bool   `json:"admin_down,omitempty"` // Explicitly deferred, still Allocated
 	Port             uint32 `json:"port"`
 	Generation       uint32 `json:"generation,omitempty"`
 	GenerationBits   uint8  `json:"generation_bits,omitempty"`
@@ -230,4 +235,17 @@ type MgmtServiceInfo struct {
 	TargetIP   string `json:"target_ip"`
 	TargetPort uint16 `json:"target_port"`
 	Protocols  string `json:"protocols"`
+}
+
+// PortUpOptions supplies the complete final configuration for a down attachment.
+// Nil/zero transit values replace (clear) provisional values. Generation, TAP,
+// MAC identity and statistics instance stay unchanged. The caller completes
+// Attach first and does not overlap SetPortUp with another SetPortUp or Detach.
+type PortUpOptions struct {
+	Port              int
+	InnerIP           net.IP
+	TransitGatewayIP  net.IP
+	TransitGeneveVNI  uint32
+	TransitGeneveOpts []GeneveOption
+	TransitMAC        net.HardwareAddr
 }

@@ -2,6 +2,7 @@ package vswitch
 
 import (
 	"fmt"
+	"net"
 	"sync/atomic"
 
 	"github.com/cilium/ebpf"
@@ -26,7 +27,7 @@ func Attach(switchName string, opts AttachOptions) (*AttachOutput, error) {
 // cleanup of old instances remain available through Open/Status/Stop.
 func (s *switchContext) requireAttachmentABI() error {
 	if s.cfg.Features&SwitchFPortUp == 0 {
-		return fmt.Errorf("switch %s lacks PORT_F_UP support; rebuild the switch before attach/detach", s.name)
+		return fmt.Errorf("switch %s lacks PORT_F_UP support; rebuild the switch before attachment operations", s.name)
 	}
 	if s.maps == nil || s.maps.GeneveOpts == nil {
 		return fmt.Errorf("PORT_F_UP switch is missing its required geneve_opts map; rebuild the switch")
@@ -55,9 +56,9 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	if err != nil {
 		return nil, err
 	}
-	innerIP := bpf.IPToUint32(opts.InnerIP)
-	if innerIP == 0 {
-		return nil, fmt.Errorf("inner-ip cannot be 0.0.0.0")
+	innerIP, err := validateAttachmentAddresses(opts.InnerIP, opts.TransitGatewayIP, opts.TransitMAC)
+	if err != nil {
+		return nil, err
 	}
 	if cfg.GenerationBits == 0 {
 		if opts.Generation != 0 {
@@ -68,6 +69,11 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	}
 	if err := s.requireAttachmentABI(); err != nil {
 		return nil, err
+	}
+	if opts.AdminDown {
+		if err := s.requireDeferredAttachmentABI(); err != nil {
+			return nil, err
+		}
 	}
 
 	// CAS alone acquires slot ownership. Contenders must not write any
@@ -199,7 +205,9 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 	}
 	// Dataplane-up is the final publication step. All fallible preparation and
 	// every field consumed by TC is complete before this store.
-	atomic.StoreUint32(&s.mmapSlots.GetSlot(slotID).Flags, PortFUp)
+	if !opts.AdminDown {
+		atomic.StoreUint32(&s.mmapSlots.GetSlot(slotID).Flags, PortFUp)
+	}
 
 	// Calculate derived values
 	floatingIP := bpf.Uint32ToIP(FloatingIPForAttachment(cfg.FloatingIpBase, slotID, opts.Generation))
@@ -211,6 +219,7 @@ func (s *switchContext) Attach(opts AttachOptions) (*AttachOutput, error) {
 
 	out := &AttachOutput{
 		Port:           slotID + 1,
+		AdminDown:      opts.AdminDown,
 		Generation:     opts.Generation,
 		GenerationBits: cfg.GenerationBits,
 		PortDev:        portName,
@@ -456,4 +465,26 @@ func (s *switchContext) Detach(opts DetachOptions) error {
 	}
 
 	return nil
+}
+
+// validateAttachmentAddresses is shared by provisional Attach and final SetPortUp.
+// InnerIP also encodes allocation state, so neither control sentinel is an address.
+func validateAttachmentAddresses(inner, gateway net.IP, mac net.HardwareAddr) (uint32, error) {
+	if inner.To4() == nil {
+		return 0, fmt.Errorf("inner-ip must be an IPv4 address")
+	}
+	ip := bpf.IPToUint32(inner)
+	if ip == InnerIPFree {
+		return 0, fmt.Errorf("inner-ip cannot be 0.0.0.0")
+	}
+	if ip == InnerIPReserved {
+		return 0, fmt.Errorf("inner-ip cannot be 255.255.255.255 (Reserved)")
+	}
+	if len(gateway) != 0 && gateway.To4() == nil {
+		return 0, fmt.Errorf("transit-gateway-ip must be an IPv4 address")
+	}
+	if len(mac) != 0 && len(mac) != 6 {
+		return 0, fmt.Errorf("transit MAC must contain exactly 6 bytes")
+	}
+	return ip, nil
 }

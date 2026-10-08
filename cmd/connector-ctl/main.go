@@ -36,6 +36,7 @@ func init() {
 	vswitchCmd.AddCommand(startCmd)
 	vswitchCmd.AddCommand(stopCmd)
 	vswitchCmd.AddCommand(attachCmd)
+	vswitchCmd.AddCommand(setPortUpCmd)
 	vswitchCmd.AddCommand(reserveCmd)
 	vswitchCmd.AddCommand(detachCmd)
 	vswitchCmd.AddCommand(statusCmd)

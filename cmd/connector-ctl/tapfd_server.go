@@ -198,6 +198,8 @@ func handleTapFDConn(conn *net.UnixConn, switchName string, sw vswitch.Interface
 		handleTapFDOpen(conn, switchName, sw, switchNs, req)
 	case tapfd.RequestOpRelease:
 		handleTapFDRelease(conn, sw, req)
+	case tapfd.RequestOpSetPortUp:
+		handleTapFDSetPortUp(conn, sw, req)
 	default:
 		sendTapFDError(conn, tapfd.ErrorCodeBadRequest, fmt.Errorf("unsupported request op %q", req.Op))
 	}
@@ -237,6 +239,9 @@ func handleTapFDPrepare(conn *net.UnixConn, sw vswitch.Interface, req *tapfd.Req
 	if out.GenerationBits > 0 {
 		response = fmt.Sprintf("port=%d generation=%d floating_ip=%s mac=%s ip=%s mode=%s",
 			out.Port, out.Generation, out.FloatingIP, out.PortMAC, out.InnerIP, out.Mode)
+	}
+	if out.AdminDown {
+		response += " admin_down=1"
 	}
 	if err := sendTapFDOK(conn, response); err != nil {
 		// The client never received the allocated port number and therefore cannot
@@ -295,6 +300,16 @@ func prepareAttachOptions(req *tapfd.Request) (vswitch.AttachOptions, error) {
 		return vswitch.AttachOptions{}, fmt.Errorf("invalid inner_ip %q", innerText)
 	}
 	opts := vswitch.AttachOptions{InnerIP: innerIP}
+	for _, key := range []string{"admin_down", "ADMIN_DOWN"} {
+		if down, exists := req.Fields[key]; exists {
+			value, err := strconv.ParseBool(down)
+			if err != nil {
+				return vswitch.AttachOptions{}, fmt.Errorf("invalid admin_down %q: %w", down, err)
+			}
+			opts.AdminDown = value
+			break
+		}
+	}
 	if generationText := requestField(req, "generation", "GENERATION"); generationText != "" {
 		generation, err := strconv.ParseUint(generationText, 10, 32)
 		if err != nil {
@@ -404,4 +419,33 @@ func requestField(req *tapfd.Request, names ...string) string {
 		}
 	}
 	return ""
+}
+
+// SET_PORT_UP completes the same attachment; it neither allocates nor hands out
+// another FD. A lost success response must not detach the now-published port.
+func handleTapFDSetPortUp(conn *net.UnixConn, sw vswitch.Interface, req *tapfd.Request) {
+	port, err := strconv.Atoi(requestField(req, "port", "PORT"))
+	if err != nil || port <= 0 {
+		sendTapFDError(conn, tapfd.ErrorCodePortInvalid, fmt.Errorf("invalid port"))
+		return
+	}
+	for _, key := range []string{"generation", "GENERATION", "admin_down", "ADMIN_DOWN"} {
+		if _, exists := req.Fields[key]; exists {
+			sendTapFDError(conn, tapfd.ErrorCodeBadRequest, fmt.Errorf("%s is not a SET_PORT_UP field", key))
+			return
+		}
+	}
+	network, err := prepareAttachOptions(req)
+	if err != nil {
+		sendTapFDError(conn, tapfd.ErrorCodeBadRequest, err)
+		return
+	}
+	opts := vswitch.PortUpOptions{Port: port, InnerIP: network.InnerIP,
+		TransitGatewayIP: network.TransitGatewayIP, TransitGeneveVNI: network.TransitGeneveVNI,
+		TransitGeneveOpts: network.TransitGeneveOpts, TransitMAC: network.TransitMAC}
+	if err := sw.SetPortUp(opts); err != nil {
+		sendTapFDError(conn, tapFDErrorCode(err), err)
+		return
+	}
+	_ = sendTapFDOK(conn, fmt.Sprintf("port=%d admin_down=0", port))
 }

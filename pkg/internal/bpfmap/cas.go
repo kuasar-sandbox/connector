@@ -78,3 +78,13 @@ func (m *MmappedSlots) GetInnerIP(slotID uint32) uint32 {
 	}
 	return atomic.LoadUint32(ptr)
 }
+
+// TryUpdateInnerIP changes the address of an already allocated, down port.
+// It never transitions through Free or Reserved.
+func (m *MmappedSlots) TryUpdateInnerIP(slotID, oldIP, newIP uint32) bool {
+	if !IsSlotAllocated(oldIP) || !IsSlotAllocated(newIP) {
+		return false
+	}
+	ptr := m.getInnerIPPtr(slotID)
+	return ptr != nil && atomic.CompareAndSwapUint32(ptr, oldIP, newIP)
+}

@@ -61,7 +61,7 @@ make test-source-checks          # race、真实 pinned-BPF 统计和 vet；需�
 
 运行要求:
 
-- Linux 5.10 或更新版本,支持 BTF 和 TC BPF;
+- Linux 5.18 或更新版本,支持 BTF 和 TC BPF;
 - root 或等效的必要 capabilities;
 - network namespace、TAP、veth、路由及 TC 支持;
 - 源码构建需要 Go 1.26.1 或更新版本;

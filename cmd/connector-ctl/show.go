@@ -48,6 +48,7 @@ func init() {
 
 // SlotJSON is the JSON-friendly view of a single port slot.
 type SlotJSON struct {
+	AdminDown        bool   `json:"admin_down,omitempty"`
 	SlotID           uint32 `json:"slot_id"`
 	Port             int    `json:"port"`
 	State            string `json:"state"` // "free", "reserved", "allocated"
@@ -149,6 +150,7 @@ func slotToJSON(cfg *vswitch.SwitchConfig, ps vswitch.PortSlot, sid uint32) Slot
 		TransitGeneveVNI: ps.TransitGeneveVni,
 	}
 	if ps.Allocated {
+		sj.AdminDown = cfg.Features&vswitch.SwitchFPortUp != 0 && ps.Flags&vswitch.PortFUp == 0
 		sj.GeneveOptsLen = vswitch.GeneveTotalOptionsLen(vswitch.GeneveLocatorFromSwitchConfig(cfg), ps.GeneveOptsLen)
 	}
 	if ps.TransitIp != 0 {

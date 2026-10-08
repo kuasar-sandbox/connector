@@ -22,6 +22,7 @@ var (
 	vswitchStatus       = vswitch.Status
 	vswitchStats        = vswitch.Stats
 	vswitchAttach       = vswitch.Attach
+	vswitchSetPortUp    = vswitch.SetPortUp
 	vswitchReserve      = vswitch.Reserve
 	vswitchDetach       = vswitch.Detach
 
