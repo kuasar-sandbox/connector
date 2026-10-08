@@ -24,6 +24,7 @@ const (
 	vswitchExportedU32PORT_KIND_TAP           vswitchExportedU32 = 1
 	vswitchExportedU32PORT_F_UP               vswitchExportedU32 = 1
 	vswitchExportedU32SWITCH_F_PORT_UP        vswitchExportedU32 = 1
+	vswitchExportedU32SWITCH_F_DEFERRED_UP    vswitchExportedU32 = 2
 	vswitchExportedU32MAX_GENEVE_OPTS_LEN     vswitchExportedU32 = 64
 	vswitchExportedU32GENEVE_PORT             vswitchExportedU32 = 6081
 	vswitchExportedU32GENEVE_LOCATOR_PORT     vswitchExportedU32 = 0

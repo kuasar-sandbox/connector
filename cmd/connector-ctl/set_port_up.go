@@ -2,12 +2,20 @@ package main
 
 import (
 	"fmt"
-	"github.com/kuasar-sandbox/connector/pkg/vswitch"
-	"github.com/spf13/cobra"
 	"net"
+
+	"github.com/spf13/cobra"
+
+	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
 
-var setPortUpCmd = &cobra.Command{Use: "set-port-up <switch_name>", Short: "Commit final configuration and bring an attached down port up", Args: cobra.ExactArgs(1), RunE: runSetPortUp}
+var setPortUpCmd = &cobra.Command{
+	Use:   "set-port-up <switch_name>",
+	Short: "Commit final configuration and bring an attached down port up",
+	Long:  "Replace the full network configuration of a completed down attachment and enable traffic. Omitted transit fields clear provisional values; an already-up port is rejected.",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runSetPortUp,
+}
 var upPort int
 var upInnerIP, upGateway, upMAC string
 var upVNI uint32
@@ -37,18 +45,18 @@ func runSetPortUp(_ *cobra.Command, args []string) error {
 		}
 	}
 	if upMAC != "" {
-		mac, e := net.ParseMAC(upMAC)
-		if e != nil {
-			return e
+		mac, err := net.ParseMAC(upMAC)
+		if err != nil {
+			return err
 		}
 		o.TransitMAC = mac
 	}
 	for _, v := range upOpts {
-		x, e := vswitch.ParseGeneveOption(v)
-		if e != nil {
-			return e
+		option, err := vswitch.ParseGeneveOption(v)
+		if err != nil {
+			return err
 		}
-		o.TransitGeneveOpts = append(o.TransitGeneveOpts, x)
+		o.TransitGeneveOpts = append(o.TransitGeneveOpts, option)
 	}
-	return vswitch.SetPortUp(args[0], o)
+	return vswitchSetPortUp(args[0], o)
 }

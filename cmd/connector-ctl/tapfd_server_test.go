@@ -281,6 +281,9 @@ type fakeVSwitch struct {
 	continueAttach chan struct{}
 	detachOpts     vswitch.DetachOptions
 	detachErr      error
+	upOpts         vswitch.PortUpOptions
+	upErr          error
+	upCalls        int
 }
 
 func (f *fakeVSwitch) Config() *vswitch.SwitchConfig { return f.config }
@@ -297,6 +300,12 @@ func (f *fakeVSwitch) Attach(opts vswitch.AttachOptions) (*vswitch.AttachOutput,
 func (f *fakeVSwitch) Detach(opts vswitch.DetachOptions) error {
 	f.detachOpts = opts
 	return f.detachErr
+}
+
+func (f *fakeVSwitch) SetPortUp(opts vswitch.PortUpOptions) error {
+	f.upOpts = opts
+	f.upCalls++
+	return f.upErr
 }
 
 func unixSocketPair(t *testing.T) (*net.UnixConn, *net.UnixConn) {

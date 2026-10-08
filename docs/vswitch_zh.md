@@ -553,6 +553,20 @@ transit device eth1 MTU 1570 is too small for port sw0-n1:
 `192.168.1.100/24` → `192.168.1.1`)并打印提示——处理私有 DHCP 服务器只下发 IP 不
 下发网关的情况。但推算不证明该地址确有 router;网络不符合该假设时应配置显式 gateway。
 
+### 延迟启用端口
+
+数据面通过零掩码原子操作以 acquire 顺序读取现有 up 位,管理 DNAT 在其后重新读取 InnerIP,避免复用临时 A 或弱内存序读取半成品。没有新增 slot 字段或 attachment 锁。现有 config capability byte 增加 `SWITCH_F_DEFERRED_UP`;AdminDown/SetPortUp 在修改前拒绝旧读侧(包括未重建的 #81 switch),要求管理重建。#81 实例上的普通 Attach 不变。
+
+`AttachOptions.AdminDown` 默认 false。为 true 时,Attach 仍分配端口、完成初始配置、初始化本 attachment 的统计实例并返回正常资源,但不发布 `PORT_F_UP`。它是 **Allocated/down**,不是 Free 或 Reserved。初始 InnerIP 必须是 IPv4,且不能为表示归属状态的 0.0.0.0 或 255.255.255.255。
+
+Attach 返回后,owner 可先交付 TAP FD,再调用 `SetPortUp(PortUpOptions)` 完整替换最终 InnerIP/transit/GENEVE 配置,最后发布 up。nil gateway/MAC、VNI=0 和空 options 表示替换/清空初始值,不是保留旧值的补丁。复用 Attach 的 locator/VNI/options 及非零 wire-option MTU 约束。已 up 端口直接拒绝,不提供在线更新或 SetPortDown。
+
+InnerIP A→B 不改变 slot、ifindex、TAP 设备/FD、端口 MAC、调用方 attachment generation,也不改变统计 counter generation/readiness。FloatingIP 仍为 `floating_ip_base + (generation << 12) + slot_id`。SetPortUp 不重置统计;down 流量不计数,现有 Stats 在 down 时返回不可用,而非伪造零值。Attach 统计重置失败时,SetPortUp 不会将旧计数变成有效观测。
+
+同一 attachment 由 owner 顺序调用:等待 Attach 返回,再 SetPortUp,再 Detach;不能重叠两个 SetPortUp 或用 Detach 取消执行中的 SetPortUp。不同 slot 可并发。SetPortUp 不持 EX/SH/per-slot 锁,不增加 CONFIGURING 或 owner token。管理接管仍允许,Reserved→Free 仍有严格管理边界;归属检查用于检测已观察到的接管,不是与管理操作组成原子事务。
+
+参数/map/MTU 失败保留 down,可重试或 Detach。成功发布后响应丢失不是回滚:可通过 `show slots` 检查(已分配且 down 时输出 `admin_down: true`)。已交付 FD metadata 是交付时快照,修改 connector InnerIP 不会自动配置 guest。owner 应通过 runtime 通道先使 guest 配置与最终地址一致,不能依赖被阻断的管理网络。旧 pinned switch 仍不支持 attachment 操作;延迟启用流程不支持旧 TAPFD provider。
+
 ## 5. 安全与隔离
 
 ### 5.1 威胁模型

@@ -56,10 +56,11 @@ const (
 type PortKind uint8
 
 const (
-	PortKindVeth  PortKind = PortKind(vswitchExportedU32PORT_KIND_VETH) // 0 - default
-	PortKindTap   PortKind = PortKind(vswitchExportedU32PORT_KIND_TAP)  // 1 - tap (sandbox sees fd)
-	PortFUp                = uint32(vswitchExportedU32PORT_F_UP)
-	SwitchFPortUp          = uint8(vswitchExportedU32SWITCH_F_PORT_UP)
+	PortKindVeth      PortKind = PortKind(vswitchExportedU32PORT_KIND_VETH) // 0 - default
+	PortKindTap       PortKind = PortKind(vswitchExportedU32PORT_KIND_TAP)  // 1 - tap (sandbox sees fd)
+	PortFUp                    = uint32(vswitchExportedU32PORT_F_UP)
+	SwitchFPortUp              = uint8(vswitchExportedU32SWITCH_F_PORT_UP)
+	SwitchFDeferredUp          = uint8(vswitchExportedU32SWITCH_F_DEFERRED_UP)
 )
 
 // String returns a stable short label for the port kind.

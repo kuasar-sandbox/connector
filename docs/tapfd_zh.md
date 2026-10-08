@@ -217,7 +217,7 @@ TAPFD/1 OPEN want_netns=1 VSWITCH=sw0 PORT=3\n
 TAPFD/1 RELEASE VSWITCH=sw0 PORT=3\n
 ```
 
-- `TAPFD/1` 是协议版本。操作包括 `INFO`、`PREPARE`、`OPEN`、`RELEASE`。
+- `TAPFD/1` 是协议版本。操作包括 `INFO`、`PREPARE`、`OPEN`、`SET_PORT_UP`、`RELEASE`。
 - `INFO` 为只读能力查询,当前返回 `generation_bits=<n>`,不分配或修改 slot。
 - `PREPARE` 分配并配置一个后续可 `OPEN` 的 port slot。`connector-ctl vswitch serve`
   接受 `INNER_IP`、调用方可选 `GENERATION` 以及可选 `TRANSIT_GATEWAY_IP`、`TRANSIT_GENEVE_VNI`、
@@ -265,7 +265,24 @@ TAPFD/1 ERR code=PORT_UNAVAILABLE message=port_not_attached\n
 `PORT_UNAVAILABLE`、`PROVIDER_INTERNAL`。收到 `ERR` 时 consumer **不得**启用网卡。
 
 `connector-ctl vswitch serve --tapfd-listen /run/kuasar/connector/sw0/tapfd.sock`
-是本模式的参考 provider。它在同一个常驻 switch handle 上完成 `INFO`/`PREPARE`/`OPEN`/`RELEASE`,避免热路径反复 fork/exec 和重新打开 pinned BPF maps。
+是本模式的参考 provider。它在同一个常驻 switch handle 上完成 `INFO`/`PREPARE`/`OPEN`/`SET_PORT_UP`/`RELEASE`,避免热路径反复 fork/exec 和重新打开 pinned BPF maps。
+
+### 延迟启用请求
+
+当前 provider 支持在同一 attachment 上顺序执行:
+
+```text
+TAPFD/1 PREPARE VSWITCH=sw0 INNER_IP=169.254.1.1 ADMIN_DOWN=1
+TAPFD/1 OPEN VSWITCH=sw0 PORT=3
+TAPFD/1 SET_PORT_UP VSWITCH=sw0 PORT=3 INNER_IP=169.254.2.2 TRANSIT_GATEWAY_IP=10.0.0.2 TRANSIT_GENEVE_VNI=42
+TAPFD/1 RELEASE VSWITCH=sw0 PORT=3
+```
+
+实际 PORT 使用 PREPARE 返回值,此处以 3 举例。`ADMIN_DOWN`/`admin_down` 接受 1/true、0/false 等明确布尔值,省略默认 false,非法值和空值报错。延迟 PREPARE 响应附带 `admin_down=1`。down 时 OPEN 仍交付已有 TAP FD;metadata 的 `ip` 是交付时快照,之后不会自动修改。
+
+SET_PORT_UP 必须包含 PORT 和最终 INNER_IP,支持 PREPARE 的 transit gateway/VNI/options/MAC 参数。网络字段为完整替换,省略的 transit 值会清空;GENERATION 与 ADMIN_DOWN 不是 SET_PORT_UP 字段。成功返回 `TAPFD/1 OK port=3 admin_down=0`,不交付 FD。状态/校验失败返回 ERR,不释放端口;成功提交后响应丢失也不回滚。owner 不得重叠同 attachment 请求,管理接管仍允许。guest 的最终网络配置由 owner 在 up 前通过独立 runtime 通道完成。
+
+此流程要求使用支持它的 provider,不支持旧 TAPFD server,也不增加能力协商或回退。特别是不能把 ADMIN_DOWN 发送到可能静默忽略未知字段的旧 server。
 
 ## 5. 生命周期与幂等
 

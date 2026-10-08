@@ -17,6 +17,12 @@ func resetDeps() {
 	vswitchStatus = vswitch.Status
 	vswitchStats = vswitch.Stats
 	vswitchAttach = vswitch.Attach
+	vswitchSetPortUp = vswitch.SetPortUp
+	attachAdminDown = false
+	upPort = 0
+	upInnerIP, upGateway, upMAC = "", "", ""
+	upVNI = 0
+	upOpts = nil
 	vswitchReserve = vswitch.Reserve
 	vswitchDetach = vswitch.Detach
 	vswitchReleasePorts = vswitch.ReleasePorts

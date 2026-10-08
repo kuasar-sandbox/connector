@@ -22,7 +22,7 @@ import (
 //
 //	port      1-based port number (slot_id + 1)
 //	mac       per-port MAC the sandbox/VMM must configure on its virtio-net device
-//	ip        sandbox inner IP that was assigned by 'attach' (open-port requires attached)
+//	ip        current inner IP snapshot at handoff; may change later via SetPortUp
 //	fd        number of tap-queue file descriptors included in the SCM_RIGHTS
 //	          ancillary (always 1 today; reserved for future multi-queue support)
 //	netns_fd  number of trailing netns fds appended after the tap fds (0 or 1;

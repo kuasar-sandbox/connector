@@ -8,11 +8,14 @@
 
 ### 1.1 系统要求
 
-- 文档基线为 Linux **5.10+**,需相应 TC/BPF 配置,且 `/sys/kernel/btf/vmlinux`
+- 文档基线为 Linux **5.18+**,需相应 TC/BPF 配置,且 `/sys/kernel/btf/vmlinux`
   可访问。应验证实际内核配置与特权测试,版本号本身不足以保证可用。
 - bpffs 挂载在 `/sys/fs/bpf`(`mount -t bpf bpf /sys/fs/bpf`)。
 - 特权路径以具有所需能力的 root 运行;能力裁剪条件见 [§5.3](vswitch_zh.md#53-所需权限)。
 - 构建:**Go 1.26.1+**;重新生成 eBPF 字节码额外需 **Clang/LLVM 12+**。
+
+
+延迟端口发布使用 BPF 32-bit fetch-atomic acquire,需要内核解释器/JIT 支持该指令;上游 ARM64 的共同基线为 5.18,带 backport 的发行版仍须通过特权集成测试。验证覆盖 AMD64 与 ARM64 实机,其中 ARM64 使用 Linux 6.6。
 
 ### 1.2 构建
 
@@ -190,7 +193,7 @@ connector-ctl vswitch stop sw1
 | 参数 | 说明 |
 | --- | --- |
 | `--watch-interval` | 健康检查间隔,默认 30s |
-| `--tapfd-listen` | 持久 vswitch/tapfd UDS。支持 `TAPFD/1 PREPARE` / `OPEN` / `RELEASE`;`OPEN` 返回 `TAPFD/1 OK` + metadata + SCM_RIGHTS;详见 [tapfd_zh.md](tapfd_zh.md) §4 |
+| `--tapfd-listen` | 持久 vswitch/tapfd UDS。支持 `TAPFD/1 PREPARE` / `OPEN` / `SET_PORT_UP` / `RELEASE`;`OPEN` 返回 `TAPFD/1 OK` + metadata + SCM_RIGHTS;详见 [tapfd_zh.md](tapfd_zh.md) §4 |
 
 `start` 示例输出(值用于展示,不是前面 128-port 命令的实际结果):
 
@@ -527,6 +530,21 @@ slot 操作用 `provision --mode`。所有管理 plane 的 CIDR **总数应不�
 ABI 只有三个位置,当前 provision 达上限便停止写入。JSON 解析成功不证明更多路由
 已进入数据面;部署检查应读取实际 slots。
 
+
+### 2.15 `connector-ctl vswitch set-port-up`
+
+`attach --admin-down` 返回已分配但流量阻断的端口(`admin_down: true`);省略此标志仍为普通立即 up 的 Attach。down TAP 端口可以正常 open-port/交付 FD,随后一次性提交最终配置:
+
+```bash
+connector-ctl vswitch attach sw0 --port=3 --inner-ip=169.254.1.1 --admin-down
+# owner 此时可交付 TAP FD,并通过 runtime 通道准备 guest 的最终地址。
+connector-ctl vswitch set-port-up sw0 --port=3 --inner-ip=169.254.2.2 \
+  --transit-gateway-ip=10.0.0.2 --transit-geneve-vni=42 \
+  --transit-geneve-opt=0102:02:0000002a --transit-mac-addr=02:00:00:00:00:09
+connector-ctl vswitch show slots sw0 2
+```
+
+`--port` 与 `--inner-ip` 必填;transit 参数是可选的最终值,省略表示清空初始值/options。set-port-up 不重新分配端口或交付 FD,拒绝 Free、Reserved 和已 up 端口。准备失败保留 down,成功后的响应丢失不回滚发布。owner 必须顺序调用同端口操作,没有新全局锁。Detach 同时接受 up 和已完成的 down attachment。参见[架构约束](vswitch_zh.md#延迟启用端口)及[TAPFD 请求](tapfd_zh.md#延迟启用请求)。
 
 ## 3. 故障排除
 

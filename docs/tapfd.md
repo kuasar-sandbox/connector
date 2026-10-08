@@ -157,7 +157,7 @@ TAPFD/1 OPEN want_netns=1 VSWITCH=sw0 PORT=3\n
 TAPFD/1 RELEASE VSWITCH=sw0 PORT=3\n
 ```
 
-- `TAPFD/1` is the protocol version. Operations are `INFO`, `PREPARE`, `OPEN` and `RELEASE`.
+- `TAPFD/1` is the protocol version. Operations are `INFO`, `PREPARE`, `OPEN`, `SET_PORT_UP` and `RELEASE`.
 - `INFO` is read-only and returns switch capabilities needed by a resident client; currently `generation_bits=<n>`. It does not allocate or mutate a slot.
 - `PREPARE` allocates and configures a port slot that can subsequently be opened with `OPEN`. `connector-ctl vswitch serve` accepts `INNER_IP`, optional caller-supplied `GENERATION`, and optional `TRANSIT_GATEWAY_IP`, `TRANSIT_GENEVE_VNI`, `TRANSIT_GENEVE_OPTS` and `TRANSIT_MAC`. `transit_geneve_opts` is a comma-separated sequence of `CLASS:TYPE:DATA` items and uses the same parser as CLI `--transit-geneve-opt`. Class, type and data are hexadecimal; data length must be a multiple of four bytes; an empty value means no options. Caller ordering is preserved. Options are used only for connector-to-gateway outbound Geneve encapsulation; they do not appear on the return path or in the TAP FD payload.
 - `OPEN` opens the queue descriptors of an allocated port and returns them using `SCM_RIGHTS`. `want_netns=1` has the same meaning as section 3.4: the consumer requests the TAP's netns descriptor.
@@ -194,7 +194,24 @@ TAPFD/1 ERR code=PORT_UNAVAILABLE message=port_not_attached\n
 
 Recommended error codes are `BAD_REQUEST`, `SWITCH_MISMATCH`, `PORT_INVALID`, `PORT_UNAVAILABLE` and `PROVIDER_INTERNAL`. A consumer receiving `ERR` **MUST NOT** enable the interface.
 
-`connector-ctl vswitch serve --tapfd-listen /run/kuasar/connector/sw0/tapfd.sock` is the reference provider for this mode. It handles `INFO`/`PREPARE`/`OPEN`/`RELEASE` on the same persistent switch handle, avoiding repeated fork/exec and reopening pinned BPF maps on the hot path.
+`connector-ctl vswitch serve --tapfd-listen /run/kuasar/connector/sw0/tapfd.sock` is the reference provider for this mode. It handles `INFO`/`PREPARE`/`OPEN`/`SET_PORT_UP`/`RELEASE` on the same persistent switch handle, avoiding repeated fork/exec and reopening pinned BPF maps on the hot path.
+
+### Deferred attachment requests
+
+The current provider supports this sequential flow on the same attachment:
+
+```text
+TAPFD/1 PREPARE VSWITCH=sw0 INNER_IP=169.254.1.1 ADMIN_DOWN=1
+TAPFD/1 OPEN VSWITCH=sw0 PORT=3
+TAPFD/1 SET_PORT_UP VSWITCH=sw0 PORT=3 INNER_IP=169.254.2.2 TRANSIT_GATEWAY_IP=10.0.0.2 TRANSIT_GENEVE_VNI=42
+TAPFD/1 RELEASE VSWITCH=sw0 PORT=3
+```
+
+Use the actual port returned by PREPARE, shown as 3 here. `ADMIN_DOWN` (or `admin_down`) accepts explicit booleans such as 1/true and 0/false, defaults to false when absent, and rejects malformed or empty values. Deferred PREPARE adds `admin_down=1` to its response. OPEN delivers the existing TAP FD while down; its `ip` metadata is the current snapshot and is not updated after handoff.
+
+SET_PORT_UP requires PORT and final INNER_IP, and accepts the same transit gateway/VNI/options/MAC fields as PREPARE. All network fields are a complete replacement; omitted transit values clear them. GENERATION and ADMIN_DOWN are not SET_PORT_UP fields. Success is `TAPFD/1 OK port=3 admin_down=0` with no descriptors. State/validation failure returns ERR and does not release the port; a successful commit is not undone if its response is lost. Same-attachment requests must not overlap; management takeover is still allowed. The owner prepares guest configuration separately before enabling traffic.
+
+Use a provider implementing this flow. Older TAPFD servers are not supported, and there is no capability-negotiation or fallback path. In particular, do not send ADMIN_DOWN to an older server that may ignore unknown fields.
 
 ## 5. Lifetime and idempotency
 

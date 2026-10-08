@@ -12,6 +12,7 @@ const (
 	RequestOpInfo      = "INFO"
 	RequestOpPrepare   = "PREPARE"
 	RequestOpRelease   = "RELEASE"
+	RequestOpSetPortUp = "SET_PORT_UP"
 	ResponseStatusOK   = "OK"
 	ResponseStatusERR  = "ERR"
 	RequestMaxLineSize = 512
@@ -155,7 +156,7 @@ func ParseRequestLine(line string) (*Request, error) {
 
 func validRequestOp(op string) bool {
 	switch op {
-	case RequestOpInfo, RequestOpOpen, RequestOpPrepare, RequestOpRelease:
+	case RequestOpInfo, RequestOpOpen, RequestOpPrepare, RequestOpRelease, RequestOpSetPortUp:
 		return true
 	default:
 		return false

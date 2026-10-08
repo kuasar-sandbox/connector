@@ -12,6 +12,18 @@
 #include "stats.h"
 
 
+// Acquire the userspace publication before reading final attachment fields.
+// On supported kernels a zero-mask atomic RMW is the portable BPF acquire
+// primitive: it preserves every flag bit and pairs with the userspace release
+// store. This is a packet-side visibility fence, not an attachment lock/claim.
+static __always_inline int slot_dataplane_up(struct slot_item *slot,
+                                            const struct switch_config *cfg)
+{
+    if (!(cfg->features & SWITCH_F_PORT_UP))
+        return 1;
+    return (__sync_fetch_and_or(&slot->flags, 0) & PORT_F_UP) != 0;
+}
+
 // Map definitions
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -255,7 +267,7 @@ int tc_ingress_nx(struct __sk_buff *skb)
     __u64 generation = stats_generation(slot_id);
     if (!slot || is_slot_free(slot->inner_ip))
         return TC_ACT_OK;
-    if ((cfg->features & SWITCH_F_PORT_UP) && !(slot->flags & PORT_F_UP))
+    if (!slot_dataplane_up(slot, cfg))
         return TC_ACT_SHOT;
     if (cfg->generation_bits > 20 || slot->generation >= (1U << cfg->generation_bits))
         return TC_ACT_OK;
@@ -713,7 +725,7 @@ int tc_ingress_mx(struct __sk_buff *skb)
                 struct slot_item *slot = bpf_map_lookup_elem(&slots, &sid);
                 if (slot && slot->generation == attachment_generation &&
                     !is_slot_free(slot->inner_ip)) {
-                    if ((cfg->features & SWITCH_F_PORT_UP) && !(slot->flags & PORT_F_UP))
+                    if (!slot_dataplane_up(slot, cfg))
                         return TC_ACT_SHOT;
                     get_port_mac(reply_mac, cfg, sid);
                     matched = 1;
@@ -755,11 +767,13 @@ int tc_ingress_mx(struct __sk_buff *skb)
     __u64 generation = stats_generation(slot_id);
     if (!slot || slot->generation != attachment_generation || is_slot_free(slot->inner_ip) || slot->ifindex == 0)
         return TC_ACT_OK;
-    if ((cfg->features & SWITCH_F_PORT_UP) && !(slot->flags & PORT_F_UP))
+    if (!slot_dataplane_up(slot, cfg))
         return TC_ACT_SHOT;
 
     // Cache slot values
-    __u32 inner_ip = slot->inner_ip;
+    // Do not reuse the provisional address read for the pre-gate state check.
+    // SetPortUp may have committed A -> B before the acquire above saw up.
+    __u32 inner_ip = *(volatile __u32 *)&slot->inner_ip;
     __u32 target_ifindex = slot->ifindex;
 
     // DNAT: replace floating_ip with inner_ip
@@ -987,7 +1001,7 @@ int tc_ingress_transit(struct __sk_buff *skb)
     __u64 generation = stats_generation(slot_id);
     if (!slot || is_slot_free(slot->inner_ip) || slot->ifindex == 0)
         return TC_ACT_OK;
-    if ((cfg->features & SWITCH_F_PORT_UP) && !(slot->flags & PORT_F_UP))
+    if (!slot_dataplane_up(slot, cfg))
         return TC_ACT_SHOT;
 
     __u32 target_ifindex = slot->ifindex;
