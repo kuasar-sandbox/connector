@@ -99,15 +99,16 @@ class ReleaseGoHandoff(unittest.TestCase):
     def test_release_children_use_selected_go_and_preserve_policy(self):
         lines = (ROOT / ".github/workflows/release.yml").read_text().splitlines()
         index = next(i for i, line in enumerate(lines)
-                     if line.strip() == "- name: Build and test connector")
-        self.assertEqual(lines[index + 1].strip(), "run: |")
-        prefix = " " * (len(lines[index]) - len(lines[index].lstrip()) + 4)
+                     if line.strip() == "- name: Build, test and package connector")
+        self.assertEqual(lines[index + 1].strip(), "uses: ./trusted/platform/.github/actions/workbench")
+        run_index = next(i for i in range(index, len(lines)) if lines[i].strip() == "run: |")
+        prefix = " " * (len(lines[run_index]) - len(lines[run_index].lstrip()) + 2)
         command = []
-        for line in lines[index + 2:]:
-            if not line.startswith(prefix):
-                self.assertEqual(line.strip(), "working-directory: src/connector")
+        for line in lines[run_index + 1:]:
+            if not line.startswith(prefix) or line.lstrip().startswith("VERSION="):
                 break
             command.append(line[len(prefix):])
+        self.assertIn("cd connector", command)
 
         real_go = shutil.which("go")
         self.assertIsNotNone(real_go, "release validation requires the environment Go launcher")
@@ -115,12 +116,11 @@ class ReleaseGoHandoff(unittest.TestCase):
             root = Path(directory)
             tools = root / "environment tools"
             stale = root / "stale inherited root"
-            module = root / "module"
+            module = root / "connector"
             for path in (tools, stale, module):
                 path.mkdir(parents=True)
             (tools / "go").symlink_to(real_go)
             scripts = {
-                tools / "taskset": "#!/bin/sh\nexit 0\n",
                 tools / "make": '''#!/bin/sh
 set -e
 [ "$(go env GOROOT)" = "$GOROOT" ] || exit 64
@@ -145,7 +145,7 @@ printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >>
                     github_env.unlink(missing_ok=True)
                     github_path.unlink(missing_ok=True)
                     env = dict(os.environ, PATH=path, TARGET_ARCH="x86_64",
-                               KUASAR_BUILD_CPUS="0", OBSERVED=str(observed),
+                               OBSERVED=str(observed),
                                GOENV=str(goenv), GITHUB_ENV=str(github_env),
                                GITHUB_PATH=str(github_path))
                     if inherited_goroot is None:
@@ -163,17 +163,15 @@ printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >>
                                               timeout=10, check=True).stdout.strip()
                     with self.subTest(goroot=inherited_goroot, policy=policy):
                         result = subprocess.run([shutil.which("bash"), "-e", "-c", "\n".join(command)],
-                                                cwd=module, env=env, text=True,
+                                                cwd=root, env=env, text=True,
                                                 capture_output=True, timeout=10)
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertEqual(observed.read_text().splitlines(), [
                             target + "|" + (policy or "unset") + "|" + expected
                             + "|" + str(goenv)
                             for target in ("test", "vet", "build")])
-                        self.assertEqual(github_env.read_text().splitlines(),
-                                         ["GOROOT=" + expected])
-                        self.assertEqual(github_path.read_text().splitlines(),
-                                         [expected + "/bin"])
+                        self.assertFalse(github_env.exists(), "candidate must not change host Go environment")
+                        self.assertFalse(github_path.exists(), "candidate must not change host PATH")
 
             observed = root / "observed"
             observed.unlink(missing_ok=True)
@@ -182,12 +180,12 @@ printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >>
             github_env.unlink(missing_ok=True)
             github_path.unlink(missing_ok=True)
             env = dict(os.environ, PATH=path, TARGET_ARCH="x86_64",
-                       KUASAR_BUILD_CPUS="0", OBSERVED=str(observed),
+                       OBSERVED=str(observed),
                        GOENV=str(goenv), GOROOT=str(stale),
                        GOTOOLCHAIN="go9.99.9+path", GITHUB_ENV=str(github_env),
                        GITHUB_PATH=str(github_path))
             result = subprocess.run([shutil.which("bash"), "-e", "-c", "\n".join(command)],
-                                    cwd=module, env=env, text=True,
+                                    cwd=root, env=env, text=True,
                                     capture_output=True, timeout=10)
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(observed.exists())

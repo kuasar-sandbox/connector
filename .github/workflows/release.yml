@@ -87,10 +87,21 @@ jobs:
             echo "source_sha=$SOURCE_SHA"
             echo "version=$VERSION"
           } >> "$GITHUB_OUTPUT"
+      - name: Select immutable native Workbench images
+        run: |
+          python3 trusted/platform/ci/hosted/workbench.py select \
+            --framework-sha "${{ steps.framework.outputs.sha }}" --output workbench.json
+      - name: Upload Workbench selection
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: workbench-selection-${{ github.run_id }}
+          path: workbench.json
+          if-no-files-found: error
+          retention-days: 1
     if: github.event.repository.visibility == 'public' && github.event.repository.full_name == github.repository
   build:
     needs: preflight
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     env:
       TARGET_ARCH: ${{ matrix.arch }}
@@ -102,11 +113,11 @@ jobs:
           ref: ${{ needs.preflight.outputs.framework_sha }}
           path: trusted/platform
           persist-credentials: false
-      - name: Bootstrap native or cross build
-        run: |
-          profile=artifact-build
-          if [ "$TARGET_ARCH" = aarch64 ]; then profile=artifact-cross; fi
-          bash trusted/platform/ci/hosted/bootstrap.sh --profile "$profile"
+      - name: Download Workbench selection
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: workbench-selection-${{ github.run_id }}
+          path: workbench-selection
       - name: Check out exact component source
         id: checkout-source
         continue-on-error: true
@@ -122,33 +133,29 @@ jobs:
           ref: ${{ needs.preflight.outputs.source_sha }}
           persist-credentials: false
           path: src/connector
-      - name: Attach native source cache
-        run: |
-          mkdir -p src/connector/build
-          ln -sfn "$KUASAR_TARBALL_CACHE" src/connector/build/tarball
-      - name: Build and test connector
-        run: |
-          taskset -pc "$KUASAR_BUILD_CPUS" "$$" >/dev/null
-          set -euo pipefail
-          # Child go commands must use the compiler already selected for this module.
-          selected_go_root=$(env -u GOROOT go env GOROOT)
-          export GOROOT="$selected_go_root"
-          export PATH="$selected_go_root/bin:$PATH"
-          printf 'GOROOT=%s\n' "$selected_go_root" >> "$GITHUB_ENV"
-          printf '%s/bin\n' "$selected_go_root" >> "$GITHUB_PATH"
-          if [ "$TARGET_ARCH" = x86_64 ]; then make test; make vet; fi
-          make build
-        working-directory: src/connector
-      - name: Package the component release
-        env:
-          VERSION: ${{ needs.preflight.outputs.version }}
-        run: |
-          set -euo pipefail
-          export SOURCE_DATE_EPOCH
-          [ "$(git rev-parse HEAD)" = "${{ needs.preflight.outputs.source_sha }}" ]
-          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "${{ needs.preflight.outputs.source_sha }}")
-          bash scripts/release.sh package "$VERSION" "$TARGET_ARCH" release-bundle
-        working-directory: src/connector
+      - name: Build, test and package connector
+        uses: ./trusted/platform/.github/actions/workbench
+        with:
+          selection: workbench-selection/workbench.json
+          sources: src
+          arch: ${{ matrix.arch }}
+          cpus: '2'
+          memory-gib: '8'
+          run: |
+            set -euo pipefail
+            cd connector
+            # Child Go commands use the compiler selected for this module.
+            selected_go_root=$(env -u GOROOT go env GOROOT)
+            export GOROOT="$selected_go_root"
+            export PATH="$selected_go_root/bin:$PATH"
+            if [ "$TARGET_ARCH" = x86_64 ]; then make test; make vet; fi
+            make build
+            VERSION='${{ needs.preflight.outputs.version }}'
+            [ "$(git rev-parse HEAD)" = "${{ needs.preflight.outputs.source_sha }}" ]
+            export SOURCE_DATE_EPOCH
+            SOURCE_DATE_EPOCH=$(git show -s --format=%ct "${{ needs.preflight.outputs.source_sha }}")
+            bash scripts/release.sh package "$VERSION" "$TARGET_ARCH" release-bundle
+            bash scripts/release.sh validate "$VERSION" "$TARGET_ARCH" release-bundle
       - name: Upload validated release bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -160,9 +167,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch:
-          - x86_64
-          - aarch64
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
   publish:
     needs:
       - preflight
