@@ -140,6 +140,7 @@ jobs:
         with:
           selection: workbench-selection/workbench.json
           sources: src
+          outputs: connector/release-bundle
           arch: ${{ matrix.arch }}
           cpus: '2'
           memory-gib: '8'
