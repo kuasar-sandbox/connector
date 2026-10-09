@@ -49,11 +49,11 @@ TAP 交接的规范协议见 [`docs/tapfd_zh.md`](docs/tapfd_zh.md)。
 
 本地构建使用环境提供的 Go, 并继承 `GOROOT`、`GOTOOLCHAIN` 等工具链选择.
 CI 构建和打包使用原生 x86_64/aarch64 Runner, 每种架构在一次运行中固定一个已通过
-验证的 Workbench 镜像身份. 普通构建和源码检查在 build 模式中使用 ordinary UID
-及任务私有可写路径. 真实 BPF 源码门禁使用 system 模式, 保留 race 与
-`REQUIRE_CONNECTOR_STATS=1`; 缺少内核能力时门禁失败.
-`scripts/ci-source-checks.sh --ordinary` 和 `--privileged` 分别选择两组检查,
-不带参数仍运行全部检查. 发布编排由环境提供支持 `api --slurp` 的 `gh`, 凭据不进入
+验证的 Workbench 镜像身份. 发布构建、普通测试和打包在 build 模式中使用
+ordinary UID 及任务私有可写路径. 完整的 `bash scripts/ci-source-checks.sh` 门禁
+在 Workbench system 模式运行, 保留单元测试、race、vet 以及
+`REQUIRE_CONNECTOR_STATS=1` 的真实 BPF 检查; 缺少内核能力时门禁失败.
+发布编排由环境提供支持 `api --slurp` 的 `gh`, 凭据不进入
 Workbench 源码执行环境.
 
 ```bash
