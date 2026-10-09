@@ -1,0 +1,10 @@
+# Owner-maintained user documentation inputs, relative to this repository.
+# The platform reads this file from the selected source revision.
+# Entries may be Markdown files, directories, or glob patterns; each must match.
+# Keep source/developer-only documentation outside the selected inputs.
+README.md
+README_zh.md
+docs/tapfd.md
+docs/tapfd_zh.md
+docs/vswitch-operations.md
+docs/vswitch-operations_zh.md
