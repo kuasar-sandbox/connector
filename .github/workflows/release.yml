@@ -140,6 +140,7 @@ jobs:
         with:
           selection: workbench-selection/workbench.json
           sources: src
+          cache-coverage: release-connector
           outputs: connector/release-bundle
           arch: ${{ matrix.arch }}
           cpus: '2'
