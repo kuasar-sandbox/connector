@@ -50,7 +50,16 @@ Current attachment traffic reads and reset/error semantics are documented in [vS
 
 ## Build and test
 
-Builds use environment-provided Go and inherit its `GOROOT` and `GOTOOLCHAIN` selection. Release automation requires a working `gh` with `api --slurp` support on `PATH`; the project does not install, replace, or authenticate these environment tools against fixed binary digests.
+Local builds use environment-provided Go and inherit its `GOROOT` and `GOTOOLCHAIN`
+selection. CI builds and packages on native x86_64/aarch64 runners with one
+admitted, immutable Workbench image identity per architecture. Release builds,
+ordinary tests and packaging use build mode with an ordinary UID and private
+writable paths. The complete `bash scripts/ci-source-checks.sh` gate runs in
+Workbench system mode, retaining unit tests, race instrumentation, vet and real
+BPF checks with `REQUIRE_CONNECTOR_STATS=1`; missing kernel capabilities fail the
+gate. Release orchestration requires environment-provided `gh` with `api --slurp`;
+credentials remain outside
+the Workbench source environment.
 
 ```bash
 make build                      # bin/<arch>/connector-ctl; pure Go control plane
