@@ -1,0 +1,353 @@
+name: Workbench 216 Connector Cache
+run-name: Workbench 216 connector trusted cache ${{ github.sha }}
+# Temporary nonpublishing acceptance entry; delete with its evidence helper
+# after #216 validates the saved cache and fresh-Job package comparison.
+'on':
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: workbench-216-connector-cache
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'kuasar-sandbox/connector' && github.event.repository.visibility == 'public' && github.event.repository.full_name == github.repository && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      source_sha: ${{ steps.freeze.outputs.source_sha }}
+      framework_sha: ${{ steps.freeze.outputs.framework_sha }}
+    steps:
+      - name: Check out this workflow's admitted main tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ job.workflow_sha }}
+          path: trusted/connector
+          persist-credentials: false
+      - name: Resolve the current main framework once
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: kuasar-sandbox/kuasar-sandbox
+          ref: main
+          path: trusted/platform
+          persist-credentials: false
+      - name: Freeze exact main source, framework and published native images
+        id: freeze
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRUSTED_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: python3 -B trusted/connector/scripts/verify-workbench-216-cache.py freeze --plan cache-plan
+      - name: Preserve the single selection
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: connector-cache-plan-${{ github.run_id }}
+          path: cache-plan
+          if-no-files-found: error
+          retention-days: 7
+
+  cold-x86:
+    if: github.repository == 'kuasar-sandbox/connector' && github.event.repository.visibility == 'public' && github.event.repository.full_name == github.repository && github.ref == 'refs/heads/main'
+    needs: [prepare]
+    name: cold (x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out this workflow's fixed host tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ job.workflow_sha }}
+          path: trusted/connector
+          persist-credentials: false
+      - name: Check out the frozen framework
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: kuasar-sandbox/kuasar-sandbox
+          ref: ${{ needs.prepare.outputs.framework_sha }}
+          path: trusted/platform
+          persist-credentials: false
+      - name: Download the single selection
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: connector-cache-plan-${{ github.run_id }}
+          path: cache-plan
+      - name: Check out a fresh exact component source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          path: src/connector
+          persist-credentials: false
+      - name: Build, test and validate the original connector release package
+        uses: ./trusted/platform/.github/actions/workbench
+        with:
+          selection: cache-plan/workbench.json
+          sources: src
+          cache-coverage: release-connector
+          outputs: |
+            connector/release-bundle
+            connector/bin/x86_64/connector-ctl
+          arch: x86_64
+          cpus: '2'
+          memory-gib: '8'
+          run: |
+            set -euo pipefail
+            cd connector
+            selected_go_root=$(env -u GOROOT go env GOROOT)
+            export GOROOT="$selected_go_root"
+            export PATH="$selected_go_root/bin:$PATH"
+            if [ "$TARGET_ARCH" = x86_64 ]; then make test; make vet; fi
+            make build
+            VERSION=v0.0.0
+            [ "$(git rev-parse HEAD)" = "${{ needs.prepare.outputs.source_sha }}" ]
+            export SOURCE_DATE_EPOCH
+            SOURCE_DATE_EPOCH=$(git show -s --format=%ct "${{ needs.prepare.outputs.source_sha }}")
+            bash scripts/release.sh package "$VERSION" "$TARGET_ARCH" release-bundle
+            bash scripts/release.sh validate "$VERSION" "$TARGET_ARCH" release-bundle
+      - name: Verify cleaned receipts, trusted cache and package hashes
+        if: always()
+        env:
+          TRUSTED_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          python3 -B trusted/connector/scripts/verify-workbench-216-cache.py record \
+            --plan cache-plan --phase cold --arch "x86_64" \
+            --output cache-evidence
+      - name: Preserve the actual cache result, including failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: connector-cache-cold-x86_64-${{ github.run_id }}
+          path: cache-evidence
+          if-no-files-found: error
+          retention-days: 7
+
+  cold-arm:
+    if: github.repository == 'kuasar-sandbox/connector' && github.event.repository.visibility == 'public' && github.event.repository.full_name == github.repository && github.ref == 'refs/heads/main'
+    needs: [prepare]
+    name: cold (aarch64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Check out this workflow's fixed host tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ job.workflow_sha }}
+          path: trusted/connector
+          persist-credentials: false
+      - name: Check out the frozen framework
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: kuasar-sandbox/kuasar-sandbox
+          ref: ${{ needs.prepare.outputs.framework_sha }}
+          path: trusted/platform
+          persist-credentials: false
+      - name: Download the single selection
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: connector-cache-plan-${{ github.run_id }}
+          path: cache-plan
+      - name: Check out a fresh exact component source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          path: src/connector
+          persist-credentials: false
+      - name: Build, test and validate the original connector release package
+        uses: ./trusted/platform/.github/actions/workbench
+        with:
+          selection: cache-plan/workbench.json
+          sources: src
+          cache-coverage: release-connector
+          outputs: |
+            connector/release-bundle
+            connector/bin/aarch64/connector-ctl
+          arch: aarch64
+          cpus: '2'
+          memory-gib: '8'
+          run: |
+            set -euo pipefail
+            cd connector
+            selected_go_root=$(env -u GOROOT go env GOROOT)
+            export GOROOT="$selected_go_root"
+            export PATH="$selected_go_root/bin:$PATH"
+            if [ "$TARGET_ARCH" = x86_64 ]; then make test; make vet; fi
+            make build
+            VERSION=v0.0.0
+            [ "$(git rev-parse HEAD)" = "${{ needs.prepare.outputs.source_sha }}" ]
+            export SOURCE_DATE_EPOCH
+            SOURCE_DATE_EPOCH=$(git show -s --format=%ct "${{ needs.prepare.outputs.source_sha }}")
+            bash scripts/release.sh package "$VERSION" "$TARGET_ARCH" release-bundle
+            bash scripts/release.sh validate "$VERSION" "$TARGET_ARCH" release-bundle
+      - name: Verify cleaned receipts, trusted cache and package hashes
+        if: always()
+        env:
+          TRUSTED_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          python3 -B trusted/connector/scripts/verify-workbench-216-cache.py record \
+            --plan cache-plan --phase cold --arch "aarch64" \
+            --output cache-evidence
+      - name: Preserve the actual cache result, including failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: connector-cache-cold-aarch64-${{ github.run_id }}
+          path: cache-evidence
+          if-no-files-found: error
+          retention-days: 7
+
+  warm-x86:
+    if: always() && needs.prepare.result == 'success' && !cancelled() && github.repository == 'kuasar-sandbox/connector' && github.event.repository.visibility == 'public' && github.event.repository.full_name == github.repository && github.ref == 'refs/heads/main'
+    needs: [prepare, cold-x86]
+    name: warm (x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out this workflow's fixed host tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ job.workflow_sha }}
+          path: trusted/connector
+          persist-credentials: false
+      - name: Check out the frozen framework
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: kuasar-sandbox/kuasar-sandbox
+          ref: ${{ needs.prepare.outputs.framework_sha }}
+          path: trusted/platform
+          persist-credentials: false
+      - name: Download the single selection
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: connector-cache-plan-${{ github.run_id }}
+          path: cache-plan
+      - name: Check out a fresh exact component source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          path: src/connector
+          persist-credentials: false
+      - name: Download the completed cold Job evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: connector-cache-cold-x86_64-${{ github.run_id }}
+          path: cold-evidence
+      - name: Build, test and validate the original connector release package
+        uses: ./trusted/platform/.github/actions/workbench
+        with:
+          selection: cache-plan/workbench.json
+          sources: src
+          cache-coverage: release-connector
+          outputs: |
+            connector/release-bundle
+            connector/bin/x86_64/connector-ctl
+          arch: x86_64
+          cpus: '2'
+          memory-gib: '8'
+          run: |
+            set -euo pipefail
+            cd connector
+            selected_go_root=$(env -u GOROOT go env GOROOT)
+            export GOROOT="$selected_go_root"
+            export PATH="$selected_go_root/bin:$PATH"
+            if [ "$TARGET_ARCH" = x86_64 ]; then make test; make vet; fi
+            make build
+            VERSION=v0.0.0
+            [ "$(git rev-parse HEAD)" = "${{ needs.prepare.outputs.source_sha }}" ]
+            export SOURCE_DATE_EPOCH
+            SOURCE_DATE_EPOCH=$(git show -s --format=%ct "${{ needs.prepare.outputs.source_sha }}")
+            bash scripts/release.sh package "$VERSION" "$TARGET_ARCH" release-bundle
+            bash scripts/release.sh validate "$VERSION" "$TARGET_ARCH" release-bundle
+      - name: Verify cleaned receipts, trusted cache and package hashes
+        if: always()
+        env:
+          TRUSTED_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          python3 -B trusted/connector/scripts/verify-workbench-216-cache.py record \
+            --plan cache-plan --phase warm --arch "x86_64" \
+            --output cache-evidence --cold cold-evidence
+      - name: Preserve the actual cache result, including failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: connector-cache-warm-x86_64-${{ github.run_id }}
+          path: cache-evidence
+          if-no-files-found: error
+          retention-days: 7
+
+  warm-arm:
+    if: always() && needs.prepare.result == 'success' && !cancelled() && github.repository == 'kuasar-sandbox/connector' && github.event.repository.visibility == 'public' && github.event.repository.full_name == github.repository && github.ref == 'refs/heads/main'
+    needs: [prepare, cold-arm]
+    name: warm (aarch64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Check out this workflow's fixed host tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ job.workflow_sha }}
+          path: trusted/connector
+          persist-credentials: false
+      - name: Check out the frozen framework
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: kuasar-sandbox/kuasar-sandbox
+          ref: ${{ needs.prepare.outputs.framework_sha }}
+          path: trusted/platform
+          persist-credentials: false
+      - name: Download the single selection
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: connector-cache-plan-${{ github.run_id }}
+          path: cache-plan
+      - name: Check out a fresh exact component source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          path: src/connector
+          persist-credentials: false
+      - name: Download the completed cold Job evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: connector-cache-cold-aarch64-${{ github.run_id }}
+          path: cold-evidence
+      - name: Build, test and validate the original connector release package
+        uses: ./trusted/platform/.github/actions/workbench
+        with:
+          selection: cache-plan/workbench.json
+          sources: src
+          cache-coverage: release-connector
+          outputs: |
+            connector/release-bundle
+            connector/bin/aarch64/connector-ctl
+          arch: aarch64
+          cpus: '2'
+          memory-gib: '8'
+          run: |
+            set -euo pipefail
+            cd connector
+            selected_go_root=$(env -u GOROOT go env GOROOT)
+            export GOROOT="$selected_go_root"
+            export PATH="$selected_go_root/bin:$PATH"
+            if [ "$TARGET_ARCH" = x86_64 ]; then make test; make vet; fi
+            make build
+            VERSION=v0.0.0
+            [ "$(git rev-parse HEAD)" = "${{ needs.prepare.outputs.source_sha }}" ]
+            export SOURCE_DATE_EPOCH
+            SOURCE_DATE_EPOCH=$(git show -s --format=%ct "${{ needs.prepare.outputs.source_sha }}")
+            bash scripts/release.sh package "$VERSION" "$TARGET_ARCH" release-bundle
+            bash scripts/release.sh validate "$VERSION" "$TARGET_ARCH" release-bundle
+      - name: Verify cleaned receipts, trusted cache and package hashes
+        if: always()
+        env:
+          TRUSTED_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          python3 -B trusted/connector/scripts/verify-workbench-216-cache.py record \
+            --plan cache-plan --phase warm --arch "aarch64" \
+            --output cache-evidence --cold cold-evidence
+      - name: Preserve the actual cache result, including failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: connector-cache-warm-aarch64-${{ github.run_id }}
+          path: cache-evidence
+          if-no-files-found: error
+          retention-days: 7
