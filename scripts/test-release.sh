@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+# Archive fixtures target x86_64 even when this gate runs on an ARM host.
+# Validators run natively; payload fixtures are inspected, never executed.
+
 # Keep this offline fixture's checksum routing and local-only Go isolation.
 export GOSUMDB=sum.golang.google.cn GOTOOLCHAIN=local
 
@@ -274,13 +277,13 @@ cat > "$fixture_root/Makefile" <<'EOF'
 .PHONY: build
 build:
 	mkdir -p bin/x86_64
-	CGO_ENABLED=0 go build -trimpath -buildvcs=true -o bin/x86_64/connector-ctl ./cmd/connector-ctl
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=true -o bin/x86_64/connector-ctl ./cmd/connector-ctl
 EOF
 fixture_project_sha="$(init_fixture_repo "$fixture_root" LICENSE LICENSE_SCOPE.md LICENSE_SCOPE_zh.md LICENSES .gitignore scripts go.mod cmd examples dist Makefile)"
-(cd "$fixture_root" && GOWORK=off go build -buildvcs=true -o "$TMP/go-fixture" ./cmd/connector-ctl)
+(cd "$fixture_root" && GOWORK=off GOOS=linux GOARCH=amd64 go build -buildvcs=true -o "$TMP/go-fixture" ./cmd/connector-ctl)
 release_materials_require_go_revision "$TMP/go-fixture" "$fixture_project_sha"
 printf '// dirty fixture\n' >> "$fixture_root/cmd/connector-ctl/main.go"
-(cd "$fixture_root" && GOWORK=off go build -buildvcs=true -o "$TMP/dirty-go-fixture" ./cmd/connector-ctl)
+(cd "$fixture_root" && GOWORK=off GOOS=linux GOARCH=amd64 go build -buildvcs=true -o "$TMP/dirty-go-fixture" ./cmd/connector-ctl)
 if (release_materials_require_go_revision "$TMP/dirty-go-fixture" "$fixture_project_sha" >/dev/null 2>&1); then
   fail "release accepted a binary built from dirty source"
 fi
@@ -364,7 +367,12 @@ mkdir -p "$TMP/arm-bin"
 install -m 0755 "$TMP/target-linux-arm64" "$TMP/arm-bin/connector-ctl"
 SOURCE_DATE_EPOCH=1700000000 RELEASE_BIN_DIR="$TMP/arm-bin" \
   "$fixture_root/scripts/release.sh" package v1.2.3 aarch64 "$TMP/arm-bundle"
-GH_REPO=kuasar-sandbox/connector SOURCE_SHA="$fixture_project_sha" "$fixture_root/scripts/publish-release.sh" assemble \
+# Assembly is offline. Satisfy the publisher's tool preflight while making any
+# accidental API invocation fail, even on hosts without the GitHub CLI.
+mkdir "$TMP/offline-publisher-bin"
+printf '#!/bin/sh\necho "offline assembly invoked gh" >&2\nexit 97\n' > "$TMP/offline-publisher-bin/gh"
+chmod 0755 "$TMP/offline-publisher-bin/gh"
+PATH="$TMP/offline-publisher-bin:$PATH" GH_REPO=kuasar-sandbox/connector SOURCE_SHA="$fixture_project_sha" "$fixture_root/scripts/publish-release.sh" assemble \
   v1.2.3 "$TMP/bundle" "$TMP/arm-bundle" "$TMP/dual-bundle"
 PUBLISHER_TEST_ARCH=all "$ROOT/scripts/test-publisher.sh" "$fixture_root/scripts/publish-release.sh" \
   "$TMP/dual-bundle" kuasar-sandbox/connector v1.2.3 "$fixture_project_sha" main
@@ -377,11 +385,11 @@ for arch in x86_64 aarch64; do
 done
 cp -a "$TMP/arm-bundle" "$TMP/arm-tampered"
 printf 'tampered' >> "$TMP/arm-tampered/assets/connector-v1.2.3-linux-aarch64.tar.gz"
-if GH_REPO=kuasar-sandbox/connector "$fixture_root/scripts/publish-release.sh" assemble v1.2.3 "$TMP/bundle" \
+if PATH="$TMP/offline-publisher-bin:$PATH" GH_REPO=kuasar-sandbox/connector "$fixture_root/scripts/publish-release.sh" assemble v1.2.3 "$TMP/bundle" \
   "$TMP/arm-tampered" "$TMP/dual-tampered" >/dev/null 2>&1; then
   fail 'dual assembler accepted changed ARM bytes'
 fi
-if GH_REPO=kuasar-sandbox/connector "$fixture_root/scripts/publish-release.sh" assemble v1.2.3 "$TMP/bundle" \
+if PATH="$TMP/offline-publisher-bin:$PATH" GH_REPO=kuasar-sandbox/connector "$fixture_root/scripts/publish-release.sh" assemble v1.2.3 "$TMP/bundle" \
   "$TMP/bundle" "$TMP/dual-wrong-target" >/dev/null 2>&1; then
   fail 'dual assembler accepted AMD64 as the missing ARM archive'
 fi
@@ -389,10 +397,10 @@ fi
 for target_package in ./examples/tapfd_receiver command-line-arguments; do
   binary="$TMP/other-main-${target_package##*/}"
   if [ "$target_package" = command-line-arguments ]; then
-    (cd "$TMP/target-source" && GOWORK=off CGO_ENABLED=0 \
+    (cd "$TMP/target-source" && GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
       go build -buildvcs=true -o "$binary" ./cmd/connector-ctl/main.go)
   else
-    (cd "$TMP/target-source" && GOWORK=off CGO_ENABLED=0 \
+    (cd "$TMP/target-source" && GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
       go build -trimpath -buildvcs=true -o "$binary" "$target_package")
     release_materials_require_go_revision "$binary" "$fixture_project_sha"
   fi
