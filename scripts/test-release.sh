@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+# Archive fixtures target x86_64 even when this gate runs on an ARM host.
+# Validators run natively; payload fixtures are inspected, never executed.
+
 # Keep this offline fixture's checksum routing and local-only Go isolation.
 export GOSUMDB=sum.golang.google.cn GOTOOLCHAIN=local
 
@@ -274,13 +277,13 @@ cat > "$fixture_root/Makefile" <<'EOF'
 .PHONY: build
 build:
 	mkdir -p bin/x86_64
-	CGO_ENABLED=0 go build -trimpath -buildvcs=true -o bin/x86_64/connector-ctl ./cmd/connector-ctl
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=true -o bin/x86_64/connector-ctl ./cmd/connector-ctl
 EOF
 fixture_project_sha="$(init_fixture_repo "$fixture_root" LICENSE LICENSE_SCOPE.md LICENSE_SCOPE_zh.md LICENSES .gitignore scripts go.mod cmd examples dist Makefile)"
-(cd "$fixture_root" && GOWORK=off go build -buildvcs=true -o "$TMP/go-fixture" ./cmd/connector-ctl)
+(cd "$fixture_root" && GOWORK=off GOOS=linux GOARCH=amd64 go build -buildvcs=true -o "$TMP/go-fixture" ./cmd/connector-ctl)
 release_materials_require_go_revision "$TMP/go-fixture" "$fixture_project_sha"
 printf '// dirty fixture\n' >> "$fixture_root/cmd/connector-ctl/main.go"
-(cd "$fixture_root" && GOWORK=off go build -buildvcs=true -o "$TMP/dirty-go-fixture" ./cmd/connector-ctl)
+(cd "$fixture_root" && GOWORK=off GOOS=linux GOARCH=amd64 go build -buildvcs=true -o "$TMP/dirty-go-fixture" ./cmd/connector-ctl)
 if (release_materials_require_go_revision "$TMP/dirty-go-fixture" "$fixture_project_sha" >/dev/null 2>&1); then
   fail "release accepted a binary built from dirty source"
 fi
@@ -389,10 +392,10 @@ fi
 for target_package in ./examples/tapfd_receiver command-line-arguments; do
   binary="$TMP/other-main-${target_package##*/}"
   if [ "$target_package" = command-line-arguments ]; then
-    (cd "$TMP/target-source" && GOWORK=off CGO_ENABLED=0 \
+    (cd "$TMP/target-source" && GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
       go build -buildvcs=true -o "$binary" ./cmd/connector-ctl/main.go)
   else
-    (cd "$TMP/target-source" && GOWORK=off CGO_ENABLED=0 \
+    (cd "$TMP/target-source" && GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
       go build -trimpath -buildvcs=true -o "$binary" "$target_package")
     release_materials_require_go_revision "$binary" "$fixture_project_sha"
   fi
