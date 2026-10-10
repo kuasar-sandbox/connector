@@ -32,7 +32,8 @@ CLI、配置、构建、部署与故障排查见 [vSwitch 运维](vswitch-operat
 - 包转发在内核中完成,没有用户态数据包中继;不保证完整 Guest/VMM/网络路径零拷贝或零上下文切换。
 - 程序由 TC 引用保留,map 由 bpffs pin 保留;底层资源完整时,控制进程退出不删除它们。
 - 专用转发实现可集中评审,无需把行为分散在 bridge FDB 与多条防火墙链中推理。
-- 内核锁保护的计数器与 bpftool 检查。
+- 内核锁保护的逐端口计数器与 bpftool 检查。当前 ARRAY/generation ABI 及旧
+  PERCPU_ARRAY 重建要求见[stats 契约](vswitch-operations_zh.md)。
 
 ### 1.2 设计原则
 

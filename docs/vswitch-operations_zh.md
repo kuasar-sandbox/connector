@@ -137,6 +137,7 @@ peer 保持无 IPv4 地址。该逻辑按 `MGMT_NETNS` 自动在 host netns 或 
 典型流程(tap 模式,默认):
 
 ```bash
+set -euo pipefail
 # 准备 namespace 与可安全交接的专用空闲 transit 设备
 ip netns add sw_ns
 ip netns add mgmt_ns
@@ -152,14 +153,18 @@ connector-ctl vswitch start sw1 --netns=sw_ns --ports=128 \
 ip netns exec mgmt_ns ip addr replace 169.254.169.254/32 dev eth0
 
 # 分配端口;支持 TAPFD 的 VMM receiver 应已监听 /tmp/recv.sock
-connector-ctl vswitch attach sw1 --inner-ip=169.254.1.1 \
-    --transit-gateway-ip=10.0.0.2 --transit-geneve-vni=100
-TAPFD_SOCKET=/tmp/recv.sock connector-ctl vswitch open-port sw1 --port=1
+ATTACH_JSON=$(connector-ctl vswitch attach sw1 --inner-ip=169.254.1.1 \
+    --transit-gateway-ip=10.0.0.2 --transit-geneve-vni=100)
+PORT=$(printf '%s\n' "$ATTACH_JSON" | jq -er '.port | select(type == "number" and . > 0)')
+TAPFD_SOCKET=/tmp/recv.sock connector-ctl vswitch open-port sw1 --port="$PORT"
 
 # 释放端口;在应接收 transit 的 namespace 中 stop
-connector-ctl vswitch detach sw1 --port=1
+connector-ctl vswitch detach sw1 --port="$PORT"
 connector-ctl vswitch stop sw1
 ```
+
+此 shell 片段需要 Bash 和 `jq`。保存完整 attach 结果（包含已配置的 generation），
+交接和按 owner 清理时使用返回的端口；自动分配不保证返回 port 1。
 
 ### 2.2 `connector-ctl vswitch start` / `serve`
 
@@ -572,3 +577,68 @@ connector-ctl vswitch show slots sw0
 
 在 pcap 中核对 UDP dst、24-bit VNI、`OptLen`、base `C`、option class/type/length/data
 及 inner payload 起始偏移。TLV locator data 应是零基 slot_id 的 big-endian 32-bit 值。
+
+## 4. 网关互操作验收与恢复
+
+使用隔离测试 switch/namespace 和部署方管理的网关。Connector 提供主机交换机
+及 TAP 交接，不提供外部网关产品或策略引擎。网关实现、路由/NAT、DNS、策略与
+审计由其运营方负责。[GENEVE 线协议](vswitch_zh.md)、[MTU 契约](vswitch_zh.md)
+及 [TAP 所有权](tapfd_zh.md) 是权威来源。
+
+### 4.1 双端验收
+
+1. 约定 IP-over-GENEVE/Ether-over-GENEVE、port/vni/tlv locator、UDP 目的、
+   VNI 和 opaque 策略选项。Linux GENEVE bridge peer 需要 Ethernet 模式。
+   保存实际 attach 结果：CLI port 从 1 开始，wire slot 从 0 开始，并保留配置
+   的 generation。回包必须使用配置的 gateway 源 IP 及合法 VNI/locator；
+   不得回显 outbound opaque options，TLV 回包仅携带规定 locator。普通
+   GENEVE endpoint 不证明符合此契约。
+2. 检查 underlay 路由/邻居及双向 UDP，按真实封装和选项计算 MTU，检查 transit、
+   实际 port/Guest MTU。当前两阶段 provision 不把启动 `--mtu` 传给新 port。
+   核对网关到主机回程；仅有出站抓包不算成功。
+3. 使用 §2.1 返回的 `PORT` attach/交接 TAP FD，在 Guest 与受控网关侧端点
+   间发已知请求/响应，双向比对 nonce/payload。测试小包、接近有效 MTU 的包、
+   TCP/UDP 及所需 Guest DNS。按 §3.1 双端抓包，比对
+   `vswitch stats --port="$PORT"` 增量和网关观测；计数器不证明应用或策略成功。
+4. 仅在私有 fixture 验证允许与网关拒绝的目标/租户，对照分配身份核查决策；
+   分别验证无直接 sandbox-to-sandbox 转发、无效回包 locator/VNI 被拒及管理
+   专用目的地。不要对生产网络应用测试策略或伪造流量。跨身份投递立即停止。
+5. 关闭测试 VMM/FD owner，仅 detach 保存的端口并停止测试 switch。确认专用
+   transit 设备返回预期 namespace；网关运营方仅清理本 fixture 路由/策略。
+
+具体 TCP 请求/响应探针可由网关运营方在批准的测试 IP 暴露临时 Python 3
+端点。只把 curl 命令放入已 attach 且安装 curl 的 Guest 执行，须返回精确 proof
+行；记录前后双端抓包和端口 stats。这验证回程，还需用网关 UDP/DNS fixture
+和 allow/deny 策略场景复测，不能以单次 HTTP 成功代表完整策略验收。
+
+```bash
+# Gateway-side test endpoint, in the operator-selected test network
+TEST_ROOT=$(mktemp -d)
+printf 'kuasar-return-path-proof\n' > "$TEST_ROOT/probe"
+python3 -m http.server 18080 --bind "$TEST_IP" --directory "$TEST_ROOT" &
+TEST_PID=$!
+```
+
+```bash
+# Run inside the attached test guest, with the same reachable TEST_IP:
+curl --fail --max-time 5 "http://$TEST_IP:18080/probe"
+```
+
+```bash
+# Back at the gateway-side endpoint, after verification:
+kill "$TEST_PID"
+wait "$TEST_PID" 2>/dev/null || true
+rm -rf -- "$TEST_ROOT"
+```
+
+### 4.2 按故障域恢复
+
+| 故障 | 安全恢复与验收 |
+|---|---|
+| serve 退出，namespace/device/TC/pin 完整 | 检查 status/config，以原配置重启服务。内核转发可能存活；验证 health/TAPFD 及原有双向流量，不要把全部 detach 当作重启步骤。 |
+| namespace、TAP/transit device 或 pinned 状态损坏 | 停止准入，协调 orchestrator/sandboxer 排空或停止消费者。盘点 owner、port/generation 和已提交 checkpoint；owner 释放后按管理操作修复/重建，由 owner 重新 attach。旧 FD/端口不会自动有效，须验证新流量并显式清理孤儿资源。 |
+| ABI 升级，包括旧 stats PERCPU_ARRAY | 排空消费者、保留所需快照、停止旧 switch，以匹配 userspace/BPF ABI 重建，再由 owner 分配新绑定。不要原地替换活跃 map/TC 迎合新 reader。force cleanup 是损坏处理，可能遗留 device/TC，重建前检查。 |
+
+serve 重启或 switch 重建均不恢复丢失的 Guest 内存。暂停沙箱由 orchestrator/
+sandboxer 负责恢复资格、网络重绑定与资源准入，Connector 不重分配平台身份。
+恢复后再次验证 allow/deny 和回程，再开放准入。
