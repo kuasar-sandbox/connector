@@ -21,7 +21,9 @@ Forwarding decisions are concentrated in [bpf/switch_kern.c](../bpf/switch_kern.
 - Forwarding in the kernel without a userspace packet relay. This does not guarantee zero memory copies or context switches across the complete guest/VMM/network path.
 - TC references retaining programs and bpffs pins retaining maps after a control process exits, as long as the underlying resources remain intact.
 - One dedicated forwarding implementation to review, rather than a policy assembled across bridge forwarding tables and multiple firewall chains.
-- Per-CPU counters and bpftool inspection.
+- Kernel-lock-protected per-port counters and bpftool inspection. The current
+  ARRAY/generation ABI and old PERCPU_ARRAY recreation requirement are owned by
+  [the stats contract](vswitch-operations.md#210-connector-ctl-vswitch-stats).
 
 ### 1.2 Design principles
 

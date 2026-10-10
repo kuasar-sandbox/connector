@@ -119,6 +119,7 @@ Most query and one-shot commands emit JSON; `serve` stays resident and reports h
 A typical fresh-switch workflow in TAP mode, the default. Use a dedicated transit device that can safely be handed over; the named namespaces must exist:
 
 ```bash
+set -euo pipefail
 # Prepare namespaces and a dedicated, unused transit device
 ip netns add sw_ns
 ip netns add mgmt_ns
@@ -134,14 +135,19 @@ connector-ctl vswitch start sw1 --netns=sw_ns --ports=128 \
 ip netns exec mgmt_ns ip addr replace 169.254.169.254/32 dev eth0
 
 # Allocate a port; a TAPFD-capable VMM receiver must be waiting on /tmp/recv.sock
-connector-ctl vswitch attach sw1 --inner-ip=169.254.1.1 \
-    --transit-gateway-ip=10.0.0.2 --transit-geneve-vni=100
-TAPFD_SOCKET=/tmp/recv.sock connector-ctl vswitch open-port sw1 --port=1
+ATTACH_JSON=$(connector-ctl vswitch attach sw1 --inner-ip=169.254.1.1 \
+    --transit-gateway-ip=10.0.0.2 --transit-geneve-vni=100)
+PORT=$(printf '%s\n' "$ATTACH_JSON" | jq -er '.port | select(type == "number" and . > 0)')
+TAPFD_SOCKET=/tmp/recv.sock connector-ctl vswitch open-port sw1 --port="$PORT"
 
 # Release the port and stop from the namespace that should receive transit
-connector-ctl vswitch detach sw1 --port=1
+connector-ctl vswitch detach sw1 --port="$PORT"
 connector-ctl vswitch stop sw1
 ```
+
+This shell fragment requires Bash and `jq`. Retain the complete attach result
+(including generation when configured), and use its returned port for handoff
+and owner-directed cleanup; an allocation need not return port 1.
 
 ### 2.2 `connector-ctl vswitch start` / `serve`
 
@@ -521,3 +527,81 @@ connector-ctl vswitch show slots sw0
 ```
 
 Inspect UDP destination, the 24-bit VNI, OptLen, base C, option class/type/length/data and the start of the inner payload. TLV locator data must be the zero-based slot ID in big-endian 32-bit form.
+
+## 4. Gateway interoperability acceptance and recovery
+
+Use an isolated test switch/namespace and an operator-managed gateway. Connector
+provides the host switch and TAP handoff, not an external gateway product or a
+policy engine. Gateway implementation, routing/NAT, DNS, policy and audit belong
+to its operator. The [GENEVE wire contract](vswitch.md#42-geneve-tunnels),
+[MTU contract](vswitch.md#48-mtu-validation) and [TAP ownership](tapfd.md)
+remain authoritative.
+
+### 4.1 Two-ended acceptance
+
+1. Agree on IP-over-GENEVE versus Ether-over-GENEVE, `port`/`vni`/`tlv` locator,
+   UDP destination, VNI and any opaque policy options. Linux GENEVE bridge peers
+   need the Ethernet mode. Record the actual attach result: CLI port is one-based,
+   wire slot is zero-based; retain any configured generation. Gateway return
+   packets must use the configured gateway source IP and valid VNI/locator;
+   do not echo outbound opaque options. TLV return carries only the prescribed
+   locator. A generic GENEVE endpoint is not proof of this compatibility.
+2. Verify underlay routes/neighbors and bidirectional UDP reachability. Derive
+   MTU from the actual encapsulation and options, then inspect transit and actual
+   port/guest MTUs. Startup `--mtu` does not propagate to newly provisioned ports
+   in the current two-phase path. Verify the gateway's return route to the host;
+   outbound packet capture alone is not success.
+3. Attach using §2.1's returned `PORT`, hand the TAP FD to its intended consumer,
+   and run a known request/response between the guest and a controlled gateway-side
+   endpoint. Compare nonce and payload in both directions. Test small and
+   near-effective-MTU payloads, TCP and UDP, and guest DNS if required. Capture
+   both ends using §3.1 and compare `vswitch stats --port="$PORT"` deltas with
+   gateway observations. Counters are not application success or policy proof.
+4. In this private fixture, test an allowed destination and a gateway-denied
+   destination/tenant; inspect gateway decisions against the assigned identity.
+   Verify no direct sandbox-to-sandbox forwarding, invalid return locator/VNI
+   rejection and management-only destinations separately. Do not apply test policy
+   or forged traffic to production networks. Stop on cross-identity delivery.
+5. Close the test VMM/FD owner, detach only its recorded port, and stop only the
+   test switch. Confirm the dedicated transit device returns to the expected
+   namespace; the gateway operator removes only this fixture's routes/policy.
+
+For a concrete TCP request/response probe, the gateway operator can expose this
+temporary Python 3 endpoint on an approved test IP. Run only the curl command
+inside the attached guest (with curl installed); it must return the exact proof
+line. Record both captures and per-port stats before and after. This checks the
+return path; repeat with your gateway's UDP/DNS fixture and allowed/denied policy
+cases rather than interpreting one HTTP success as complete policy acceptance.
+
+```bash
+# Gateway-side test endpoint, in the operator-selected test network
+TEST_ROOT=$(mktemp -d)
+printf 'kuasar-return-path-proof\n' > "$TEST_ROOT/probe"
+python3 -m http.server 18080 --bind "$TEST_IP" --directory "$TEST_ROOT" &
+TEST_PID=$!
+```
+
+```bash
+# Run inside the attached test guest, with the same reachable TEST_IP:
+curl --fail --max-time 5 "http://$TEST_IP:18080/probe"
+```
+
+```bash
+# Back at the gateway-side endpoint, after verification:
+kill "$TEST_PID"
+wait "$TEST_PID" 2>/dev/null || true
+rm -rf -- "$TEST_ROOT"
+```
+
+### 4.2 Recovery by failure domain
+
+| Failure | Safe recovery and acceptance |
+|---|---|
+| `serve` exits; namespace/devices/TC/pins intact | Inspect status/config and restart the same service/config. In-kernel forwarding may survive. Check health/TAPFD service and existing bidirectional traffic; do not detach all ports as a daemon restart ritual. |
+| Namespace, TAP/transit device or pinned state damaged | Stop admission and coordinate orchestrator/sandboxer to drain or stop affected consumers. Inventory ownership, ports/generations and committed checkpoints. Repair/recreate through management operations only after owners release resources. Reattach via the owner; old FDs/port numbers are not automatically valid. Validate new traffic and cleanup orphaned resources explicitly. |
+| ABI upgrade (including old stats PERCPU_ARRAY) | Drain consumers, preserve required snapshots, stop the old switch, recreate with matching userspace/BPF ABI, then let owners allocate new bindings. Never replace live maps/TC in place to satisfy a new reader. Force cleanup is damaged-state handling and may leave devices/TC; inspect them before recreation. |
+
+Neither restarting serve nor rebuilding a switch restores lost guest memory.
+For a paused sandbox, orchestrator/sandboxer own eligible restore, network rebinding
+and resource admission; Connector does not reassign platform identity. Re-run the
+allow/deny and return-path checks after recovery before reopening admission.
