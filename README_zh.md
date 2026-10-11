@@ -123,6 +123,8 @@ ip netns del sw_ns
 
 ## 发行模型
 
+所选 owner 源码在 `release/helper-inputs.json` 显式声明编译型 E2E helper 清单。当前清单为空。后续 helper 及其构建配方由此 owner 声明维护，聚合打包自动发现，无需平台文件名清单。
+
 使用组件 Makefile 从选定源码构建。`release.sh package` 使用匹配的
 `bin/<arch>` 二进制,或显式指定的 `RELEASE_BIN_DIR`;只收集材料并生成 bundle,
 不重新构建二进制,不重置源码或构建缓存。所选源码 checkout、依赖版本、原生
