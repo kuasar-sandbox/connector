@@ -186,3 +186,5 @@ help:
 	@echo ""
 	@echo "Cross-compile:     make build TARGET_ARCH=aarch64   (aliases: amd64, arm64)"
 	@echo "Output layout:     bin/<arch>/$(BINARY_NAME)  (+ bin/$(BINARY_NAME) symlink on native builds)"
+
+# Temporary RFC 245 mixed-source Actions acceptance; do not merge.
