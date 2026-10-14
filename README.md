@@ -211,3 +211,5 @@ Do not publish credentials, real internal topology, packet captures containing s
 ## License
 
 Original project content is licensed under the [Apache License 2.0](LICENSE). The eBPF programs and generated objects retain the GPL-2.0-only boundary documented in [`LICENSE_SCOPE.md`](LICENSE_SCOPE.md). Preserve Linux, toolchain, vendored-code, and generated-artifact attribution and licensing.
+
+<!-- Temporary RFC 245 docs-only Actions acceptance; this branch is not a merge candidate. -->
