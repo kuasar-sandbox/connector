@@ -1,4 +1,5 @@
 #!/bin/bash
+# e2e-requires: ["bpf-map","bpf-tc","netns","tun"]
 # Tap-mode end-to-end test
 #
 # Topology:

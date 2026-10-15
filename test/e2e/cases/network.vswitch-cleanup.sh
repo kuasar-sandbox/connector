@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# e2e-requires: ["bpf-map","bpf-tc","netns","tun"]
 # Real regression: missing switch netns must not turn stale indices into host deletes.
 set -euo pipefail
 source "${E2E_LIB:?E2E_LIB is required}/common.sh"

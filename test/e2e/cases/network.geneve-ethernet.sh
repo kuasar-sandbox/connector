@@ -1,4 +1,5 @@
 #!/bin/bash
+# e2e-requires: ["bpf-map","bpf-tc","geneve","netns"]
 # GENEVE transit test (Ether-over-GENEVE via gateway bridge)
 #
 # Topology:

@@ -1,4 +1,5 @@
 #!/bin/bash
+# e2e-requires: ["bpf-map","bpf-tc","netns"]
 # IP-over-GENEVE transit test: two eBPF switches back-to-back
 #
 # Topology:

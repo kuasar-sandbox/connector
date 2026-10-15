@@ -1,4 +1,5 @@
 #!/bin/bash
+# e2e-requires: ["bpf-map","bpf-tc","netns"]
 # Control-plane E2E test: provision / reserve / serve / stop --force
 #
 # Topology: sw_ns + port_ns + sandbox1 (minimal, no transit, no GENEVE)
