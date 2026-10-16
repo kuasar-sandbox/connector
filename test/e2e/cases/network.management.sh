@@ -1,4 +1,5 @@
 #!/bin/bash
+# e2e-requires: ["bpf-map","bpf-tc","netns"]
 # Management plane connectivity + sandbox isolation test
 #
 # Topology:

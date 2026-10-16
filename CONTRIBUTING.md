@@ -54,6 +54,19 @@ A pull request should:
 
 Draft pull requests are welcome for early feedback, but they are not merge candidates.
 
+## E2E execution requirements
+
+Every `test/e2e/cases/<suite>.<case>.sh` starts with one static
+`# e2e-requires: [...]` JSON array below its shebang. The owner format is
+`test/e2e/lib/requirements.json` with `{"schema":1}`. Declare the minimum kernel
+and service capabilities used by the case and its helpers; use `[]` explicitly
+when none are needed. Missing, duplicate or unknown capabilities fail validation.
+Normal pinned source selection discovers additions, removals and requirement
+changes without a platform case allowlist. Runner labels and placement belong
+to the trusted platform configuration, not cases. See the
+[capability contract](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/test/README.md#static-execution-requirements)
+for supported names, checks and historical-input compatibility.
+
 ## Documentation
 
 Follow the [project documentation policy](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/CONTRIBUTING.md#documentation-contributions). Maintain full English/Chinese pairs at `name.md` and `name_zh.md` with reciprocal selectors. Preserve requirements, identifiers, examples, diagrams, facts and links; record source-backed corrections. Existing complete English-only material may remain English-only. A summary or language-detector pass is not a complete translation.
