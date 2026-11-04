@@ -118,7 +118,7 @@ test/connector/start_perf_bench.sh
 EOF
   awk '
     { path=$0; sub(/^\.\//, "", path) }
-    path != "" && path !~ /\/$/ && path !~ /^share\/(licenses|sources)\/connector\// { print path }
+    path != "" && path !~ /\/$/ && path !~ /^share\/licenses\/connector\// { print path }
   ' "$listing" | LC_ALL=C sort > "$actual_files"
   cmp -s "$expected_files" "$actual_files" \
     || { diff -u "$expected_files" "$actual_files" >&2 || true; fail "$archive does not match the exact connector release file set"; }
@@ -138,7 +138,7 @@ EOF
   ' || fail "$archive contains an unsafe type, mode or ownership"
   awk '
     { path=$0; sub(/^\.\//, "", path) }
-    path != "" && path !~ /\/$/ && path ~ /^share\// && path !~ /^share\/(licenses|sources)\/connector\// { exit 1 }
+    path != "" && path !~ /\/$/ && path ~ /^share\// && path !~ /^share\/licenses\/connector\// { exit 1 }
   ' "$listing" || fail "$archive contains another release unit's material namespace"
 }
 
@@ -165,23 +165,11 @@ validate_bundle() {
   mkdir -p "$extract"
   tar -xzf "$bundle/assets/$archive" -C "$extract"
   check_go_binary "$extract/bin/connector-ctl" "$arch"
-  local project_sha
-  project_sha="$(go version -m "$extract/bin/connector-ctl" | \
-    awk -F '\t' '$2 == "build" && $3 ~ /^vcs.revision=/ {print substr($3, 14)}')"
-  awk -F '\t' '
-    NR == 1 { next }
-    $1 == "bin/*,deploy/*,test/connector/*" && $2 == "connector" { next }
-    $1 == "bin/connector-ctl" && ($2 == "embedded-ebpf" || $2 == "Go toolchain") { next }
-    { exit 1 }
-  ' "$extract/share/sources/$NAME/SOURCES.tsv" \
-    || fail "unrecognized connector source inventory record"
   release_materials_validate "$extract" "$NAME"
-  release_materials_require_project_source "$extract" "$NAME" 'bin/*,deploy/*,test/connector/*' "$version" \
-    bin/connector-ctl
-  release_materials_require_source "$extract" "$NAME" 'bin/connector-ctl' 'embedded-ebpf' "$version" \
-    "https://github.com/kuasar-sandbox/connector/blob/$project_sha/bpf/switch_kern.c" \
-    "git:$project_sha;spdx:GPL-2.0-only"
-  release_materials_require_go_key "$extract" "$NAME" 'bin/connector-ctl'
+  [ -s "$extract/share/licenses/connector/project/LICENSE" ] \
+    && [ -s "$extract/share/licenses/connector/project/LICENSES/GPL-2.0-only.txt" ] \
+    || fail "connector project and embedded eBPF licenses are required"
+  release_materials_validate_go "$extract" "$NAME" bin/connector-ctl
   [ -x "$extract/bin/connector-ctl" ] \
     || fail "$archive is missing executable bin/connector-ctl"
   local file
