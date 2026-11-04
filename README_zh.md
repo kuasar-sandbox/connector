@@ -145,7 +145,7 @@ module 输入。
 Connector module。部署文件和运维辅助脚本取自所选源码树。归档保留内嵌 eBPF
 的来源及许可标识,包括项目许可范围说明和 GPL 正文。验证拒绝额外载荷、不安全
 路径、链接、错误属主或权限,以及组件命名空间以外的材料。
-许可目录仅包含 Connector 项目、其内嵌 eBPF 及 `connector-ctl` 使用的 Go 工具链。
+许可目录包含 Connector 项目、其内嵌 eBPF，以及 `connector-ctl` 使用的 Go 工具链和版本化第三方 Go 依赖。
 
 `connector` 独立发布 `vX.Y.Z` 组件版本。已发布原生架构的组件归档包含 `connector-ctl`、部署文件和组件发行合同选定的运维辅助脚本。聚合 platform 包按显式文档/测试选择携带用户指南与规范 E2E 运行输入，内部设计文档和源码专用测试保留在源码仓。用 `make release VERSION=vX.Y.Z` 构建并验证相同的本地 bundle 布局。
 

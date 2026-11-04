@@ -157,7 +157,7 @@ matching Connector module. Deployment files and operational helpers are copied
 from the selected source tree. The archive retains the embedded eBPF source
 and license identity, including the project license scope and GPL text.
 Validation rejects unexpected payloads, unsafe paths, links, ownership or modes,
-and materials outside the component namespace. License directories are limited to the Connector project, its embedded eBPF and the Go toolchain used by `connector-ctl`.
+and materials outside the component namespace. License directories include the Connector project, its embedded eBPF, and the Go toolchain and versioned third-party Go dependencies used by `connector-ctl`.
 
 `connector` publishes independent component versions named `vX.Y.Z`. Each published native-architecture component archive contains `connector-ctl`, deployment files, and the operational helpers selected by the component release contract. The aggregate platform archive carries selected user guides and canonical E2E runtime inputs from its explicit documentation/test selections. Internal design documents and source-only tests remain in the source repositories.
 Use `make release VERSION=vX.Y.Z` to build and validate the same local bundle layout.
