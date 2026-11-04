@@ -35,9 +35,7 @@ init_fixture_repo() {
   git -C "$directory" rev-parse HEAD
 }
 
-mkdir -p "$TMP/git-source" \
-  "$TMP/material-hash/share/licenses/hash-test/LICENSES" \
-  "$TMP/material-hash/share/sources/hash-test"
+mkdir -p "$TMP/git-source"
 printf 'fixture license\n' > "$TMP/git-source/LICENSE"
 fixture_git_sha="$(init_fixture_repo "$TMP/git-source" LICENSE)"
 [ "$(release_materials_git_version "$TMP/git-source" v1.2.3 "$fixture_git_sha")" = "git:$fixture_git_sha" ] \
@@ -67,112 +65,34 @@ if (
 ); then
   fail "license collection accepted material absent from the selected commit"
 fi
-printf 'nested license manifest\n' \
-  > "$TMP/material-hash/share/licenses/hash-test/LICENSES/MATERIALS.sha256"
-printf 'generated inventory\n' \
-  > "$TMP/material-hash/share/sources/hash-test/MATERIALS.sha256"
-release_materials_hash_tree "$TMP/material-hash" hash-test "$TMP/material-hash-actual"
-grep -Fq 'share/licenses/hash-test/LICENSES/MATERIALS.sha256' "$TMP/material-hash-actual" \
-  || fail "license file named MATERIALS.sha256 was omitted from the material inventory"
-if grep -Fq 'share/sources/hash-test/MATERIALS.sha256' "$TMP/material-hash-actual"; then
-  fail "generated material inventory included itself"
-fi
-
+# Package validation checks actual paths, permissions, notices and payloads.
 material_root="$TMP/material-validation"
 material_unit=validation
-mkdir -p "$material_root/bin"
-printf 'payload\n' > "$material_root/bin/tool"
-mkdir -p "$material_root/share/licenses/$material_unit/project" \
-  "$material_root/share/sources/$material_unit" "$TMP/material-validation-work"
+mkdir -p "$material_root/share/licenses/$material_unit/project" "$TMP/material-validation-work"
 printf 'fixture license\n' > "$material_root/share/licenses/$material_unit/project/LICENSE"
-{
-  printf 'payload\tname\tversion\tsource\tintegrity\tlicense_directory\n'
-  printf 'bin/tool\tfixture\tv1.0.0\thttps://example.invalid/source.tar.gz\tsha256:fixture\tshare/licenses/%s/project\n' \
-    "$material_unit"
-} > "$material_root/share/sources/$material_unit/SOURCES.tsv"
-printf 'payload\trecord\tname\tversion_or_value\tchecksum\n' \
-  > "$material_root/share/sources/$material_unit/GO-BUILD-INFO.tsv"
-printf 'module\tversion\tchecksum\n' \
-  > "$material_root/share/sources/$material_unit/GO-MODULES.tsv"
-release_materials_hash_tree "$material_root" "$material_unit" \
-  "$material_root/share/sources/$material_unit/MATERIALS.sha256"
 find "$material_root/share" -type d -exec chmod 0755 {} +
 find "$material_root/share" -type f -exec chmod 0644 {} +
-(
-  WORK="$TMP/material-validation-work"
-  release_materials_validate "$material_root" "$material_unit"
-)
-
-cp -a "$material_root" "$TMP/material-unsafe-license-path"
-{
-  printf 'payload\tname\tversion\tsource\tintegrity\tlicense_directory\n'
-  printf 'bin/tool\tfixture\tv1.0.0\thttps://example.invalid/source.tar.gz\tsha256:fixture\t../../../etc\n'
-} > "$TMP/material-unsafe-license-path/share/sources/$material_unit/SOURCES.tsv"
-release_materials_hash_tree "$TMP/material-unsafe-license-path" "$material_unit" \
-  "$TMP/material-unsafe-license-path/share/sources/$material_unit/MATERIALS.sha256"
-chmod 0644 "$TMP/material-unsafe-license-path/share/sources/$material_unit/MATERIALS.sha256"
-if (
-  WORK="$TMP/material-validation-work"
-  release_materials_validate "$TMP/material-unsafe-license-path" "$material_unit" \
-    >/dev/null 2>&1
-); then
-  fail "release material validator accepted a license directory outside its unit"
-fi
-
-cp -a "$material_root" "$TMP/material-invalid-record"
-{
-  printf 'payload\tname\tversion\tsource\tintegrity\tlicense_directory\n'
-  printf 'bin/tool\tfixture\tv1.0.0\thttps://example.invalid/source.tar.gz\tsha256:fixture\n'
-} > "$TMP/material-invalid-record/share/sources/$material_unit/SOURCES.tsv"
-release_materials_hash_tree "$TMP/material-invalid-record" "$material_unit" \
-  "$TMP/material-invalid-record/share/sources/$material_unit/MATERIALS.sha256"
-chmod 0644 "$TMP/material-invalid-record/share/sources/$material_unit/MATERIALS.sha256"
-if (
-  WORK="$TMP/material-validation-work"
-  release_materials_validate "$TMP/material-invalid-record" "$material_unit" \
-    >/dev/null 2>&1
-); then
-  fail "release material validator accepted a SOURCES.tsv row with fewer than six fields"
-fi
-
-cp -a "$material_root" "$TMP/material-unsafe-parent-mode"
-chmod 0777 "$TMP/material-unsafe-parent-mode/share"
-if (
-  WORK="$TMP/material-validation-work"
-  release_materials_validate "$TMP/material-unsafe-parent-mode" "$material_unit" \
-    >/dev/null 2>&1
-); then
-  fail "release material validator accepted an unsafe parent directory mode"
-fi
-
-cp -a "$material_root" "$TMP/material-empty-license"
-rm "$TMP/material-empty-license/share/licenses/$material_unit/project/LICENSE"
-release_materials_hash_tree "$TMP/material-empty-license" "$material_unit" \
-  "$TMP/material-empty-license/share/sources/$material_unit/MATERIALS.sha256"
-if (
-  WORK="$TMP/material-validation-work"
-  release_materials_validate "$TMP/material-empty-license" "$material_unit" >/dev/null 2>&1
-); then
-  fail "release material validator accepted an empty license directory"
-fi
-if (
-  release_materials_require_source "$material_root" "$material_unit" bin/tool fixture v2.0.0 \
-    >/dev/null 2>&1
-); then
-  fail "release material validator accepted a different release version"
-fi
-if (
-  release_materials_require_go "$material_root" "$material_unit" bin/tool >/dev/null 2>&1
-); then
-  fail "release material validator accepted missing Go build records"
-fi
-cp -a "$material_root" "$TMP/material-missing-payload"
-rm "$TMP/material-missing-payload/bin/tool"
-if (
-  WORK="$TMP/material-validation-work"
-  release_materials_validate "$TMP/material-missing-payload" "$material_unit" >/dev/null 2>&1
-); then
-  fail "release material validator accepted a record for an unshipped payload"
+WORK="$TMP/material-validation-work" release_materials_validate "$material_root" "$material_unit"
+for mutation in parent-mode file-mode link fifo empty missing unsafe-path source-record; do
+  altered="$TMP/material-$mutation"
+  cp -a "$material_root" "$altered"
+  license="$altered/share/licenses/$material_unit/project/LICENSE"
+  case "$mutation" in
+    parent-mode) chmod 0777 "$altered/share" ;;
+    file-mode) chmod 0666 "$license" ;;
+    link) rm "$license"; ln -s /etc/passwd "$license" ;;
+    fifo) rm "$license"; mkfifo "$license" ;;
+    empty) : > "$license" ;;
+    missing) rm "$license" ;;
+    unsafe-path) mv "$license" "${license} unsafe" ;;
+    source-record) mkdir -p "$altered/share/sources/$material_unit"; printf 'retired\n' > "$altered/share/sources/$material_unit/SOURCES.tsv" ;;
+  esac
+  if (WORK="$TMP/material-validation-work" release_materials_validate "$altered" "$material_unit" >/dev/null 2>&1); then
+    fail "license validator accepted $mutation"
+  fi
+done
+if (WORK="$TMP/material-validation-work" release_materials_validate_go "$material_root" "$material_unit" bin/missing >/dev/null 2>&1); then
+  fail "validator accepted missing Go binary"
 fi
 
 bash "$ROOT/scripts/test-preview-line.sh"
@@ -318,16 +238,12 @@ for path in ./bin/connector-ctl ./deploy/connector-vswitch.service \
   ./share/licenses/connector/project/LICENSE \
   ./share/licenses/connector/project/LICENSE_SCOPE.md \
   ./share/licenses/connector/project/LICENSES/GPL-2.0-only.txt \
-  ./share/licenses/connector/go-toolchain/"$go_toolchain"/LICENSE \
-  ./share/sources/connector/SOURCES.tsv \
-  ./share/sources/connector/GO-BUILD-INFO.tsv \
-  ./share/sources/connector/GO-MODULES.tsv \
-  ./share/sources/connector/MATERIALS.sha256; do
+  ./share/licenses/connector/go-toolchain/"$go_toolchain"/LICENSE; do
   tar -tzf "$archive" | grep -Fx "$path" >/dev/null || fail "archive is missing $path"
 done
-tar -xOf "$archive" ./share/sources/connector/SOURCES.tsv \
-  | grep -Fq $'\tGo toolchain\t'"$go_toolchain"$'\t' \
-  || fail "archive does not associate its Go toolchain with license material"
+if tar -tzf "$archive" | grep -E '(^|/)sources/|SOURCES[.]tsv|GO-BUILD-INFO[.]tsv|GO-MODULES[.]tsv|MATERIALS[.]sha256|CLOUD-HYPERVISOR-Cargo.lock' >/dev/null; then
+  fail "new archive includes historical source or build records"
+fi
 if tar -tzf "$archive" | grep -E '^\./(docs|test/e2e)(/|$)|^\./test/connector/(geneve_.*_test|mgmt_isolation_test|provision_test|tap_test)\.sh$' >/dev/null; then
   fail "component archive contains documentation or E2E sources"
 fi
@@ -406,17 +322,6 @@ for target_package in ./examples/tapfd_receiver command-line-arguments; do
   mkdir "$candidate/root"
   tar -xzf "$archive" -C "$candidate/root"
   install -m 0755 "$binary" "$candidate/root/bin/connector-ctl"
-  # Recreate Go metadata and both checksums while retaining the other source
-  # records. The example is from the same clean commit, not a stale binary.
-  release_materials_init "$candidate/metadata-stage" "$candidate/materials" connector
-  release_materials_add_go_binary "$binary" bin/connector-ctl
-  [ ! -s "$candidate/materials/go-modules" ] || fail "unexpected fixture dependency"
-  {
-    printf 'payload\trecord\tname\tversion_or_value\tchecksum\n'
-    LC_ALL=C sort -u "$candidate/materials/go-build-info"
-  } > "$candidate/root/share/sources/connector/GO-BUILD-INFO.tsv"
-  release_materials_hash_tree "$candidate/root" connector \
-    "$candidate/root/share/sources/connector/MATERIALS.sha256"
   tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
     -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
   if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" > "$candidate/result.log" 2>&1; then
@@ -424,51 +329,6 @@ for target_package in ./examples/tapfd_receiver command-line-arguments; do
   fi
   grep -Fq 'must be the connector-ctl main package' "$candidate/result.log" \
     || fail "wrong main package failed for an unrelated reason"
-done
-
-for column in 4 5 6; do
-  candidate="$TMP/ebpf-source-$column"
-  cp -a "$TMP/bundle" "$candidate"
-  mkdir "$candidate/root"
-  tar -xzf "$archive" -C "$candidate/root"
-  inventory="$candidate/root/share/sources/connector/SOURCES.tsv"
-  awk -F '\t' -v OFS='\t' -v column="$column" \
-    '$2 == "embedded-ebpf" {$column=(column == 6 ? "share/licenses/connector/go-toolchain/'"$go_toolchain"'" : "not-the-selected-ebpf-source")} {print}' \
-    "$inventory" > "$candidate/changed.tsv"
-  mv "$candidate/changed.tsv" "$inventory"
-  release_materials_hash_tree "$candidate/root" connector \
-    "$candidate/root/share/sources/connector/MATERIALS.sha256"
-  tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
-    -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
-  if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" > "$candidate/result.log" 2>&1; then
-    fail "validator accepted embedded eBPF source column $column with regenerated checksums"
-  fi
-  grep -Fq 'embedded-ebpf' "$candidate/result.log" || fail "eBPF source mutation failed for an unrelated reason"
-done
-
-# The archive name is the requested release target; an untagged source record
-# identifies the actual commit and does not pretend that target tag exists.
-tar -xOf "$archive" ./share/sources/connector/SOURCES.tsv | \
-  awk -F '\t' -v sha="$fixture_project_sha" \
-    '$2 == "connector" && $3 == "git:" sha {found=1} END {exit !found}' \
-  || fail "pre-tag project source was recorded as an existing release"
-for column in 3 4 5; do
-  candidate="$TMP/project-source-$column"
-  cp -a "$TMP/bundle" "$candidate"
-  mkdir "$candidate/root"
-  tar -xzf "$archive" -C "$candidate/root"
-  inventory="$candidate/root/share/sources/connector/SOURCES.tsv"
-  awk -F '\t' -v OFS='\t' -v column="$column" \
-    '$2 == "connector" {$column="not-the-selected-source"} {print}' \
-    "$inventory" > "$candidate/changed.tsv"
-  mv "$candidate/changed.tsv" "$inventory"
-  release_materials_hash_tree "$candidate/root" connector \
-    "$candidate/root/share/sources/connector/MATERIALS.sha256"
-  tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
-    -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
-  if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" >/dev/null 2>&1; then
-    fail "validator accepted project provenance column $column with regenerated checksums"
-  fi
 done
 
 cp -a "$TMP/bundle" "$TMP/tampered"
@@ -531,34 +391,6 @@ tar --sort=name --owner=1234 --group=0 --numeric-owner --mtime=@1700000000 \
 if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/nonroot-owner" >/dev/null 2>&1; then
   fail "validator accepted non-root numeric ownership with regenerated checksums"
 fi
-
-for mutation in undeclared-source wrong-source-payload; do
-  candidate="$TMP/source-claims-$mutation"
-  cp -a "$TMP/bundle" "$candidate"
-  mkdir "$candidate/root"
-  tar -xzf "$archive" -C "$candidate/root"
-  material="share/licenses/connector/injected"
-  mkdir -p "$candidate/root/$material"
-  printf 'unclaimed fixture notice\n' > "$candidate/root/$material/NOTICE"
-  if [ "$mutation" = undeclared-source ]; then
-    payload=bin/connector-ctl
-    source_name=injected
-  else
-    payload=test/connector/perf_bench.sh
-    source_name='embedded-ebpf'
-  fi
-  printf '%s\t%s\tv1.2.3\thttps://example.invalid/source\tgit:%040d\t%s\n' \
-    "$payload" "$source_name" 0 "$material" >> "$candidate/root/share/sources/connector/SOURCES.tsv"
-  release_materials_hash_tree "$candidate/root" connector \
-    "$candidate/root/share/sources/connector/MATERIALS.sha256"
-  tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
-    -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
-  if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" > "$candidate/result.log" 2>&1; then
-    fail "validator accepted $mutation claiming injected license material"
-  fi
-  grep -Fq 'unrecognized connector source inventory record' "$candidate/result.log" \
-    || { sed -n '1,$p' "$candidate/result.log" >&2; fail "$mutation failed for an unrelated reason"; }
-done
 
 # Standalone validation must not need source checkouts, module downloads or a build.
 mkdir -p "$TMP/standalone-tools" "$TMP/standalone-bin"
