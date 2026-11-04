@@ -2,6 +2,10 @@
 
 set -euo pipefail
 
+# This suite compiles private synthetic modules; product source gates select
+# their own verified workspace outside these standalone packaging fixtures.
+export GOWORK=off
+
 # Archive fixtures target x86_64 even when this gate runs on an ARM host.
 # Validators run natively; payload fixtures are inspected, never executed.
 
@@ -210,7 +214,7 @@ if (release_materials_require_go_revision "$TMP/go-fixture" \
   0000000000000000000000000000000000000000 >/dev/null 2>&1); then
   fail "release accepted a binary built from another commit"
 fi
-GO111MODULE=off go build -o "$TMP/unstamped-go-fixture" "$fixture_root/cmd/connector-ctl/main.go"
+GOWORK=off GO111MODULE=off go build -o "$TMP/unstamped-go-fixture" "$fixture_root/cmd/connector-ctl/main.go"
 if (release_materials_require_go_revision "$TMP/unstamped-go-fixture" "$fixture_project_sha" >/dev/null 2>&1); then
   fail "release accepted a binary without source stamping"
 fi

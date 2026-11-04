@@ -144,7 +144,7 @@ printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >>
                     github_path = root / "github-path"
                     github_env.unlink(missing_ok=True)
                     github_path.unlink(missing_ok=True)
-                    env = dict(os.environ, PATH=path, TARGET_ARCH="x86_64",
+                    env = dict(os.environ, PATH=path, TARGET_ARCH="x86_64", GOWORK="off",
                                OBSERVED=str(observed),
                                GOENV=str(goenv), GITHUB_ENV=str(github_env),
                                GITHUB_PATH=str(github_path))
@@ -179,7 +179,7 @@ printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >>
             github_path = root / "github-path"
             github_env.unlink(missing_ok=True)
             github_path.unlink(missing_ok=True)
-            env = dict(os.environ, PATH=path, TARGET_ARCH="x86_64",
+            env = dict(os.environ, PATH=path, TARGET_ARCH="x86_64", GOWORK="off",
                        OBSERVED=str(observed),
                        GOENV=str(goenv), GOROOT=str(stale),
                        GOTOOLCHAIN="go9.99.9+path", GITHUB_ENV=str(github_env),
