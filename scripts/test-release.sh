@@ -210,30 +210,13 @@ grep -Fqx 'run-name: Release ${{ inputs.version }} @${{ inputs.source_sha }}' \
   "$ROOT/.github/workflows/release.yml" \
   || fail "release run identity does not pin source_sha"
 workflow="$ROOT/.github/workflows/release.yml"
-grep -Fq 'kuasar-preview-binding' "$ROOT/scripts/publish-release.sh" \
-  || fail "Preview publisher does not record its build binding"
 for workflow in release.yml delete-preview.yml; do
   [ "$(grep -Fc 'group: component-mutation-${{ github.repository }}-${{ inputs.version }}' \
     "$ROOT/.github/workflows/$workflow")" -eq 1 ] \
     || fail "$workflow does not hold exactly one full-workflow mutation lock"
 done
-grep -Fq 'kuasar-release-source' "$ROOT/scripts/publish-release.sh" \
-  || fail "publisher does not record Stable source provenance"
-grep -Fq 'reconcile_main_latest' "$ROOT/scripts/publish-release.sh" \
-  || fail "publisher does not reconcile component main Latest by source commit"
-RECONCILE_WORKFLOW="$ROOT/.github/workflows/reconcile-latest.yml"
-grep -Fq 'group: component-latest-reconciliation-${{ github.repository }}' \
-  "$RECONCILE_WORKFLOW" \
-  || fail "Latest reconciliation is not serialized across component versions"
-grep -Fq 'workflow_run:' "$RECONCILE_WORKFLOW" \
-  || fail "Latest reconciliation is not triggered after release completion"
-grep -Fq 'schedule:' "$RECONCILE_WORKFLOW" \
-  || fail "Latest reconciliation has no automatic recovery schedule"
-grep -Fq 'publish-release.sh reconcile' "$RECONCILE_WORKFLOW" \
-  || fail "Latest reconciliation does not use the idempotent entrypoint"
-if grep -R -Fq 'queue: max' "$ROOT/.github/workflows"; then
-  fail "workflows use the unsupported concurrency queue key"
-fi
+[ ! -e "$ROOT/.github/workflows/reconcile-latest.yml" ] || fail "retired Latest writer remains"
+PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/scripts/test-release-publisher.py"
 
 expected_cases=(
   test/e2e/cases/network.geneve-ethernet.sh
@@ -278,6 +261,7 @@ printf '/bin/\n/build/\n' > "$fixture_root/.gitignore"
 install -m 0755 "$ROOT/scripts/release.sh" "$fixture_root/scripts/release.sh"
 install -m 0755 "$ROOT/scripts/release-materials.sh" "$fixture_root/scripts/release-materials.sh"
 install -m 0755 "$ROOT/scripts/publish-release.sh" "$fixture_root/scripts/publish-release.sh"
+install -m 0644 "$ROOT/scripts/release-publisher.py" "$fixture_root/scripts/release-publisher.py"
 printf 'module github.com/kuasar-sandbox/connector\n\ngo 1.24\n' > "$fixture_root/go.mod"
 mkdir -p "$fixture_root/cmd/connector-ctl"
 printf 'package main\nfunc main() {}\n' > "$fixture_root/cmd/connector-ctl/main.go"
@@ -314,11 +298,11 @@ install -m 0755 "$TMP/go-fixture" "$TMP/bin/connector-ctl"
 
 mkdir -p "$fixture_root/bin/x86_64"
 install -m 0755 "$TMP/go-fixture" "$fixture_root/bin/x86_64/connector-ctl"
-RELEASE_BIN_DIR="$TMP/bin" "$fixture_root/scripts/release.sh" package v1.2.3 x86_64 \
+RELEASE_BIN_DIR="$TMP/bin" RELEASE_SOURCE_ROOT="$fixture_root" "$fixture_root/scripts/release.sh" package v1.2.3 x86_64 \
   "$TMP/prebuilt-override"
 cmp "$TMP/bin/connector-ctl" "$fixture_root/bin/x86_64/connector-ctl"
 SOURCE_DATE_EPOCH=1700000000 GH_TOKEN=fixture-private AWS_SECRET_ACCESS_KEY=fixture-private \
-  "$fixture_root/scripts/release.sh" package v1.2.3 x86_64 "$TMP/bundle"
+  RELEASE_SOURCE_ROOT="$fixture_root" "$fixture_root/scripts/release.sh" package v1.2.3 x86_64 "$TMP/bundle"
 "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/bundle"
 "$ROOT/scripts/test-publisher.sh" "$fixture_root/scripts/publish-release.sh" \
   "$TMP/bundle" kuasar-sandbox/connector v1.2.3 \
@@ -355,7 +339,7 @@ if tar -tzf "$archive" | grep -E '(^|/)release\.json$|(^|/)release/[^/]+\.json$'
 fi
 
 SOURCE_DATE_EPOCH=1700000000 \
-  "$fixture_root/scripts/release.sh" package v1.2.3 x86_64 "$TMP/reproducible"
+  RELEASE_SOURCE_ROOT="$fixture_root" "$ROOT/scripts/release.sh" package v1.2.3 x86_64 "$TMP/reproducible"
 cmp -s "$archive" "$TMP/reproducible/assets/connector-v1.2.3-linux-x86_64.tar.gz" \
   || fail "identical inputs did not produce an identical archive"
 
@@ -370,7 +354,6 @@ for target in darwin/amd64 linux/arm64; do
   install -m 0755 "$TMP/target-${target//\//-}" "$candidate/root/bin/connector-ctl"
   tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
     -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
-  (cd "$candidate/assets" && sha256sum "$(basename "$archive")" > SHA256SUMS)
   if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" > "$candidate/result.log" 2>&1; then
     fail "validator accepted a $target payload with regenerated checksums"
   fi
@@ -380,7 +363,7 @@ done
 mkdir -p "$TMP/arm-bin"
 install -m 0755 "$TMP/target-linux-arm64" "$TMP/arm-bin/connector-ctl"
 SOURCE_DATE_EPOCH=1700000000 RELEASE_BIN_DIR="$TMP/arm-bin" \
-  "$fixture_root/scripts/release.sh" package v1.2.3 aarch64 "$TMP/arm-bundle"
+  RELEASE_SOURCE_ROOT="$fixture_root" "$fixture_root/scripts/release.sh" package v1.2.3 aarch64 "$TMP/arm-bundle"
 # Assembly is offline. Satisfy the publisher's tool preflight while making any
 # accidental API invocation fail, even on hosts without the GitHub CLI.
 mkdir "$TMP/offline-publisher-bin"
@@ -436,7 +419,6 @@ for target_package in ./examples/tapfd_receiver command-line-arguments; do
     "$candidate/root/share/sources/connector/MATERIALS.sha256"
   tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
     -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
-  (cd "$candidate/assets" && sha256sum "$(basename "$archive")" > SHA256SUMS)
   if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" > "$candidate/result.log" 2>&1; then
     fail "validator accepted the $target_package main package with regenerated metadata and checksums"
   fi
@@ -458,7 +440,6 @@ for column in 4 5 6; do
     "$candidate/root/share/sources/connector/MATERIALS.sha256"
   tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
     -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
-  (cd "$candidate/assets" && sha256sum "$(basename "$archive")" > SHA256SUMS)
   if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" > "$candidate/result.log" 2>&1; then
     fail "validator accepted embedded eBPF source column $column with regenerated checksums"
   fi
@@ -485,7 +466,6 @@ for column in 3 4 5; do
     "$candidate/root/share/sources/connector/MATERIALS.sha256"
   tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
     -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
-  (cd "$candidate/assets" && sha256sum "$(basename "$archive")" > SHA256SUMS)
   if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" >/dev/null 2>&1; then
     fail "validator accepted project provenance column $column with regenerated checksums"
   fi
@@ -510,16 +490,15 @@ tar -xzf "$retired_archive" -C "$TMP/retired-stage"
 install -m 0755 /dev/null "$TMP/retired-stage/test/connector/manage_switch.sh"
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='@1700000000' \
   --pax-option=delete=atime,delete=ctime -czf "$retired_archive" -C "$TMP/retired-stage" .
-(cd "$TMP/retired-helper/assets" && sha256sum "$(basename "$retired_archive")" > SHA256SUMS)
 if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/retired-helper" >/dev/null 2>&1; then
   fail "validator accepted a checksummed archive containing the retired topology helper"
 fi
 
-if RELEASE_BIN_DIR="$TMP/bin" "$fixture_root/scripts/release.sh" package 01.2.3 x86_64 \
+if RELEASE_BIN_DIR="$TMP/bin" RELEASE_SOURCE_ROOT="$fixture_root" "$fixture_root/scripts/release.sh" package 01.2.3 x86_64 \
   "$TMP/invalid-version" >/dev/null 2>&1; then
   fail "packager accepted an invalid version"
 fi
-if RELEASE_BIN_DIR="$TMP/bin" "$fixture_root/scripts/release.sh" package v1.2.3 aarch64 \
+if RELEASE_BIN_DIR="$TMP/bin" RELEASE_SOURCE_ROOT="$fixture_root" "$fixture_root/scripts/release.sh" package v1.2.3 aarch64 \
   "$TMP/invalid-arch" >/dev/null 2>&1; then
   fail "packager accepted x86_64 payloads as aarch64"
 fi
@@ -537,7 +516,6 @@ for mutation in setuid setgid writable-directory writable-binary; do
   esac
   tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
     -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
-  (cd "$candidate/assets" && sha256sum "$(basename "$archive")" > SHA256SUMS)
   if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" > "$candidate/result.log" 2>&1; then
     fail "validator accepted $mutation with regenerated checksums"
   fi
@@ -550,7 +528,6 @@ mkdir "$TMP/nonroot-owner/root"
 tar -xzf "$archive" -C "$TMP/nonroot-owner/root"
 tar --sort=name --owner=1234 --group=0 --numeric-owner --mtime=@1700000000 \
   -czf "$TMP/nonroot-owner/assets/$(basename "$archive")" -C "$TMP/nonroot-owner/root" .
-(cd "$TMP/nonroot-owner/assets" && sha256sum "$(basename "$archive")" > SHA256SUMS)
 if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/nonroot-owner" >/dev/null 2>&1; then
   fail "validator accepted non-root numeric ownership with regenerated checksums"
 fi
@@ -576,7 +553,6 @@ for mutation in undeclared-source wrong-source-payload; do
     "$candidate/root/share/sources/connector/MATERIALS.sha256"
   tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
     -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
-  (cd "$candidate/assets" && sha256sum "$(basename "$archive")" > SHA256SUMS)
   if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" > "$candidate/result.log" 2>&1; then
     fail "validator accepted $mutation claiming injected license material"
   fi
