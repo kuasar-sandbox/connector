@@ -130,6 +130,8 @@ by this run. Never force-stop a pre-existing switch or delete a foreign namespac
 
 ## Release model
 
+Preview cleanup ignores historical `SHA256SUMS` and body records. Completeness uses exact package names and native asset IDs, sizes, digests and upload states; historical x86_64-only and complete dual-architecture packages are protected. Missing or ambiguous metadata is retained and reported. Cleanup rechecks the actual tag and Release before deletion, supports partial retries and treats only confirmed 404 as absence. The project release policy continues to define scope and retention.
+
 The selected owner source explicitly declares its compiled E2E helper inventory in `release/helper-inputs.json`. The current inventory is empty. Future helpers and their build recipe belong in this owner declaration; aggregate packaging discovers them without a platform filename list.
 
 Build from the selected source with the component Makefile. `release.sh package`

@@ -123,6 +123,8 @@ ip netns del sw_ns
 
 ## 发行模型
 
+Preview 清理忽略历史 `SHA256SUMS` 和正文记录。完整性按精确包名、原生资产 ID、大小、摘要与上传状态判断；历史单 x86_64 包和完整双架构包均受保护，缺失或歧义元数据保留并报错。删除前复核实际 Tag 与 Release，部分删除可重试；只有明确 404 视为不存在。保留范围与期限由项目发行清理规则决定。
+
 所选 owner 源码在 `release/helper-inputs.json` 显式声明编译型 E2E helper 清单。当前清单为空。后续 helper 及其构建配方由此 owner 声明维护，聚合打包自动发现，无需平台文件名清单。
 
 使用组件 Makefile 从选定源码构建。`release.sh package` 使用匹配的
