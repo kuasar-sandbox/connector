@@ -138,27 +138,14 @@ Preview 清理忽略历史 `SHA256SUMS` 和正文记录。完整性按精确包�
 本组件没有内部兄弟组件依赖。官方包中不受支持的本地替换需要改用带版本的
 module 输入。
 
-材料放在 `share/licenses/<component>` 和 `share/sources/<component>`。
-后者包含 `SOURCES.tsv`、`GO-BUILD-INFO.tsv`、`GO-MODULES.tsv` 与
-`MATERIALS.sha256`。声明缺失、子目录不可读或遍历不完整时收集失败。
-独立验证检查交付清单、校验和、必需文件、来源记录相符性、载荷身份及归档路径/
-类型/权限。它不获取源码 checkout 或 Go 模块,不与远端源码树比较许可正文,
-也不下载或认证编译器分发。校验和及 VCS 记录是相符性检查,不能证明任意生产者的身份。
-
-归档名称标识请求的发行目标。项目及内部依赖记录在本地 Tag 匹配所选 commit 时
-使用发行版本,否则记录 `git:<commit>`;打包不要求创建未来目标 Tag。
-发布者在 Tag/Release 写入前把选定项目 SHA 传入验证器,采用 bundle 中
-`release-notes.md` 正文,追加既有来源/Preview 标记。可信源码选择、构建/发布
-权限分离及拒绝替换已发布资产的要求保持不变。
-生产者提供的说明不得夹带发布者专属的来源/Preview 标记。
+许可证和声明放在 `share/licenses/<component>`。声明缺失、目录不可读或遍历不完整时收集失败。包验证检查必需文件、载荷身份及归档路径、类型和权限。下载使用 GitHub 原生资产大小和摘要。新包和 Release 不携带来源或历史测试记录、独立 `SHA256SUMS`、来源/Preview 标记。发布者使用人类说明，检查本次构建输出，并拒绝覆盖同名不同内容资产。
 
 验证要求匹配所选原生 Linux 架构（x86_64 对应 amd64，aarch64 对应 arm64）的
 `github.com/kuasar-sandbox/connector/cmd/connector-ctl` main package 及匹配的
 Connector module。部署文件和运维辅助脚本取自所选源码树。归档保留内嵌 eBPF
 的来源及许可标识,包括项目许可范围说明和 GPL 正文。验证拒绝额外载荷、不安全
 路径、链接、错误属主或权限,以及组件命名空间以外的材料。
-来源记录仅允许 Connector 项目、其内嵌 eBPF 及 `connector-ctl` 使用的 Go 版本;
-未声明来源不能用于认领额外许可材料。
+许可目录包含 Connector 项目、其内嵌 eBPF，以及 `connector-ctl` 使用的 Go 工具链和版本化第三方 Go 依赖。
 
 `connector` 独立发布 `vX.Y.Z` 组件版本。已发布原生架构的组件归档包含 `connector-ctl`、部署文件和组件发行合同选定的运维辅助脚本。聚合 platform 包按显式文档/测试选择携带用户指南与规范 E2E 运行输入，内部设计文档和源码专用测试保留在源码仓。用 `make release VERSION=vX.Y.Z` 构建并验证相同的本地 bundle 布局。
 
