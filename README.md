@@ -16,6 +16,15 @@ It allocates and releases sandbox network resources quickly, forwards establishe
 
 The repository can be used as part of the full Kuasar Sandbox platform or integrated independently with another MicroVM runtime through its TAP file-descriptor handoff contract.
 
+## Choose a task
+
+| Task | Guide |
+|---|---|
+| Deploy, allocate a port, observe traffic or recover a switch | [vSwitch operations](docs/vswitch-operations.md) |
+| Integrate a gateway or review isolation, identity and ABI | [Network architecture and contracts](docs/vswitch.md) |
+| Implement a TAP provider or consumer | [TAPFD protocol](docs/tapfd.md) |
+| Build, test or change this component | [Contributing](CONTRIBUTING.md) |
+
 ## Network model
 
 The base vSwitch provides:
@@ -46,136 +55,15 @@ A node-local lightweight Egress policy plane is tracked as a [proposed extension
 
 The normative TAP handoff protocol is documented in [`docs/tapfd.md`](docs/tapfd.md).
 
-Current attachment traffic reads and reset/error semantics are documented in [vSwitch stats](docs/vswitch-operations.md#210-connector-ctl-vswitch-stats). The Go Stats API reads multiple ports without per-port CLI processes.
-
-## Build and test
-
-Local builds use environment-provided Go and inherit its `GOROOT` and `GOTOOLCHAIN`
-selection. CI builds and packages on native x86_64/aarch64 runners with one
-admitted, immutable Workbench image identity per architecture. Release builds,
-ordinary tests and packaging use build mode with an ordinary UID and private
-writable paths. The complete `bash scripts/ci-source-checks.sh` gate runs in
-Workbench system mode, retaining unit tests, race instrumentation, vet and real
-BPF checks with `REQUIRE_CONNECTOR_STATS=1`; missing kernel capabilities fail the
-gate. Release orchestration requires environment-provided `gh` with `api --slurp`;
-credentials remain outside
-the Workbench source environment.
-
-```bash
-make build                      # bin/<arch>/connector-ctl; pure Go control plane
-make build TARGET_ARCH=aarch64  # cross-compile; amd64/arm64 aliases are accepted
-make generate                   # regenerate BPF objects after changing bpf/*.c; requires Clang/LLVM
-make test                       # unit tests
-make test-source-checks          # race, real pinned-BPF stats and vet; requires sudo
-```
-
-Product E2E uses the platform-owned runner: prebuilt products -> `e2e prepare` -> `e2e run --suite network`. Follow the [prepared network-suite commands](docs/vswitch-operations.md#12-build). Source checks above remain separate; product E2E does not build Go code or use a component-owned runner.
-
-Runtime requirements:
-
-- Linux 5.10 or newer with BTF and TC BPF support;
-- root or the equivalent required capabilities;
-- network namespaces, TAP, veth, routing, and TC support;
-- Go 1.26.1 or newer for source builds;
-- Clang 12 or newer only when regenerating BPF objects.
-
-The repository includes pre-generated BPF objects, so an ordinary build does not require Clang. A skipped privileged test must not be interpreted as completed network validation. Privileged E2E must run in an isolated candidate environment and clean up every TAP device, namespace, route, rule, BPF map, and pin path owned by the run.
-
-## Minimal local example
-
-The following illustrates a fresh switch in Bash with `jq`. Run as root with a dedicated, unused `eth1` that can safely be moved into `sw_ns`; the underlay must support the resulting transit MTU. All three names (`sw1`, `sw_ns`, `mgmt_ns`) must be unused. A TAPFD-capable VMM receiver must already be listening at the run-owned private path supplied in `TAPFD_SOCKET` before `open-port`. Production values depend on the deployment network:
-
-```bash
-set -euo pipefail
-: "${TAPFD_SOCKET:?Set the existing run-owned VMM receiver socket path}"
-ip netns add sw_ns
-ip netns add mgmt_ns
-ip link set eth1 down
-
-connector-ctl vswitch start sw1 \
-    --netns=sw_ns \
-    --ports=128 \
-    --mac-addr=02:00:00:00:00:01 \
-    --floating-ip-base=100.100.96.0 \
-    --mgmt-extract=mgmt_ns:eth0:169.254.169.254/32 \
-    --transit-dev=eth1 \
-    --transit-dev-addr=10.0.0.1/24:10.0.0.2 \
-    --transit-dev-mtu=auto
-
-ip netns exec mgmt_ns ip addr replace 169.254.169.254/32 dev eth0
-
-port="$(connector-ctl vswitch attach sw1 \
-    --inner-ip=169.254.1.1 \
-    --transit-gateway-ip=10.0.0.2 \
-    --transit-geneve-vni=100 \
-    | jq -er '.port | select(type == "number" and . >= 1 and . <= 128 and floor == .)')"
-
-TAPFD_SOCKET="$TAPFD_SOCKET" connector-ctl vswitch open-port sw1 --port="$port"
-
-connector-ctl vswitch detach sw1 --port="$port"
-connector-ctl vswitch stop sw1
-ip netns del mgmt_ns
-ip netns del sw_ns
-```
-
-These addresses are documentation values, not a production topology. Run `stop` from the namespace that should receive the returned transit device. Inspect actual port and transit MTUs: the current two-phase provision path does not propagate `--mtu` to newly created TAP/veth ports. The complete command reference and deployment procedures are in [vSwitch operations](docs/vswitch-operations.md); forwarding and lifecycle constraints are defined in [vSwitch design](docs/vswitch.md).
-
-This is a manual sequence, not an automatic failure-cleanup helper. Stop at any
-failed command, inspect the actual allocation, and remove only resources created
-by this run. Never force-stop a pre-existing switch or delete a foreign namespace.
+Current attachment traffic reads and reset/error semantics are documented in [vSwitch stats](docs/vswitch-operations.md#connector-ctl-vswitch-stats). The Go Stats API reads multiple ports without per-port CLI processes.
 
 ## Integration with sandboxer
 
 `sandboxer` imports only `github.com/kuasar-sandbox/connector/pkg/tapfd`. `connector-ctl` opens and configures TAP queues, then passes their file descriptors and, where required, a network-namespace descriptor over a Unix socket using `SCM_RIGHTS`. This keeps the runtime integration narrow and avoids linking the eBPF implementation into the MicroVM lifecycle engine.
 
-## Release model
+## Distribution
 
-Preview cleanup ignores historical `SHA256SUMS` and body records. Completeness uses exact package names and native asset IDs, sizes, digests and upload states; historical x86_64-only and complete dual-architecture packages are protected. Missing or ambiguous metadata is retained and reported. Cleanup rechecks the actual tag and Release before deletion, supports partial retries and treats only confirmed 404 as absence. The project release policy continues to define scope and retention.
-
-The selected owner source explicitly declares its compiled E2E helper inventory in `release/helper-inputs.json`. The current inventory is empty. Future helpers and their build recipe belong in this owner declaration; aggregate packaging discovers them without a platform filename list.
-
-Build from the selected source with the component Makefile. `release.sh package`
-uses the matching binaries in `bin/<arch>`, or an explicit `RELEASE_BIN_DIR`;
-it collects materials and creates the bundle without rebuilding those binaries
-or resetting source/build caches. Keep the selected source checkouts, dependency
-versions and native build records together with the outputs.
-
-Packaging records the actual Go versions and effective module replacements.
-Go/module LICENSE and NOTICE files come from the selected compiler installation
-and matching module sources, preserving nested paths. Module resolution uses the
-normal Go cache and routing; downloaded module checksums must match the binaries.
-An organization namespace alone does not exempt modules from notice collection.
-This component has no internal sibling dependencies. Unsupported local replacements
-need versioned module inputs for the official package.
-
-Licenses and notices live under `share/licenses/<component>`. Collection fails on missing notices, unreadable subtrees or partial traversals. Package validation checks required files, payload identities and archive paths, types and modes. Downloads use native GitHub asset sizes and digests. New packages and Releases contain no source or historical test records, independent `SHA256SUMS`, or source/Preview markers. The publisher uses human release notes, checks the current build outputs, and refuses to replace existing assets with different bytes.
-
-Validation requires the selected native Linux architecture (amd64 for x86_64,
-arm64 for aarch64) for the
-`github.com/kuasar-sandbox/connector/cmd/connector-ctl` main package and the
-matching Connector module. Deployment files and operational helpers are copied
-from the selected source tree. The archive retains the embedded eBPF source
-and license identity, including the project license scope and GPL text.
-Validation rejects unexpected payloads, unsafe paths, links, ownership or modes,
-and materials outside the component namespace. License directories include the Connector project, its embedded eBPF, and the Go toolchain and versioned third-party Go dependencies used by `connector-ctl`.
-
-`connector` publishes independent component versions named `vX.Y.Z`. Each published native-architecture component archive contains `connector-ctl`, deployment files, and the operational helpers selected by the component release contract. The aggregate platform archive carries selected user guides and canonical E2E runtime inputs from its explicit documentation/test selections. Internal design documents and source-only tests remain in the source repositories.
-Use `make release VERSION=vX.Y.Z` to build and validate the same local bundle layout.
-
-The project repository publishes aggregate versions named `release-vX.Y.Z`, selecting an exact `connector` tag together with the other release units and validating the combined platform. Component and aggregate version numbers are independent.
-
-See the [project release documentation](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/release.md) and the [latest Stable aggregate release](https://github.com/kuasar-sandbox/kuasar-sandbox/releases/latest).
-
-## Documentation
-
-- [vSwitch operations](docs/vswitch-operations.md) — complete CLI/configuration, deployment and troubleshooting.
-
-Detailed design and reference documents have complete English and Chinese editions:
-
-- [vSwitch — English](docs/vswitch.md) / [Chinese](docs/vswitch_zh.md) — architecture, data paths, management and external networking, security properties, reliability, performance, and tests;
-- [TAPFD — English](docs/tapfd.md) / [Chinese](docs/tapfd_zh.md) — normative TAP file-descriptor handoff protocol for providers and consumers.
-
-The English README contains the complete public component entry path. Detailed locator encodings and packet-field layouts remain in the specialized design document rather than the public overview.
+Component releases use `vX.Y.Z`; the platform selects exact component tags in independent `release-vX.Y.Z` releases. Component archives supply the native `connector-ctl`, deployment templates and selected helpers. The aggregate archive supplies selected guides and prepared E2E inputs. Available architectures depend on the selected release assets. See [installation](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/installation.md) and [component packaging](CONTRIBUTING.md#component-packaging-and-releases).
 
 ## Project boundaries
 
