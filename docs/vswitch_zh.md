@@ -37,8 +37,8 @@ CLI、配置、部署与故障排查见 [vSwitch 运维](vswitch-operations_zh.m
 
 ### 设计原则
 
-1. **强隔离**:沙箱间不可见(无 port→port 转发路径);ARP 全代答;MAC 由交换机分配并
-   在出口改写。
+1. **本地隔离**：没有直接的本地 port→port 转发路径；ARP 回复和出口 MAC 由交换机控制。
+   经 gateway/管理服务的访问仍由相应系统的策略约束。
 2. **无状态转发**:不维护连接表,采用 slot 配置和 IP/UDP/GENEVE locator 算术,
    并可选用静态管理服务地址转换。
 3. **进程生命周期与数据面解耦**:`start`/`attach`/`detach` 返回后用户态退出,转发由
@@ -167,7 +167,7 @@ TCP/UDP 流量走原管理路径。VIP 须匹配 extraction,所有 target IP/por
 
 **沙箱 → 外部网络**:非管理目的(如 8.8.8.8)进入 port TC 后封装 GENEVE,增加
 transit_tx。外层 IPv4 源为 transit_ip、目的为 gateway_ip,UDP 源端口取 inner
-五元组 hash;locator 编码零基 slot,opaque options 仅随出向发送。
+选定字段的 hash（见 [GENEVE 隧道](#geneve-隧道)）；locator 编码零基 slot，opaque options 仅随出向发送。
 Ether-over-GENEVE 的 inner 源 MAC 为选定端口 MAC,目的为 transit MAC;
 IP-over-GENEVE 没有 inner Ethernet header。transit 设备发往 gateway。
 
@@ -213,7 +213,7 @@ GENEVE 内层同时识别 IPv4 与 IPv6(管理平面与 `slot.inner_ip` 为 IPv4
 
 Stats 在现有 pin 目录 control flock 上取得非阻塞共享锁,并在计数读取前后核验当前 pinned slots map ID,因此绕过 flock 的 force cleanup 也会使本次读取失败. 支持新能力的 Attach/Detach 不参与这把锁;Stats 用两次受内核锁保护的计数代次读取包围原子身份读取,发生变化或准备未完成时返回不可用;管理命令保留自己的排他锁. 控制操作占用、map 被替换、清零未确认或 map 读取失败时,整个请求批次返回错误. 多个共享读取可以并发. 显式查询 Free/Reserved 端口返回 `ErrPortNotAttached`;省略端口列表时仅选择 Allocated 槽. 确认清零后的 0 是有效观测;清零失败仍允许 attach 成功,但在后续成功 attach 前返回 `ErrStatsUnavailable`. 不新增第二份归属表.
 
-slot 仍为 108 字节,mmap stride 仍为 112 字节. 只有赢得 owner CAS 的 Attach 才清 `stats_ready`;在当前计数实例完成 reset 及其它准备前,slot 一直保持 dataplane-down. `stats` 为每槽一个 80 字节 ARRAY value,包含 `bpf_spin_lock` 和内部 64-bit 计数代次. TC 在读取 attachment 字段前取得代次,更新计数时在同一内核锁内验证代次. Attach 在发布 `PORT_F_UP` 前通过 `BPF_F_LOCK` 清零并推进代次;此前已经执行的旧包不能把旧值写回新计数. 查询要求 up 且 stats-ready,并使用 `BPF_F_LOCK` 保证每对包数/字节数的一致读取. 代次耗尽或重置失败仅使统计不可用,不改变 Attach 的成功条件.
+slot 仍为 108 字节,mmap stride 仍为 112 字节. 只有赢得 owner CAS 的 Attach 才清 `stats_ready`;在尝试当前计数实例 reset 并完成其它准备前，slot 一直保持 dataplane-down。 `stats` 为每槽一个 80 字节 ARRAY value,包含 `bpf_spin_lock` 和内部 64-bit 计数代次. TC 在读取 attachment 字段前取得代次,更新计数时在同一内核锁内验证代次. Attach 在发布 `PORT_F_UP` 前尝试通过 `BPF_F_LOCK` 清零并推进代次；重置成功后，此前已经执行的旧包不能把旧值写回新计数。重置失败使 Stats 不可用，但不阻止普通 Attach 发布 up。 查询要求 up 且 stats-ready,并使用 `BPF_F_LOCK` 保证每对包数/字节数的一致读取. 代次耗尽或重置失败仅使统计不可用,不改变 Attach 的成功条件.
 
 此 map ABI 要求重新创建使用旧 PERCPU_ARRAY 的交换机;不会热替换旧 map 或添加兼容统计路径. 旧实例仍可查询和管理清理;缺少发布 ABI 时 Attach/Detach 明确拒绝,缺少 `geneve_opts` 时不能提供一致 Stats. 计数代次不作为沙箱身份、公开字段或生命周期账本发布. 转发、NAT、GENEVE 和设备交付规则保持现有语义.
 
@@ -358,21 +358,26 @@ class/type/data 均为十六进制;type 同样是精确 8-bit wire value;data �
 全部 wire options 的固定上限是 64 bytes,包含每个 4-byte option header、opaque data
 以及 TLV locator 的 8 bytes。因此 port/vni 可使用 64 bytes opaque options;TLV 模式
 最多使用 56 bytes opaque options。opaque options 只用于 Connector→gateway 出站;
-首期仅能在 Attach 时设置,不支持在线更新,也不回传给 sandbox。
+不回传给 sandbox。Attach 设置这些选项；`SetPortUp` 可在绑定仍为 allocated/down、
+尚未启用时替换它们。已经 up 的端口不支持在线更新选项。
 
 返程采用严格而非通用 TLV parser:port/vni 拒绝任何 option 或 `C=1`;TLV 要求 locator
 是第一个且唯一 option,class/type 精确匹配,length=1,data 是范围内 `be32(slot_id)`,
-reserved bits 为 0,且 base `C` 与 locator type critical bit 一致。gateway 不得在返程
+locator option 的 reserved bits 为 0，且 base `C` 与 locator type critical bit 一致。gateway 不得在返程
 镜像 opaque options。恢复 slot 后统一校验 slot 已分配、ifindex、gateway source IP 与
 configured VNI。
 
-所有模式继续保留 UDP source port 的 inner 5-tuple Jenkins hash,映射到
-49152–65535,供底层网络做 ECMP/RSS。未配置 locator 等价 `port`;未配置 opaque options
-时,默认 port 模式的 wire packet 与旧版本逐字节相同。
+外层 UDP source port 使用从报文字段派生的 hash，映射到 **49152–65535**，
+供底层网络做 ECMP/RSS。IPv4 混合源/目的地址和 protocol；TCP/UDP 还加入计算出的
+L4 offset 处、通过边界检查的两个 port 字段。IPv6 仅混合每个地址的首尾 32-bit word
+及紧邻的 next-header；仅在紧邻头是 TCP/UDP 时加入 ports，不遍历扩展头。
+这些字段经 XOR 合并后使用 Jenkins finalizer，并非通用的完整五元组 hash，
+也不保证所有流集合都得到不同端口或均匀分布。未配置 locator 等价 `port`；
+未配置 opaque options 时，相同输入的默认 port 模式保留旧版 wire 编码。
 
 L2 寻址:外层以太网由 `bpf_redirect_neigh` 经内核邻居子系统解析,eBPF 程序不维护
 ARP 缓存;内层(仅 Ether-over-GENEVE)目标 MAC 取 `--transit-mac-addr`(未指定则
-广播),源 MAC 为派生端口 MAC,与端口设备一致,便于网关侧网桥 L2 学习。
+广播），源 MAC 为选定的端口 MAC，与设备/VMM 配置一致，便于网关侧网桥 L2 学习。
 
 抓包命令与字段检查见 [GENEVE 抓包](vswitch-operations_zh.md#geneve-抓包)。
 
@@ -477,8 +482,9 @@ port ingress,写设备/管理/transit 字段,再 CAS Reserved→Free。Free/Allo
 `slot.ifindex` → 再删旧模式设备(新旧设备名不冲突,可短暂共存)。
 
 **核心不变量**:attach 和 detach 永远不创建/删除设备(两种模式皆然)。设备生命周期由
-`provision`(创建)与 `stop`/`stop --force`(删除)完全拥有;`stop --force-clean` 只
-unpin BPF 资源、不删设备。`--skip-device` 控制允许的设备移动/检查，不会把 attach 变为设备 provision 操作。
+`provision`（创建）与 `stop`/`stop --force`（删除）拥有；`ForceCleanup` API 仅
+unpin maps，可能留下设备/TC 引用。CLI `stop --force-clean` 先尝试正常 Stop，
+只在识别到交换机损坏错误后采用该兜底（见[stop 与恢复](vswitch-operations_zh.md#connector-ctl-vswitch-stop)）。`--skip-device` 控制允许的设备移动/检查，不会把 attach 变为设备 provision 操作。
 
 ### tap fd 交接
 
