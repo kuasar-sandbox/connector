@@ -32,9 +32,30 @@ consumer 示例见源码树 `examples/tapfd_receiver/`。
 | 动态获取 | Runtime 执行 helper 并提供 `TAPFD_SOCKET`；结合 helper 退出状态与超时判断操作完成。 |
 | 持久 provider | 常驻 listener 接受版本化请求，返回状态、元数据及适用的 FD。 |
 
-直接连接 provider(provider 拨号,或 consumer 连接一个常驻 provider)的 consumer 在
-描述符交接层只需实现 **FD 交接层**;以 exec 子进程获取 fd 的 consumer 再加 **动态获取层**。
-持久 provider 的请求与状态封装见 [持久 provider socket(normative)](#持久-provider-socketnormative)。
+直接交接使用 **FD 交接层**。执行 helper 的 consumer 还须实现**动态获取层**；
+连接常驻 provider 的 consumer 还须实现其[请求/状态封装](#持久-provider-socketnormative)。
+listener 常驻不免除该封装要求。
+
+## 当前参考实现的限制
+
+下文规范定义互操作契约，不表示当前每个 helper/parser 都完整执行了每项要求：
+
+| Provider | 当前行为 |
+|---|---|
+| `vswitch open-port` | 发送交换机选定的 MAC/IP，将 queue 设为非阻塞，并支持按请求追加 netns FD。 |
+| `tapfd get` | 不设置 `O_NONBLOCK`，不处理 `TAPFD_WANT_NETNS`。MAC/IP 来自可选的调用者参数，IP 可为 CIDR 文本。这些差异不重新定义推荐的 wire 字段或 queue 模式。 |
+
+`pkg/tapfd.ParsePayload` 采用宽松解析：接受缺失 NUL、缺失/为零的 `fd`、
+任意空白，以及未校验的 MAC/IP 字符串。接收器只在 `fd` 非零时校验声明计数。
+ancillary 缓冲区容纳**总共八个描述符**，包括可选 netns FD；当前接收器丢弃
+`recvmsg` flags，不检查截断。收集 FD 后的元数据/计数错误会关闭已收集 FD；
+receive、空 payload、ancillary 解析的提前返回发生在收集之前，不能将其视为
+所有错误路径均会清理的保证。
+
+不要把这些 helper 当作面向不可信 peer 的严格校验器。严格接收器须落实帧/计数
+要求，拒绝不完整或截断输入，并在失败时关闭全部已收引用。下文单次调用约定
+不代表 `SOCK_STREAM` 普遍保证消息边界；当前库不重组分段到达的元数据记录。
+见[接收器源码](../pkg/tapfd/recv.go)与[payload parser](../pkg/tapfd/payload.go)。
 
 ## 句柄交接 wire 协议(normative)
 
@@ -121,7 +142,7 @@ ancillary 末尾的 K 个 fd 是 tap 设备所在 network namespace 的打开引
   读取 tap 元数据/抓包/读统计;参考实现的请求方式见 [请求 netns fd:`TAPFD_WANT_NETNS`](#请求-netns-fdtapfd_want_netns))。provider 按自身实现决定
   是否**提供**:tap 处于独立 netns 时提供其 netns fd;若 provider 的 tap 没有 netns
   隔离,则无需提供(仍可正常完成 [句柄交接 wire 协议(normative)](#句柄交接-wire-协议normative) 的 tap fd 交接)。
-- consumer **可**对收到的 netns fd 执行 `setns(2, CLONE_NEWNET)` 进入该 netns。
+- consumer **可**对收到的 netns fd 执行 `setns(2, CLONE_NEWNET)`，但仍须通过内核的命名空间进入权限检查；持有 FD 不免除这些检查。
 - 收发帧本身无需 netns fd(tap fd 跨 netns 可用,[生命周期与幂等](#生命周期与幂等));netns fd 仅服务于需要**进入**
   该 netns 操作设备本体的 consumer。
 - netns fd 同样是一种能力(capability,见 [安全考量](#安全考量)):它是用于进入该网络命名空间的引用,
@@ -151,7 +172,7 @@ fd 时,适用本契约:runtime 负责建立套接字并经 `TAPFD_SOCKET` 告知
 3. 等待 helper 经该套接字发出**恰好一条** [句柄交接 wire 协议(normative)](#句柄交接-wire-协议normative) 消息,随后 helper **必须**以退出码 `0`
    退出。
 4. **必须**对整个过程施加超时;helper 非零退出或超时**必须**视为失败,此时 runtime
-   **不应**启用该网卡。
+   **不应**启用该网卡。关闭已收到但未转移所有权的 TAP/netns FD；仅收到描述符不表示获取成功。
 
 ### 套接字提供方式(二选一)
 
@@ -201,7 +222,9 @@ netns fd。
 ## 持久 provider socket(normative)
 
 为避免每次交接都 fork/exec helper,provider 可长期监听一个 `AF_UNIX SOCK_STREAM`
-套接字。consumer 连接该 socket,发送一行请求,provider 在同一连接上返回一条响应。
+套接字。consumer 连接该 socket，发送一行请求，provider 在同一连接上返回一条响应。
+参考服务随后关闭该连接：“持久”指 listener/switch handle 常驻，不是同一连接可处理
+多条请求。每次操作都须重新连接。
 
 请求行:
 
@@ -266,7 +289,7 @@ TAPFD/1 ERR code=PORT_UNAVAILABLE message=port_not_attached\n
 
 ### 延迟启用请求
 
-当前 provider 支持在同一 attachment 上顺序执行:
+当前 provider 支持在同一 attachment 上顺序执行，每条请求使用一个新连接：
 
 ```text
 TAPFD/1 PREPARE VSWITCH=sw0 INNER_IP=169.254.1.1 ADMIN_DOWN=1
@@ -277,13 +300,13 @@ TAPFD/1 RELEASE VSWITCH=sw0 PORT=3
 
 实际 PORT 使用 PREPARE 返回值,此处以 3 举例。`ADMIN_DOWN`/`admin_down` 接受 1/true、0/false 等明确布尔值,省略默认 false,非法值和空值报错。延迟 PREPARE 响应附带 `admin_down=1`。down 时 OPEN 仍交付已有 TAP FD;metadata 的 `ip` 是交付时快照,之后不会自动修改。
 
-SET_PORT_UP 必须包含 PORT 和最终 INNER_IP,支持 PREPARE 的 transit gateway/VNI/options/MAC 参数。网络字段为完整替换,省略的 transit 值会清空;GENERATION 与 ADMIN_DOWN 不是 SET_PORT_UP 字段。成功返回 `TAPFD/1 OK port=3 admin_down=0`,不交付 FD。状态/校验失败返回 ERR,不释放端口;成功提交后响应丢失也不回滚。owner 不得重叠同 attachment 请求,管理接管仍允许。guest 的最终网络配置由 owner 在 up 前通过独立 runtime 通道完成。
+SET_PORT_UP 必须包含 PORT 和最终 INNER_IP,支持 PREPARE 的 transit gateway/VNI/options/MAC 参数。网络字段为完整替换,省略的 transit 值会清空;GENERATION 与 ADMIN_DOWN 不是 SET_PORT_UP 字段。成功返回 `TAPFD/1 OK port=3 admin_down=0`,不交付 FD。状态/校验失败返回 ERR,不释放端口;成功提交后响应丢失也不回滚。owner 不得重叠同 attachment 请求,管理接管仍允许。guest 的最终网络配置由 owner 在 up 前通过独立 runtime 通道完成。成功的 SET_PORT_UP 不能幂等重放：已 up 端口会返回错误。响应结果不确定时应检查绑定状态，不要把重试错误当作首次调用失败的证据。
 
 此流程要求使用支持它的 provider,不支持旧 TAPFD server,也不增加能力协商或回退。特别是不能把 ADMIN_DOWN 发送到可能静默忽略未知字段的旧 server。
 
 ## 生命周期与幂等
 
-- **设备与 fd 生命周期有别**：交接的 fd 是一个 TAP 队列引用。如果 provider 独立管理的设备必须在 fd 关闭后继续存在，provider **应当**使用持久 TAP（`TUNSETPERSIST`）。consumer 关闭 fd 不会删除这样的持久设备。非持久 TAP（包括 `connector-ctl tapfd get --new` 创建的设备）会在最后一个引用关闭时消失。
+- **设备与 fd 生命周期有别**：交接的 fd 是一个 TAP 队列引用。如果 provider 独立管理的设备必须在 fd 关闭后继续存在，provider **应当**使用持久 TAP（`TUNSETPERSIST`）。consumer 关闭 fd 不会删除这样的持久设备。`tapfd get --new` 也可能打开既有 TAP，不改变其持久性策略。非持久 TAP（包括 `connector-ctl tapfd get --new` 新创建的设备）会在最后一个引用关闭时消失。
 - **重新获取**：consumer 退出会关闭其队列 fd 并解绑队列。如果 provider 管理的 TAP 仍存在，consumer **可**再次请求交接以获取新的队列 fd。已经消失的非持久 TAP 必须先重建再交接；本协议并不使设备重建或网络资源分配自动具备幂等性。
 - **fd 跨 netns**:tap 设备可能位于 provider 的某个 network namespace,但队列 fd 是
   内核引用,consumer **无需**进入该 netns 即可使用。
@@ -293,6 +316,7 @@ SET_PORT_UP 必须包含 PORT 和最终 INNER_IP,支持 PREPARE 的 transit gate
 - **套接字访问即网络访问授权**:任何能读到该 unix 套接字的进程都会收到 tap 队列 fd。
   runtime **应当**严格限制套接字(如 `0600` 与受限父目录权限);R1(继承 fd)天然不
   暴露文件系统对象,优于 R2。
+- **持久 socket 还授予交换机控制能力**：访问参考 listener 可执行 PREPARE、SET_PORT_UP、RELEASE，不限于 OPEN。handler 没有逐请求的归属授权。socket 设置为 `0660`，缺失父目录以请求模式 `0750` 创建（受 umask 影响），不会收紧既有父目录权限。须核对 socket/group 所有权和父目录权限；上文 `0600` 是部署建议，不是随附默认值。
 - **fd 是能力(capability)**:持有该 fd 即可在该接口收发任意 L2 帧。请按"等同于授予
   该接口网络接入"来对待 fd 的传递与持有。
 - **隔离/防伪由 provider 保证,而非 consumer**:L2 隔离、源地址防伪等安全属性应由
@@ -325,7 +349,7 @@ R2(监听路径)一次握手的时序:
 | 完成 | 将提供的 MAC 写入 virtio-net 配置，并将 queue FD 交给 VMM；要求 helper 以 0 退出。 | 成功后关闭本地 FD，以 0 退出。 |
 | 释放 | 拥有该 queue 的 VMM 不再使用时关闭 consumer 引用。 | 按独立生命周期管理 persistent 设备。 |
 
-接收侧最小实现(Go,使用参考库):
+以下是使用 Go 参考库的 FD 交接层片段，不是完整动态 runtime：调用者仍须实现 helper 执行、退出状态检查及 accept/read/全过程超时，并落实[当前实现限制](#当前参考实现的限制)，使用私有且访问受控的 socket 路径。
 
 ```go
 ln, err := net.Listen("unix", "/run/vm5.sock")
@@ -350,6 +374,8 @@ if err != nil { log.Fatal(err) }
 // tapFiles[0] 交给 VMM;netnsFile(可能为 nil)可用于 setns(CLONE_NEWNET)
 ```
 
+每个返回的 TAP file 及非 nil 的 netns file 都必须关闭，除非所有权已经转移；第二个片段省略了这部分由应用决定的所有权处理。
+
 不依赖参考库时,可按 [接收方算法(参考)](#接收方算法参考) 直接基于 `recvmsg(2)` + `SCM_RIGHTS` 实现。Go 示例见
 源码树 `examples/tapfd_receiver/`;发布包中的 `network.tap.sh` 使用内嵌 Python receiver,
 不要求现场构建该示例。
@@ -362,6 +388,7 @@ line        = pair *( SP pair )
 pair        = key "=" value          ; 以首个 "=" 分隔;value 可含其后的 "="
 key         = 1*( ALPHA / DIGIT / "_" )
 value       = 1*VCHAR-no-SP          ; 可见 ASCII,不含 SP 与 NUL
+VCHAR-no-SP  = %x21-7E
 SP          = %x20
 NUL         = %x00
 ```
@@ -372,6 +399,10 @@ NUL         = %x00
 | --- | --- |
 | `0` | 成功,已交付 fd |
 | 非零 | 失败:`TAPFD_SOCKET` 缺失/接口不可服务/打开 tap 失败/`SCM_RIGHTS` 交接失败等。helper 失败时**不得**发送 fd;若为组合操作,应回滚已做的接口分配。 |
+
+描述符交付与 helper 退出是两个独立的观察结果。helper 可能在传递描述符后终止，
+因此 runtime 仍须在非零退出或超时时拒绝本次获取并关闭已收引用，不能仅凭
+SCM_RIGHTS 推断整个操作已经完成。
 
 ## See Also
 

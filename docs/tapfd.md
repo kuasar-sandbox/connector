@@ -24,7 +24,32 @@ Reference providers are `connector-ctl vswitch open-port` and `connector-ctl tap
 | Dynamic acquisition | The runtime executes a helper and supplies `TAPFD_SOCKET`; helper exit and timeout complete the operation. |
 | Persistent provider | A resident listener accepts versioned requests and returns status, metadata and descriptors where applicable. |
 
-Consumers connected directly to a provider (whether the provider connects back or the consumer connects to a persistent provider) need only implement the **descriptor handoff layer** for descriptor handoff. Consumers acquiring descriptors by executing a child process additionally implement the **dynamic acquisition layer**. The request/status envelope for a persistent provider is defined in [Persistent provider socket (normative)](#persistent-provider-socket-normative).
+Direct handoffs use the **descriptor handoff layer**. A consumer executing a helper additionally implements the **dynamic acquisition layer**; a consumer connecting to a persistent provider additionally implements its [request/status envelope](#persistent-provider-socket-normative). A resident listener does not remove that envelope requirement.
+
+## Current reference implementation limits
+
+The normative requirements below are the interoperability contract, not a claim
+that every current helper or parser enforces every requirement:
+
+| Provider | Current behavior |
+|---|---|
+| `vswitch open-port` | Sends switch-selected MAC/IP, sets the queue nonblocking, and supports a requested trailing netns FD. |
+| `tapfd get` | Does not set `O_NONBLOCK` or handle `TAPFD_WANT_NETNS`. MAC/IP metadata comes from optional caller values; IP may be CIDR text. These differences do not redefine the recommended wire fields or queue mode. |
+
+`pkg/tapfd.ParsePayload` is lenient: it accepts missing NUL, absent/zero `fd`,
+arbitrary whitespace, and unvalidated MAC/IP strings. The receiver checks the
+declared count only when `fd` is nonzero. It allocates ancillary space for **eight
+total descriptors**, including any netns FD, and currently discards `recvmsg`
+flags rather than checking truncation. It closes collected FDs on later metadata
+or count errors; early receive/empty-payload/ancillary-parse returns occur before
+that collection, so this is not a universal error-cleanup guarantee.
+
+Do not treat those helpers as a strict validator for untrusted peers. A strict
+receiver must enforce the framing/count requirements, reject incomplete or
+truncated input, and close all received references on failure. The single-call
+profile below is not a general `SOCK_STREAM` message-boundary guarantee; the
+current library does not reassemble a fragmented metadata record. See
+[receiver source](../pkg/tapfd/recv.go) and [payload parser](../pkg/tapfd/payload.go).
 
 ## Descriptor handoff wire protocol (normative)
 
@@ -87,7 +112,7 @@ A TAP descriptor is a kernel reference to a TUN queue and remains usable across 
 `netns_fd` is an **optional** feature. When the payload includes `netns_fd=K` (K at least 1, currently limited to 1), the last K ancillary descriptors are open references to the TAP device's network namespace. Providers typically open `/proc/<pid>/ns/net` or `/run/netns/<name>`.
 
 - **Requesting and providing:** a consumer **requests** this descriptor when it needs additional device operations across namespaces, such as entering the netns to inspect TAP metadata, capture packets or read statistics. [Requesting a netns descriptor: `TAPFD_WANT_NETNS`](#requesting-a-netns-descriptor-tapfd_want_netns) describes the reference request mechanism. The provider decides whether to **supply** it: a TAP in a separate netns can include the namespace descriptor; a TAP without namespace isolation does not need one, and ordinary [Descriptor handoff wire protocol (normative)](#descriptor-handoff-wire-protocol-normative) handoff can still succeed.
-- The consumer **MAY** call `setns(2, CLONE_NEWNET)` on the received netns descriptor to enter that namespace.
+- The consumer **MAY** call `setns(2, CLONE_NEWNET)` on the received netns descriptor to enter that namespace, subject to the kernel's namespace-entry privilege checks. Possessing the FD does not waive those checks.
 - Sending and receiving frames does not require a netns descriptor because TAP descriptors work across namespaces ([Lifetime and idempotency](#lifetime-and-idempotency)). The additional descriptor serves consumers that need to **enter** the namespace to operate on the device itself.
 - A netns descriptor is also a capability ([Security considerations](#security-considerations)): it is a reference used to enter the network namespace. Both sides should treat its transfer and possession accordingly.
 - A consumer that does not need the netns descriptor **SHOULD** close it to avoid leaks.
@@ -107,7 +132,7 @@ This contract applies when the consumer does not connect to a provider directly,
 1. Establish a connected `AF_UNIX SOCK_STREAM` socket ([Socket provisioning (choose one)](#socket-provisioning-choose-one)).
 2. Set `TAPFD_SOCKET` in the helper's environment ([Advertising the socket: `TAPFD_SOCKET`](#advertising-the-socket-tapfd_socket)), then execute the helper command.
 3. Wait for the helper to send **exactly one** [Descriptor handoff wire protocol (normative)](#descriptor-handoff-wire-protocol-normative) message through that socket. The helper then **MUST** exit with status `0`.
-4. The runtime **MUST** impose a timeout on the entire operation. A nonzero helper exit or timeout **MUST** be treated as failure; the runtime **SHOULD NOT** enable the network interface in that case.
+4. The runtime **MUST** impose a timeout on the entire operation. A nonzero helper exit or timeout **MUST** be treated as failure; the runtime **SHOULD NOT** enable the network interface in that case. Close any received TAP/netns FDs whose ownership was not transferred; received descriptors alone do not establish successful acquisition.
 
 ### Socket provisioning (choose one)
 
@@ -142,7 +167,7 @@ If one invocation both allocates an interface and hands off its descriptors, the
 
 ## Persistent provider socket (normative)
 
-To avoid forking/executing a helper for every handoff, a provider may keep an `AF_UNIX SOCK_STREAM` listener running. The consumer connects, sends one request line, and receives one response on the same connection.
+To avoid forking/executing a helper for every handoff, a provider may keep an `AF_UNIX SOCK_STREAM` listener running. The consumer connects, sends one request line, and receives one response on the same connection. The reference server then closes that connection: persistent means the listener/switch handle persists, not that one connection accepts multiple requests. Reconnect for each operation.
 
 Request lines:
 
@@ -196,7 +221,7 @@ Recommended error codes are `BAD_REQUEST`, `SWITCH_MISMATCH`, `PORT_INVALID`, `P
 
 ### Deferred attachment requests
 
-The current provider supports this sequential flow on the same attachment:
+The current provider supports this sequential flow on the same attachment, with a new connection for each request:
 
 ```text
 TAPFD/1 PREPARE VSWITCH=sw0 INNER_IP=169.254.1.1 ADMIN_DOWN=1
@@ -207,19 +232,20 @@ TAPFD/1 RELEASE VSWITCH=sw0 PORT=3
 
 Use the actual port returned by PREPARE, shown as 3 here. `ADMIN_DOWN` (or `admin_down`) accepts explicit booleans such as 1/true and 0/false, defaults to false when absent, and rejects malformed or empty values. Deferred PREPARE adds `admin_down=1` to its response. OPEN delivers the existing TAP FD while down; its `ip` metadata is the current snapshot and is not updated after handoff.
 
-SET_PORT_UP requires PORT and final INNER_IP, and accepts the same transit gateway/VNI/options/MAC fields as PREPARE. All network fields are a complete replacement; omitted transit values clear them. GENERATION and ADMIN_DOWN are not SET_PORT_UP fields. Success is `TAPFD/1 OK port=3 admin_down=0` with no descriptors. State/validation failure returns ERR and does not release the port; a successful commit is not undone if its response is lost. Same-attachment requests must not overlap; management takeover is still allowed. The owner prepares guest configuration separately before enabling traffic.
+SET_PORT_UP requires PORT and final INNER_IP, and accepts the same transit gateway/VNI/options/MAC fields as PREPARE. All network fields are a complete replacement; omitted transit values clear them. GENERATION and ADMIN_DOWN are not SET_PORT_UP fields. Success is `TAPFD/1 OK port=3 admin_down=0` with no descriptors. State/validation failure returns ERR and does not release the port; a successful commit is not undone if its response is lost. Same-attachment requests must not overlap; management takeover is still allowed. The owner prepares guest configuration separately before enabling traffic. A successful SET_PORT_UP is not idempotently replayable: an already-up port returns an error. After an uncertain response, inspect attachment state rather than treating a retry error as proof the first call failed.
 
 Use a provider implementing this flow. Older TAPFD servers are not supported, and there is no capability-negotiation or fallback path. In particular, do not send ADMIN_DOWN to an older server that may ignore unknown fields.
 
 ## Lifetime and idempotency
 
-- **Device and descriptor lifetimes are separate:** a transferred descriptor is one TAP queue reference. The provider **SHOULD** use a persistent TAP (`TUNSETPERSIST`) when it independently manages a device that must survive descriptor closure. Closing consumer descriptors does not remove such a persistent device. For a nonpersistent TAP, including `connector-ctl tapfd get --new`, the device disappears when its last reference closes.
+- **Device and descriptor lifetimes are separate:** a transferred descriptor is one TAP queue reference. The provider **SHOULD** use a persistent TAP (`TUNSETPERSIST`) when it independently manages a device that must survive descriptor closure. Closing consumer descriptors does not remove such a persistent device. `tapfd get --new` can also open an existing TAP and does not change that device's persistence policy. For a nonpersistent TAP, including a device newly created by `connector-ctl tapfd get --new`, the device disappears when its last reference closes.
 - **Reacquisition:** consumer exit closes its queue descriptors and detaches those queues. If the provider-managed TAP still exists, the consumer **MAY** request another handoff to obtain new queue descriptors. A nonpersistent TAP that has disappeared must be recreated before another handoff; this protocol does not make device recreation or network-resource allocation idempotent.
 - **Descriptors work across netns boundaries:** the TAP may be in a provider-owned namespace, but a queue descriptor is a kernel reference. The consumer does **not** need to enter that namespace to use it.
 
 ## Security considerations
 
 - **Socket access grants network access:** a process that can receive from this Unix socket receives TAP queue descriptors. The runtime **SHOULD** strictly restrict socket access, for example using `0600` and restricted parent-directory permissions. R1 (inherited descriptors) exposes no filesystem object and is preferable to R2.
+- **Persistent sockets also grant switch control:** access to the reference listener permits PREPARE, SET_PORT_UP and RELEASE, not only OPEN. The handler has no per-request ownership authorization. It sets the socket to `0660` and creates missing parent directories with requested mode `0750` (subject to umask); it does not tighten existing parent directories. Verify socket/group ownership and parent permissions. The `0600` example above is deployment guidance, not the shipped default.
 - **A descriptor is a capability:** its holder can send and receive arbitrary L2 frames on the interface. Treat transfer and possession as granting network access through that interface.
 - **Isolation and anti-spoofing belong to the provider, not the consumer:** the provider's data plane should enforce L2 isolation and source-address protection, for example by rewriting source MACs, forwarding by trusted port identity rather than packet-supplied addresses, and answering ARP. Guest address spoofing must not defeat provider isolation. The consumer should faithfully use the provider's `mac` from [Metadata payload](#metadata-payload).
 
@@ -242,7 +268,7 @@ One R2 (listening pathname) handshake:
 | Complete | Mirror the supplied MAC into virtio-net and pass the queue FD to the VMM. Require a zero helper exit. | Close local descriptors and exit 0 after success. |
 | Release | Close consumer references when the owning VMM no longer needs them. | Manage any persistent device through its separate lifecycle. |
 
-Minimal receiving code using the Go reference library:
+Descriptor-layer receiving snippet using the Go reference library, not a complete dynamic runtime: helper execution, exit-status checking and accept/read/overall deadlines must be supplied by the caller. Apply the [implementation limits](#current-reference-implementation-limits) above and use a private, access-controlled socket location.
 
 ```go
 ln, err := net.Listen("unix", "/run/vm5.sock")
@@ -266,6 +292,8 @@ if err != nil { log.Fatal(err) }
 // Pass tapFiles[0] to the VMM; netnsFile (possibly nil) can be used with setns(CLONE_NEWNET).
 ```
 
+Every returned TAP file and any non-nil netns file must be closed unless ownership has been transferred. The second snippet omits that application-specific ownership handling.
+
 Without the library, implement [Receiver algorithm (reference)](#receiver-algorithm-reference) directly with `recvmsg(2)` and `SCM_RIGHTS`. The runnable Go example is in [`examples/tapfd_receiver/`](../examples/tapfd_receiver). The release package's `network.tap.sh` embeds a Python receiver and does not require building that example on site.
 
 ## Appendix A: metadata payload ABNF
@@ -276,6 +304,7 @@ line        = pair *( SP pair )
 pair        = key "=" value          ; Split at the first "="; value may contain more.
 key         = 1*( ALPHA / DIGIT / "_" )
 value       = 1*VCHAR-no-SP          ; Visible ASCII excluding SP and NUL.
+VCHAR-no-SP  = %x21-7E
 SP          = %x20
 NUL         = %x00
 ```
@@ -286,6 +315,11 @@ NUL         = %x00
 | --- | --- |
 | `0` | Success: descriptors delivered. |
 | Nonzero | Failure, such as missing `TAPFD_SOCKET`, an unserviceable interface, TAP-open failure or `SCM_RIGHTS` handoff failure. A failing helper **MUST NOT** send descriptors; a combined operation should roll back any interface allocation. |
+
+Descriptor delivery and helper termination are separate observations. A helper
+may terminate after transferring descriptors, so a runtime must still reject
+acquisition on nonzero exit or timeout and close received references rather
+than infer completion from SCM_RIGHTS alone.
 
 ## See also
 
