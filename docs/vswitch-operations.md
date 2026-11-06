@@ -70,6 +70,22 @@ The shipped ExecStart passes extraction flags; it does **not** automatically pas
 4. Check that `systemctl status connector-vswitch` is active, `connector-ctl vswitch status sw0 --ready` returns zero, and `ip netns list` shows the configured namespaces. READY=1 can precede complete port provisioning ([Two-phase startup](vswitch.md#two-phase-startup)).
 5. Enable boot startup with `sudo systemctl enable connector-vswitch`.
 
+### Stop the service or remove the switch
+
+`systemctl stop connector-vswitch` stops the resident `serve` process and its
+optional TAPFD listener. The shipped unit has no `ExecStop`, and `serve` does not
+call switch teardown on SIGTERM/SIGINT. Pinned BPF state, TC attachments and
+devices can keep forwarding; a stopped service is not proof of stopped traffic.
+
+For teardown, first stop new admission through the owning control plane and
+coordinate the consumers to drain/detach their bindings and close TAP queue
+references. Stop the resident service before removing its switch resources, then
+run `connector-ctl vswitch stop <name>` from the namespace that should receive
+the transit device. Check the result and remaining owned resources. For a
+control-service restart with intact state, restart the same service/configuration
+without treating switch destruction as a restart step; see [Recovery by failure
+domain](#recovery-by-failure-domain).
+
 ## Manual first switch
 
 The following illustrates a fresh switch in Bash with `jq`. Run as root with a dedicated, unused `eth1` that can safely be moved into `sw_ns`; the underlay must support the resulting transit MTU. All three names (`sw1`, `sw_ns`, `mgmt_ns`) must be unused. A TAPFD-capable VMM receiver must already be listening at the run-owned private path supplied in `TAPFD_SOCKET` before `open-port`. Production values depend on the deployment network:
@@ -150,7 +166,7 @@ Most query and one-shot commands emit JSON; `serve` stays resident and reports h
 | `--netns` | Yes | Existing internal switch namespace. |
 | `--mac-addr` | Yes | Switch MAC base used by MAC derivation ([MAC derivation](vswitch.md#mac-derivation)); the first four bytes are retained. |
 | `--ports` | Yes | Number of ports, 1–4096. |
-| `--floating-ip-base` | Yes | Floating-IP base; increment by zero-based slot ID. |
+| `--floating-ip-base` | Yes | Floating-IP base; attachment address is `base + (generation << 12) + slot_id`, with zero-based `slot_id`. |
 | `--generation-bits` | No | Bits above the fixed 12-bit slot identity, 0–20; default 0 permits generation 0 only. The complete FloatingIP window must fit IPv4. |
 | `--port-netns` | For veth provisioning | Initial location of veth peers. TAP does not need it. Reserved-only startup may omit it, but it must be supplied at start if later veth provisioning is planned. |
 | `--mode` | No | Automatic provision mode: `tap` (default) or `veth`. With `--reserved`, it validates the intended startup mode but does not persist a mode override for a future provision invocation. |
@@ -219,10 +235,16 @@ If the configured switch namespace is no longer addressable by name, stop releas
 
 Stop uses ReleasePorts then StopReleased: remove owned ports, management/dummy devices and TC references, unpin BPF maps, and move transit into the **stop caller's namespace**. To return it to the original host namespace, invoke stop there; the implementation does not restore a separately remembered origin namespace.
 
+Without `--force`, detecting allocated ports returns exit code **4**. The initial
+allocated-port check happens before reserving Free slots. Do not treat refusal,
+or the CLI's current “Free ports have been reserved” diagnostic, as proof that
+new admission is blocked. Stop admission through the owner, drain active bindings,
+inspect actual state and retry. A switch that does not exist returns exit code 3.
+
 | Flag | Meaning |
 |---|---|
 | `--force` | Release in-use ports before stopping, using two cleanup passes. |
-| `--force-clean` | Recovery for a damaged switch: unpin BPF resources without device cleanup. Orphaned netdevs/TC resources may need explicit cleanup; this does not itself prove forwarding has stopped. |
+| `--force-clean` | Attempt normal Stop first; only a recognized corrupted-switch error enables the pin-only cleanup fallback. A healthy switch still receives normal cleanup, and this flag alone does not override in-use ports. The fallback leaves device/TC cleanup and transit restoration to the operator; unpinning alone does not prove forwarding has stopped. |
 
 ### `connector-ctl vswitch attach`
 
@@ -427,7 +449,7 @@ The embedded DHCP client/server supports debugging transit `auto` addressing and
 
 ### `connector-ctl tapfd get`
 
-This **subcommand of the same connector-ctl binary** is independent of switch state. It opens a TAP and sends its IFF_VNET_HDR queue descriptor through TAPFD_SOCKET with SCM_RIGHTS. Use it when a consumer only needs a TAP descriptor, without the vswitch data plane, such as simple/test topologies.
+This **subcommand of the same connector-ctl binary** is independent of switch state. It opens a TAP and sends its IFF_VNET_HDR queue descriptor through TAPFD_SOCKET with SCM_RIGHTS. Use it when a consumer only needs a TAP descriptor, without the vswitch data plane, such as simple/test topologies. Before handoff it always brings the TAP UP, including an existing device; `--host-cidr` additionally assigns an address. It is not a read-only open of an existing TAP.
 
 ```text
 connector-ctl tapfd get <tap>            # Open an existing TAP and hand off its queue
@@ -437,7 +459,7 @@ connector-ctl tapfd get --new [<tap>]    # Create if absent; kernel chooses an o
 | Flag | Meaning |
 |---|---|
 | `--new` | Create the named TAP if missing; default requires an existing device. |
-| `--host-cidr=IP/N` | Assign the host-side IP/CIDR and bring the TAP up for point-to-point connectivity tests. |
+| `--host-cidr=IP/N` | Assign the optional host-side IP/CIDR for point-to-point connectivity tests. TAP bring-up happens even without this flag. |
 | `--mac=...` | Guest MAC in handoff metadata. |
 | `--ip=...` | Guest inner IP in metadata, with or without a CIDR prefix. |
 

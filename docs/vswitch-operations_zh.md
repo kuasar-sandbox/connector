@@ -87,6 +87,18 @@ peer 保持无 IPv4 地址。该逻辑按 `MGMT_NETNS` 自动在 host netns 或 
    READY=1 可能早于所有端口 provision 完成([两阶段启动](vswitch_zh.md#两阶段启动))。
 5. `sudo systemctl enable connector-vswitch` 启用开机启动。
 
+### 停止服务或拆除交换机
+
+`systemctl stop connector-vswitch` 停止常驻 `serve` 进程及其可选 TAPFD listener。
+随附 unit 没有 `ExecStop`，`serve` 收到 SIGTERM/SIGINT 也不调用交换机清理。
+已 pin 的 BPF 状态、TC 挂载和设备仍可能继续转发；服务停止不证明流量已经停止。
+
+拆除时，先通过拥有该交换机的控制面停止新准入，协调 consumer 排空/detach 自有
+绑定并关闭 TAP queue 引用。在删除交换机资源前停止常驻服务，再从应接收 transit
+设备的命名空间运行 `connector-ctl vswitch stop <name>`，核对结果和残留自有资源。
+若只是控制服务重启且资源完好，使用相同服务/配置重启，不把拆除交换机当作重启步骤；
+见[按故障域恢复](#按故障域恢复)。
+
 ## 手动创建首个交换机
 
 以下用 Bash 和 `jq` 演示新建交换机。以 root 运行,使用可安全移入 `sw_ns` 的专用空闲 `eth1`;underlay 必须支持配置后的 transit MTU。`sw1`、`sw_ns` 和 `mgmt_ns` 三个名称均不得已被占用。执行 `open-port` 前,支持 TAPFD 的 VMM 接收端必须已监听 `TAPFD_SOCKET` 指定的本次运行私有路径。生产值取决于部署网络:
@@ -167,7 +179,7 @@ ip netns del sw_ns
 | `--netns` | ✓ | 交换机内部 netns(必须已存在) |
 | `--mac-addr` | ✓ | 虚拟 MAC base,前 4 字节用于派生所有 MAC([MAC 派生](vswitch_zh.md#mac-派生)) |
 | `--ports` | ✓ | 端口数(1–4096) |
-| `--floating-ip-base` | ✓ | floating IP 基地址(按 slot_id 递增) |
+| `--floating-ip-base` | ✓ | floating IP 基地址；绑定的 floating IP 为 `base + (generation << 12) + slot_id`，`slot_id` 从零开始 |
 | `--generation-bits` | 否 | 固定 12 位 slot identity 之上的 generation 位数，0–20，默认 0 仅允许 generation 0；整个 FloatingIP 范围必须能容纳在 IPv4 中。 |
 | `--port-netns` | veth 模式 ✓ | 端口设备初始 netns;tap 模式或 `--reserved` 下可省 |
 | `--mode` | – | 自动 provision 的端口类型:`tap`(默认)或 `veth`;配合 `--reserved` 时仅作参数校验提示,不持久化 |
@@ -241,10 +253,15 @@ management 接口已持有这些地址。
 unpin maps,把 transit 移入 **stop 调用方的 namespace**。若要还给原 Host netns,
 须从那里执行 stop;实现并不保存并自动恢复另一个 origin namespace。
 
+不带 `--force` 时，发现已分配端口会返回退出码 **4**。初始已分配端口检查发生在
+保留 Free slot 之前，因此不能把拒绝结果或 CLI 当前的“Free ports have been
+reserved”提示当成新准入已经关闭的证据。应由 owner 停止准入，排空活动绑定，
+检查实际状态后重试。交换机不存在时返回退出码 3。
+
 | 参数 | 说明 |
 | --- | --- |
 | `--force` | 先释放所有 in-use 端口再 stop(两轮清理),用于强制关停 |
-| `--force-clean` | 损坏状态恢复:仅 unpin BPF 资源,不清理设备;须检查/清理遗留 netdev 和 TC 引用,不能据此断言转发已停止 |
+| `--force-clean` | 先尝试正常 Stop，仅在识别到交换机损坏错误后启用只清 pins 的兜底。健康交换机仍正常清理，单独使用此参数不会绕过端口占用检查。兜底后的设备/TC 清理和 transit 归还由操作者负责；仅 unpin 不证明转发已停止。 |
 
 ### `connector-ctl vswitch attach`
 
@@ -440,7 +457,7 @@ per-port 流量计数,从沙箱视角:mgmt/transit × rx/tx × packets/bytes。
 
 ### `connector-ctl vswitch show`
 
-- `show slots <name> [slot_id]` — dump slot 表为 JSON(单槽或全部)。
+- `show slots <name> [slot_id]` — dump slot 表为 JSON（零基 `slot_id` 指定单槽，或输出全部）。
 - `show config <name>` — dump in-kernel `switch_config`,并附 metadata 中的
   `transit_dev`/`mgmt_planes`/`mgmt_services`。
 
@@ -470,7 +487,9 @@ per-port 流量计数,从沙箱视角:mgmt/transit × rx/tx × packets/bytes。
 
 这是同一个 connector-ctl 二进制中、与 switch 状态无关的 tapfd provider 子命令:打开 tap,把其
 `IFF_VNET_HDR` 队列 fd 经 `TAPFD_SOCKET` 以 `SCM_RIGHTS` 递交 consumer。用于不经
-vswitch 数据面、只需要"拿一个 tap fd"的场景(测试、简单拓扑)。
+vswitch 数据面、只需要“拿一个 tap fd”的场景（测试、简单拓扑）。交接前总会把
+TAP 置 UP，包括已存在的设备；`--host-cidr` 额外配置地址。因此它不是对既有 TAP
+的只读打开操作。
 
 ```
 connector-ctl tapfd get <tap>            # 打开已存在的 tap 并交接其队列 fd
@@ -480,7 +499,7 @@ connector-ctl tapfd get --new [<tap>]    # 不存在则创建;省略名时内核
 | 参数 | 说明 |
 | --- | --- |
 | `--new` | 不存在则创建 `<tap>`(缺省要求 tap 已存在) |
-| `--host-cidr=IP/N` | 给 `<tap>` 分配宿主侧 IP/CIDR 并拉起(点对点对端,便于连通性测试) |
+| `--host-cidr=IP/N` | 可选的宿主侧 IP/CIDR，用于点对点连通性测试；即使没有此参数也会拉起 TAP。 |
 | `--mac=...` | 写入交接元数据的 guest MAC |
 | `--ip=...` | 写入元数据的 guest inner IP(裸地址或 CIDR) |
 
