@@ -13,6 +13,15 @@
 
 本仓可作为完整 Kuasar Sandbox 平台的组成部分,也可通过 TAP 文件描述符交接契约独立集成其他 MicroVM runtime。
 
+## 按任务阅读
+
+| 任务 | 文档 |
+|---|---|
+| 部署、分配端口、观测流量或恢复交换机 | [vSwitch 运维](docs/vswitch-operations_zh.md) |
+| 对接网关，审查隔离、身份与 ABI | [网络架构与契约](docs/vswitch_zh.md) |
+| 实现 TAP provider 或 consumer | [TAPFD 协议](docs/tapfd_zh.md) |
+| 构建、测试或修改组件 | [贡献指南](CONTRIBUTING_zh.md) |
+
 ## 网络模型
 
 基础 vSwitch 提供:
@@ -43,126 +52,15 @@
 
 TAP 交接的规范协议见 [`docs/tapfd_zh.md`](docs/tapfd_zh.md)。
 
-当前 attachment 流量读取与清零/错误语义见 [vSwitch stats](docs/vswitch-operations_zh.md#210-connector-ctl-vswitch-stats). Go Stats API 可批量读取端口,无需逐端口启动 CLI.
-
-## 构建与测试
-
-本地构建使用环境提供的 Go, 并继承 `GOROOT`、`GOTOOLCHAIN` 等工具链选择.
-CI 构建和打包使用原生 x86_64/aarch64 Runner, 每种架构在一次运行中固定一个已通过
-验证的 Workbench 镜像身份. 发布构建、普通测试和打包在 build 模式中使用
-ordinary UID 及任务私有可写路径. 完整的 `bash scripts/ci-source-checks.sh` 门禁
-在 Workbench system 模式运行, 保留单元测试、race、vet 以及
-`REQUIRE_CONNECTOR_STATS=1` 的真实 BPF 检查; 缺少内核能力时门禁失败.
-发布编排由环境提供支持 `api --slurp` 的 `gh`, 凭据不进入
-Workbench 源码执行环境.
-
-```bash
-make build                      # bin/<arch>/connector-ctl;纯 Go 控制面
-make build TARGET_ARCH=aarch64  # 交叉编译;接受 amd64/arm64 别名
-make generate                   # 修改 bpf/*.c 后重新生成对象;需要 Clang/LLVM
-make test                       # 单元测试
-make test-source-checks          # race、真实 pinned-BPF 统计和 vet；需要 sudo
-```
-
-产品 E2E 使用平台统一 runner：预构建产品 -> `e2e prepare` -> `e2e run --suite network`，具体命令见[已准备网络 suite 的运行方法](docs/vswitch-operations_zh.md#12-构建)。以上源码检查保持独立；产品 E2E 不编译 Go 代码，也不使用组件自有 runner。
-
-运行要求:
-
-- Linux 5.10 或更新版本,支持 BTF 和 TC BPF;
-- root 或等效的必要 capabilities;
-- network namespace、TAP、veth、路由及 TC 支持;
-- 源码构建需要 Go 1.26.1 或更新版本;
-- 仅重新生成 BPF 对象时需要 Clang 12 或更新版本。
-
-仓库包含预生成 BPF 对象,普通构建不需要 Clang。特权测试被跳过不等于网络验证完成。特权 E2E 必须在隔离的候选环境中运行,并清理本次运行拥有的全部 TAP、namespace、route、rule、BPF map 和 pin path。
-
-## 最小本地示例
-
-以下用 Bash 和 `jq` 演示新建交换机。以 root 运行,使用可安全移入 `sw_ns` 的专用空闲 `eth1`;underlay 必须支持配置后的 transit MTU。`sw1`、`sw_ns` 和 `mgmt_ns` 三个名称均不得已被占用。执行 `open-port` 前,支持 TAPFD 的 VMM 接收端必须已监听 `TAPFD_SOCKET` 指定的本次运行私有路径。生产值取决于部署网络:
-
-```bash
-set -euo pipefail
-: "${TAPFD_SOCKET:?Set the existing run-owned VMM receiver socket path}"
-ip netns add sw_ns
-ip netns add mgmt_ns
-ip link set eth1 down
-
-connector-ctl vswitch start sw1 \
-    --netns=sw_ns \
-    --ports=128 \
-    --mac-addr=02:00:00:00:00:01 \
-    --floating-ip-base=100.100.96.0 \
-    --mgmt-extract=mgmt_ns:eth0:169.254.169.254/32 \
-    --transit-dev=eth1 \
-    --transit-dev-addr=10.0.0.1/24:10.0.0.2 \
-    --transit-dev-mtu=auto
-
-ip netns exec mgmt_ns ip addr replace 169.254.169.254/32 dev eth0
-
-port="$(connector-ctl vswitch attach sw1 \
-    --inner-ip=169.254.1.1 \
-    --transit-gateway-ip=10.0.0.2 \
-    --transit-geneve-vni=100 \
-    | jq -er '.port | select(type == "number" and . >= 1 and . <= 128 and floor == .)')"
-
-TAPFD_SOCKET="$TAPFD_SOCKET" connector-ctl vswitch open-port sw1 --port="$port"
-
-connector-ctl vswitch detach sw1 --port="$port"
-connector-ctl vswitch stop sw1
-ip netns del mgmt_ns
-ip netns del sw_ns
-```
-
-这些是文档示例地址,不是生产拓扑。从应接收归还 transit 设备的 namespace 执行 `stop`。检查端口与 transit 的实际 MTU:当前两阶段 provision 未把 `--mtu` 传给新建 TAP/veth 端口。完整命令参考与部署操作见 [vSwitch 运维](docs/vswitch-operations_zh.md);转发和生命周期约束归属于 [vSwitch 设计](docs/vswitch_zh.md)。
-
-这是人工操作顺序,不是自动失败清理脚本。任何命令失败都应停下,检查实际分配结果,并且只移除本次运行创建的资源。不得强制停止预存交换机或删除陌生 namespace。
+当前 attachment 流量读取与清零/错误语义见 [vSwitch stats](docs/vswitch-operations_zh.md#connector-ctl-vswitch-stats). Go Stats API 可批量读取端口,无需逐端口启动 CLI.
 
 ## 与 sandboxer 集成
 
 `sandboxer` 只 import `github.com/kuasar-sandbox/connector/pkg/tapfd`。`connector-ctl` 打开和配置 TAP queue,再通过 Unix socket 的 `SCM_RIGHTS` 交接 fd,按需同时传递 network namespace fd。这个窄接口避免把 eBPF 实现链接进 MicroVM 生命周期引擎。
 
-## 发行模型
+## 获取发行物
 
-Preview 清理忽略历史 `SHA256SUMS` 和正文记录。完整性按精确包名、原生资产 ID、大小、摘要与上传状态判断；历史单 x86_64 包和完整双架构包均受保护，缺失或歧义元数据保留并报错。删除前复核实际 Tag 与 Release，部分删除可重试；只有明确 404 视为不存在。保留范围与期限由项目发行清理规则决定。
-
-所选 owner 源码在 `release/helper-inputs.json` 显式声明编译型 E2E helper 清单。当前清单为空。后续 helper 及其构建配方由此 owner 声明维护，聚合打包自动发现，无需平台文件名清单。
-
-使用组件 Makefile 从选定源码构建。`release.sh package` 使用匹配的
-`bin/<arch>` 二进制,或显式指定的 `RELEASE_BIN_DIR`;只收集材料并生成 bundle,
-不重新构建二进制,不重置源码或构建缓存。所选源码 checkout、依赖版本、原生
-构建记录与产物应一并保留。
-
-打包记录实际 Go 版本和生效的 module 替换。Go/module LICENSE、NOTICE 取自所选
-编译器安装和匹配的 module 源码,保留嵌套路径。模块解析沿用正常 Go 缓存与路由,
-下载模块的校验和须匹配二进制记录。组织命名空间本身不豁免模块的声明收集。
-本组件没有内部兄弟组件依赖。官方包中不受支持的本地替换需要改用带版本的
-module 输入。
-
-许可证和声明放在 `share/licenses/<component>`。声明缺失、目录不可读或遍历不完整时收集失败。包验证检查必需文件、载荷身份及归档路径、类型和权限。下载使用 GitHub 原生资产大小和摘要。新包和 Release 不携带来源或历史测试记录、独立 `SHA256SUMS`、来源/Preview 标记。发布者使用人类说明，检查本次构建输出，并拒绝覆盖同名不同内容资产。
-
-验证要求匹配所选原生 Linux 架构（x86_64 对应 amd64，aarch64 对应 arm64）的
-`github.com/kuasar-sandbox/connector/cmd/connector-ctl` main package 及匹配的
-Connector module。部署文件和运维辅助脚本取自所选源码树。归档保留内嵌 eBPF
-的来源及许可标识,包括项目许可范围说明和 GPL 正文。验证拒绝额外载荷、不安全
-路径、链接、错误属主或权限,以及组件命名空间以外的材料。
-许可目录包含 Connector 项目、其内嵌 eBPF，以及 `connector-ctl` 使用的 Go 工具链和版本化第三方 Go 依赖。
-
-`connector` 独立发布 `vX.Y.Z` 组件版本。已发布原生架构的组件归档包含 `connector-ctl`、部署文件和组件发行合同选定的运维辅助脚本。聚合 platform 包按显式文档/测试选择携带用户指南与规范 E2E 运行输入，内部设计文档和源码专用测试保留在源码仓。用 `make release VERSION=vX.Y.Z` 构建并验证相同的本地 bundle 布局。
-
-项目主仓独立发布 `release-vX.Y.Z` 聚合版本,选择精确的 Connector Tag 与其他发行单元,并验证组合后的平台。组件与聚合版本号相互独立。
-
-参见[项目发行文档](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/release_zh.md)和[最新 Stable 聚合渠道](https://github.com/kuasar-sandbox/kuasar-sandbox/releases/latest)。
-
-## 文档
-
-- [vSwitch 运维](docs/vswitch-operations_zh.md) - 完整 CLI/配置、部署与故障排除。
-
-详细设计和参考文档提供完整英中版本:
-
-- [vSwitch - 英文](docs/vswitch.md) / [中文](docs/vswitch_zh.md) - 架构、数据路径、管理与外部网络、安全、可靠性、性能和测试;
-- [TAPFD - 英文](docs/tapfd.md) / [中文](docs/tapfd_zh.md) - provider/consumer 的规范 TAP fd 交接协议。
-
-README 提供完整公开组件入口。详细 locator 编码与报文字段布局保留在专题设计文档中,不在公开概览重复定义。
+组件使用 `vX.Y.Z`，平台以独立的 `release-vX.Y.Z` 聚合版本选择精确组件 Tag。组件包提供原生 `connector-ctl`、部署模板与选定 helper；聚合包提供选定指南和已准备 E2E 输入。可用架构以所选发行资产为准。参见[安装指南](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/installation_zh.md)与[组件打包](CONTRIBUTING_zh.md#组件打包与发行)。
 
 ## 项目边界
 
@@ -174,7 +72,7 @@ README 提供完整公开组件入口。详细 locator 编码与报文字段布�
 
 ## 贡献与安全
 
-请阅读本仓[贡献指南](CONTRIBUTING.md)与[组织贡献指南](https://github.com/kuasar-sandbox/.github/blob/main/CONTRIBUTING.md)。网络协议、TAP 交接或跨仓契约变更需要关联 Companion PR 并执行精确源码的项目级验证。
+请阅读本仓[贡献指南](CONTRIBUTING_zh.md)与[组织贡献指南](https://github.com/kuasar-sandbox/.github/blob/main/CONTRIBUTING.md)。网络协议、TAP 交接或跨仓契约变更需要关联 Companion PR 并执行精确源码的项目级验证。
 
 不要公开凭据、真实内部拓扑、包含敏感载荷的抓包或尚未修补的漏洞。请使用 [Kuasar Sandbox 安全政策](https://github.com/kuasar-sandbox/kuasar-sandbox/security/policy)和 GitHub 私密漏洞报告。
 

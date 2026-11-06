@@ -8,3 +8,5 @@ docs/tapfd.md
 docs/tapfd_zh.md
 docs/vswitch-operations.md
 docs/vswitch-operations_zh.md
+docs/vswitch.md
+docs/vswitch_zh.md
