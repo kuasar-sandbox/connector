@@ -19,11 +19,11 @@
 
 ### 获取匹配的二进制
 
-从选定组件或聚合版本安装 `connector-ctl` 与 `dist/` 模板。精确资产验证见[平台安装](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/installation_zh.md)；自行生产组件时遵循[源码构建](../CONTRIBUTING_zh.md#build-and-validation)。用户态二进制与其内嵌 BPF 对象应来自同一源码版本。
+从选定 Connector 组件归档（或平台 release 选定的精确 Connector 组件资产）安装 `bin/connector-ctl` 与 `deploy/` 模板。源码模板位于 `dist/`。精确资产验证见[平台安装](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/installation_zh.md)；自行生产组件时遵循[源码构建](../CONTRIBUTING_zh.md#build-and-validation)。用户态二进制与其内嵌 BPF 对象应来自同一源码版本。
 
 ### systemd 集成
 
-`dist/` 提供三个模板:
+源码目录 `dist/` 提供三个模板:
 
 | 模板 | 安装位置 | 用途 |
 | --- | --- | --- |
@@ -202,7 +202,7 @@ ip netns del sw_ns
 | 参数 | 说明 |
 | --- | --- |
 | `--watch-interval` | 健康检查间隔,默认 30s |
-| `--tapfd-listen` | 持久 vswitch/tapfd UDS。支持 `TAPFD/1 PREPARE` / `OPEN` / `SET_PORT_UP` / `RELEASE`;`OPEN` 返回 `TAPFD/1 OK` + metadata + SCM_RIGHTS;详见 [tapfd_zh.md](tapfd_zh.md) [网关互操作验收与恢复](#网关互操作验收与恢复) |
+| `--tapfd-listen` | 持久 vswitch/tapfd UDS。支持 `TAPFD/1 INFO` / `PREPARE` / `OPEN` / `SET_PORT_UP` / `RELEASE`;`OPEN` 返回 `TAPFD/1 OK` + metadata + SCM_RIGHTS;详见[持久 provider socket](tapfd_zh.md#持久-provider-socketnormative) |
 
 `start` 示例输出(值用于展示,不是前面 128-port 命令的实际结果):
 
@@ -277,7 +277,7 @@ reserved”提示当成新准入已经关闭的证据。应由 owner 停止准�
 | `--transit-geneve-vni=N` | GENEVE VNI |
 | `--transit-geneve-opt=CLASS:TYPE:DATA` | 单向出站 opaque GENEVE option,可重复;十六进制 data 长度须为 4 字节整数倍,空 data 写作 `CLASS:TYPE:`([GENEVE 隧道](vswitch_zh.md#geneve-隧道)) |
 | `--transit-mac-addr=MAC` | Ether-over-GENEVE 内层目标 MAC(省略则广播) |
-| `--skip-device` | 跳过 veth namespace 移动,仍进行 slot/map 控制更新;tap attachment 拒绝 |
+| `--skip-device` | 跳过 veth namespace 移动,仍进行 slot/map 控制更新;TAP attachment 无论是否指定此参数都不移动设备 |
 | `--open-port` | tap 模式:分配后经 TAPFD_SOCKET 递交 fd;失败时尝试 detach/回滚,清理也失败时须先核对状态再重试 |
 | `--admin-down` | 分配并准备 attachment，但暂不启用流量。完成 FD 交付与 guest 配置后，使用 `set-port-up` 提交全部最终网络字段。默认 false。 |
 

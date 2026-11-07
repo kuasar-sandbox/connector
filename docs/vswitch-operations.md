@@ -18,11 +18,11 @@ Deferred publication uses ordinary BPF loads and an explicit address dependency 
 
 ### Obtain a matching binary
 
-Install `connector-ctl` and `dist/` templates from the selected component or aggregate release. Follow [platform installation](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/installation.md) for exact-asset verification, and [source builds](../CONTRIBUTING.md#build-and-validation) when producing the component. Keep the userspace binary and its embedded BPF objects from the same source revision.
+Install `bin/connector-ctl` and `deploy/` templates from the selected Connector component archive (or the exact Connector component asset selected by the platform release). The source templates are in `dist/`. Follow [platform installation](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/installation.md) for exact-asset verification, and [source builds](../CONTRIBUTING.md#build-and-validation) when producing the component. Keep the userspace binary and its embedded BPF objects from the same source revision.
 
 ### systemd integration
 
-The [dist directory](../dist) supplies three templates:
+The source [dist directory](../dist) supplies three templates:
 
 | Template | Installation location | Purpose |
 |---|---|---|
@@ -260,7 +260,7 @@ Allocate a port by CAS Free→IP; veth mode can also move the peer into a sandbo
 | `--transit-geneve-vni=N` | Configured VNI, subject to the locator's range. |
 | `--transit-geneve-opt=CLASS:TYPE:DATA` | Repeatable outbound opaque option. Hex data length must be a multiple of four bytes; `CLASS:TYPE:` represents empty data ([GENEVE tunnels](vswitch.md#geneve-tunnels)). |
 | `--transit-mac-addr=MAC` | Inner Ethernet destination for Ether-over-GENEVE; default broadcast. |
-| `--skip-device` | Skip veth namespace movement and retain slot control updates. Rejected for TAP attachment. |
+| `--skip-device` | Skip veth namespace movement and retain slot control updates. TAP attachment does not move a device, regardless of this flag. |
 | `--open-port` | TAP only: after allocation, send the queue through `TAPFD_SOCKET`. Transfer failure triggers a detach/rollback attempt; verify state before retry if cleanup also fails. |
 | `--admin-down` | Allocate and prepare the attachment while leaving traffic disabled. After handoff and guest configuration, use `set-port-up` with all final network fields. Default false. |
 
