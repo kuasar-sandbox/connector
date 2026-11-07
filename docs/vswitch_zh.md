@@ -655,7 +655,7 @@ namespace/设备删除、map 损坏、Host 重启或 ABI 不兼容是其他故�
 
 控制面测量需明确 Start/StartReserved/Provision/Attach/Detach/Stop、请求/可用端口数、kernel/RTNL 条件及真实完成信号。就绪由 [两阶段启动](#两阶段启动) 的生命周期顺序与 Conditions 判定，不能依赖固定延迟。
 
-使用下方维护中的测试入口与 [项目性能方法](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/performance_zh.md)；缺少固定输入与原始证据的历史数字不构成当前容量或时延基线。
+使用[维护中的测试入口](../CONTRIBUTING_zh.md#测试)与 [项目性能方法](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/performance_zh.md)；缺少固定输入与原始证据的历史数字不构成当前容量或时延基线。
 
 ## See Also
 
