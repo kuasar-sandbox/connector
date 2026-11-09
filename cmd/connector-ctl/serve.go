@@ -40,6 +40,9 @@ ports_available/ports_reserved or the selected slot and retry while provisioning
 This is the recommended way to run connector-ctl vswitch as a systemd service
 (Type=notify) for fast startup with background port provisioning.
 
+Use --config base.conf:platform.conf:instance.conf to merge JSON/YAML files in
+order. Each file tries JSON first, then YAML only if JSON syntax parsing fails.
+
 Example:
   connector-ctl vswitch serve sw0 \
     --netns=sandbox_switch \
@@ -56,7 +59,7 @@ Example:
 
 func init() {
 	// Reuse the same flags as start
-	serveCmd.Flags().StringVar(&startConfigFile, "config", "", "JSON config file (alternative to CLI flags)")
+	serveCmd.Flags().StringVar(&startConfigFile, "config", "", "JSON/YAML config PATH[:PATH...] (merge left to right; alternative to CLI flags)")
 	serveCmd.Flags().StringVar(&startNetNS, "netns", "", "Switch network namespace (required)")
 	serveCmd.Flags().StringVar(&startPortNetNS, "port-netns", "", "Ports network namespace (required for veth mode; optional for tap)")
 	serveCmd.Flags().Uint32Var(&startPorts, "ports", 0, "Number of ports (1-4096, required)")

@@ -20,7 +20,9 @@ The switch will create veth pairs for each port and attach eBPF TC programs
 for packet processing. The BPF maps are pinned to /sys/fs/bpf/<switch_name>/
 so the forwarding continues after this process exits.
 
-Configuration can come from CLI flags or a JSON config file (--config).
+Configuration can come from CLI flags or JSON/YAML config files (--config).
+Use --config base.conf:platform.conf:instance.conf to merge files in order.
+Each file tries JSON first, then YAML only if JSON syntax parsing fails.
 When using --config, the switch_name argument is optional and overrides
 the switch_name in the config file if provided.
 
@@ -68,7 +70,7 @@ var (
 )
 
 func init() {
-	startCmd.Flags().StringVar(&startConfigFile, "config", "", "JSON config file (alternative to CLI flags)")
+	startCmd.Flags().StringVar(&startConfigFile, "config", "", "JSON/YAML config PATH[:PATH...] (merge left to right; alternative to CLI flags)")
 	startCmd.Flags().StringVar(&startNetNS, "netns", "", "Switch network namespace (required)")
 	startCmd.Flags().StringVar(&startPortNetNS, "port-netns", "", "Ports network namespace (required for veth mode; optional for tap)")
 	startCmd.Flags().Uint32Var(&startPorts, "ports", 0, "Number of ports (1-4096, required)")

@@ -182,7 +182,7 @@ Most query and one-shot commands emit JSON; `serve` stays resident and reports h
 | `--mtu` | No | Requested startup MTU used for management devices and transit-budget checks. Current two-phase provision does not propagate it to new TAP/veth ports; inspect actual port MTU ([MTU validation](vswitch.md#mtu-validation)). |
 | `--port-mac-addr` | No | `fixed` (default), `per-port`, or an explicit MAC ([MAC derivation](vswitch.md#mac-derivation)). |
 | `--reserved` | No | StartReserved only. The saved switch configuration supplies port-netns, and provision has no independent override; provide `--port-netns` now if later using veth. |
-| `--config` | No | Load JSON configuration ([Configuration file (`--config`)](#configuration-file---config)). |
+| `--config` | No | Load JSON/YAML files as `PATH[:PATH...]`, in order ([Configuration file (`--config`)](#configuration-file---config)). |
 
 `serve` shares the switch flags but has no `--reserved`. Additional flags:
 
@@ -467,9 +467,9 @@ A TAP created by `--new` is **not persistent**: the handed-off descriptor keeps 
 
 ### Configuration file (`--config`)
 
-`start` / `serve` accept JSON with these field/flag mappings:
+`start` / `serve` accept JSON or YAML with the same field/flag mappings:
 
-| JSON field | CLI counterpart |
+| Configuration field | CLI counterpart |
 |---|---|
 | `switch_name` | Positional switch_name. |
 | `switch_netns` | `--netns`. |
@@ -485,7 +485,45 @@ A TAP created by `--new` is **not persistent**: the handed-off descriptor keeps 
 | `mtu` | `--mtu`. |
 | `port_mac_addr` | `--port-mac-addr`. |
 
-With `--config`, the positional switch name overrides the file's name, but ordinary switch flags are not merged as field-by-field overrides. `--mode` still selects the CLI's auto-provision mode; use `provision --mode` for a later reserved-slot operation. Keep the **total extraction CIDRs across planes within three**: the slot ABI holds only three, and current provisioning stops adding routes at that limit. A successful JSON parse is not evidence that additional routes reached the data plane; inspect slots when checking deployment.
+With `--config`, the positional switch name overrides the file's name, but ordinary switch flags are not merged as field-by-field overrides. `--mode` still selects the CLI's auto-provision mode; use `provision --mode` for a later reserved-slot operation. Keep the **total extraction CIDRs across planes within three**: the slot ABI holds only three, and current provisioning stops adding routes at that limit. A successful configuration parse is not evidence that additional routes reached the data plane; inspect slots when checking deployment.
+
+Supply one file or an explicit colon-separated list. Files are read from left to
+right, without sorting, deduplication or directory discovery:
+
+```bash
+connector-ctl vswitch serve --config /etc/connector-vswitch/vswitch.conf:/etc/connector-vswitch/platform.conf:/etc/connector-vswitch/instance.conf
+```
+
+Each file is first checked as a complete JSON document. Only a JSON syntax
+failure triggers one YAML attempt. A valid JSON document with an invalid field
+type or business value remains an error; it does not trigger fallback. File
+extensions have no effect: `.conf`, `.json`, `.yaml`, `.yml` and extensionless
+files all follow this rule, and a list may mix JSON and YAML. YAML files must
+contain one root mapping, with string keys and no duplicate keys or additional
+documents. Anchors and `<<` are resolved within their own file. Both formats use
+the same field names and values; quote YAML strings that look numeric, such as
+`transit_dev_mtu: "9000"` and `geneve_tlv_locator: "0102:81"`.
+
+| Layered value | Effect |
+|---|---|
+| Object | Recursively merge keys; an object can replace an earlier non-object. |
+| Scalar or array | Replace the earlier value; arrays are replaced as a whole. |
+| `false`, `0`, `""`, `[]` | Keep the explicit value, then apply the existing defaults and validation. |
+| `null` in an overlay | Delete the inherited field; a required field may then fail final validation. |
+
+The first file retains its native null behavior. JSON member spelling/order,
+duplicate-field decoding and number precision are preserved. A later file
+replaces all inherited occurrences of the same known field, including different
+capitalization, before decoding that file's repeated members in order. For
+example, `{"mtu":9000,"mtu":null}` retains 9000 under the native JSON integer
+rules; `{"MTU":null}` alone deletes the inherited MTU.
+
+Defaults and conversion run after all files are combined, so individual
+fragments may be incomplete. Empty path segments, missing files and directory
+inputs are errors. Paths cannot contain the colon separator. Directory discovery
+and ordering belong to the caller or service startup script. Configuration takes
+effect on startup; this does not add hot reload or change the shipped systemd
+unit's configuration.
 
 ```json
 {
