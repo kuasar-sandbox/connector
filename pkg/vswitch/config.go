@@ -2,10 +2,8 @@
 package vswitch
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 
@@ -424,7 +422,7 @@ func (c *Config) DummyDeviceName() string {
 	return c.Name + "-dummy"
 }
 
-// FileConfig is the JSON file format for switch configuration.
+// FileConfig is the shared JSON/YAML configuration schema, decoded through JSON.
 type FileConfig struct {
 	SwitchName       string            `json:"switch_name"`
 	SwitchNetNS      string            `json:"switch_netns"`
@@ -444,19 +442,6 @@ type FileConfig struct {
 	GeneveEncapEth   bool              `json:"geneve_encap_eth,omitempty"`
 	MTU              int               `json:"mtu,omitempty"`
 	PortMACAddr      string            `json:"port_mac_addr,omitempty"` // "fixed" (default), "per-port", or MAC address
-}
-
-// LoadConfigFile reads and parses a switch configuration from a JSON file.
-func LoadConfigFile(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read config %s: %w", path, err)
-	}
-	var fc FileConfig
-	if err := json.Unmarshal(data, &fc); err != nil {
-		return nil, fmt.Errorf("parse config %s: %w", path, err)
-	}
-	return fc.ToConfig()
 }
 
 // ToConfig converts FileConfig to Config.

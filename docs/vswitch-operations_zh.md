@@ -195,7 +195,7 @@ ip netns del sw_ns
 | `--mtu` | – | 请求的启动 MTU,用于管理设备与初始 transit budget 检查;当前两阶段 provision 不把它传给新 TAP/veth 端口,须检查实际端口 MTU([MTU 校验](vswitch_zh.md#mtu-校验)) |
 | `--port-mac-addr` | – | `fixed`(默认)/`per-port`/具体 MAC([MAC 派生](vswitch_zh.md#mac-派生)) |
 | `--reserved` | – | 仅做 StartReserved,不自动 ProvisionPorts。port-netns 由 start 写入交换机配置、`provision` 无独立 flag 覆盖,故计划用 veth 端口时 start 仍需给 `--port-netns` |
-| `--config` | – | 从 JSON 文件读取以上参数([配置文件(`--config`)](#配置文件--config)) |
+| `--config` | – | 按 `PATH[:PATH...]` 顺序读取 JSON/YAML 文件([配置文件(`--config`)](#配置文件--config)) |
 
 `serve` 复用 `start` 的交换机参数,差异:无 `--reserved` flag,另有:
 
@@ -508,7 +508,7 @@ connector-ctl tapfd get --new [<tap>]    # 不存在则创建;省略名时内核
 
 ### 配置文件(`--config`)
 
-`start`/`serve` 接受 JSON 配置文件,字段与同名 flags 一一对应:
+`start`/`serve` 接受 JSON 或 YAML 配置文件，两种格式使用相同的字段和取值：
 
 | 字段 | 对应 flag |
 | --- | --- |
@@ -546,8 +546,40 @@ connector-ctl tapfd get --new [<tap>]    # 不存在则创建;省略名时内核
 使用 `--config` 时,位置参数覆盖文件中的 switch_name,但普通 switch flags 并不会
 逐字段叠加覆盖该文件。`--mode` 仍控制 CLI 的自动 provision 类型;稍后的 Reserved
 slot 操作用 `provision --mode`。所有管理 plane 的 CIDR **总数应不超过三条**:slot
-ABI 只有三个位置,当前 provision 达上限便停止写入。JSON 解析成功不证明更多路由
+ABI 只有三个位置,当前 provision 达上限便停止写入。配置解析成功不证明更多路由
 已进入数据面;部署检查应读取实际 slots。
+
+可以传入单个文件，或以冒号分隔的显式文件列表。文件严格从左到右读取，不排序、
+不去重，也不自动发现目录中的文件：
+
+```bash
+connector-ctl vswitch serve --config /etc/connector-vswitch/vswitch.conf:/etc/connector-vswitch/platform.conf:/etc/connector-vswitch/instance.conf
+```
+
+每个文件先按完整 JSON 文档做语法解析，只有 JSON 语法失败时才尝试一次 YAML。
+JSON 语法成功后的字段类型错误或业务配置错误直接报错，不触发回退。文件后缀
+不参与判断：`.conf`、`.json`、`.yaml`、`.yml` 和无扩展名文件使用同一规则，
+一个列表可以混用两种格式。每个 YAML 文件必须为一个根映射，键为字符串，
+不允许重复键和多文档；anchors 与 `<<` 仅在本文件内解析。两种格式的字段名
+和取值含义相同；看起来像数字的字符串要加引号，例如
+`transit_dev_mtu: "9000"` 和 `geneve_tlv_locator: "0102:81"`。
+
+| 后层输入 | 效果 |
+| --- | --- |
+| 对象 | 按键递归合并；对象可以替换前层非对象值。 |
+| 标量或数组 | 替换前层值；数组整体替换。 |
+| `false`、`0`、`""`、`[]` | 保留显式输入，再沿用既有默认值和校验。 |
+| 覆盖文件中的 `null` | 删除继承字段；删除必填字段后可能无法通过最终校验。 |
+
+第一份文件中的 null 保持原生含义。JSON 的成员大小写、顺序、重复字段解码和
+数字精度均保留。后层文件先替换此前同一已知字段的所有出现，包括不同大小写，
+再按后层文件内的原始顺序解码重复成员。例如 `{"mtu":9000,"mtu":null}`
+仍按原生 JSON 整数规则保留 9000；单独的 `{"MTU":null}` 则删除继承的 MTU。
+
+默认值与配置转换在所有文件合并后统一执行，片段可以不完整。空路径段、缺失
+文件和目录输入都会报错；文件路径不能包含冒号分隔符。目录发现和排序由调用方
+或服务启动脚本完成。配置在启动时生效，本功能不增加热更新，也不修改已交付
+systemd unit 的配置方式。
 
 
 ### `connector-ctl vswitch set-port-up`
