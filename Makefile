@@ -132,9 +132,12 @@ release:
 	  (cd "$$work" && $(GO) work init "$(CURDIR)"); \
 	  export GOWORK="$$work/go.work"; \
 	fi; \
-	$(MAKE) build GOWORK="$$GOWORK"; \
-	mkdir -p $(BUILD_DIR); \
-	rm -rf $(BUILD_DIR)/release-bundle; \
+	$(MAKE) _release-bundle GOWORK="$$GOWORK"
+
+.PHONY: _release-bundle
+_release-bundle: build
+	mkdir -p $(BUILD_DIR)
+	rm -rf $(BUILD_DIR)/release-bundle
 	SOURCE_DATE_EPOCH="$$(git show -s --format=%ct HEAD)" \
 		bash scripts/release.sh package "$(VERSION)" "$(TARGET_ARCH)" \
 		$(BUILD_DIR)/release-bundle

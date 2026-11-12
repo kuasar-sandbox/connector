@@ -63,7 +63,7 @@ class EnvironmentTools(unittest.TestCase):
     def test_local_release_selects_its_own_go_environment(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            recipe = (ROOT/'Makefile').read_text().split('\nrelease:\n', 1)[1].split('\n\n', 1)[0]
+            recipe = (ROOT/'Makefile').read_text().split('\nrelease:\n', 1)[1].split('\ntest-release:', 1)[0]
             (root/'Makefile').write_text(
                 "SHELL := /bin/bash\nGO := go\nBUILD_DIR := build\nTARGET_ARCH := x86_64\n"
                 "release:\n" + recipe + "\n.PHONY: build\nbuild:\n"
@@ -78,6 +78,17 @@ class EnvironmentTools(unittest.TestCase):
             for cmd in (['init', '-q'], ['add', '.'],
                         ['-c','user.name=test','-c','user.email=test@example.invalid','commit','-qm','fixture']):
                 subprocess.run(['git', *cmd], cwd=root, check=True, capture_output=True)
+            marker = root/'build/release-bundle/preserved'
+            marker.parent.mkdir(parents=True)
+            marker.write_text('previous release')
+            for version in ('v0.1.1', 'v0.1.2-preview.20261112'):
+                with self.subTest(dry_run=version):
+                    result = subprocess.run(['make', '-n', 'release', 'VERSION='+version,
+                                             'GOWORK='+str(root/'go.work')], cwd=root,
+                                            text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(marker.read_text(), 'previous release')
+                    self.assertFalse((root/'package-env').exists())
             for version in ('v0.1.1', 'v0.1.2-preview.20261112'):
                 with self.subTest(version=version):
                     result = subprocess.run(['make', 'release', 'VERSION='+version,
