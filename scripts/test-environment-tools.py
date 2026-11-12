@@ -63,10 +63,12 @@ class EnvironmentTools(unittest.TestCase):
     def test_local_release_selects_its_own_go_environment(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            recipe = (ROOT/'Makefile').read_text().split('\nrelease:\n', 1)[1].split('\ntest-release:', 1)[0]
+            original = (ROOT/'Makefile').read_text()
+            recursive = original[original.index('release_make ='):].split('\n\n', 1)[0]
+            recipe = original.split('\nrelease:\n', 1)[1].split('\ntest-release:', 1)[0]
             (root/'Makefile').write_text(
                 "SHELL := /bin/bash\nGO := go\nBUILD_DIR := build\nTARGET_ARCH := x86_64\n"
-                "release:\n" + recipe + "\n.PHONY: build\nbuild:\n"
+                + recursive + "\nrelease:\n" + recipe + "\n.PHONY: build\nbuild:\n"
                 "\t@go env GOWORK > build-env\n\t@go build -o checked .\n")
             (root/'go.mod').write_text('module example.com/release-fixture\n\ngo 1.20\n')
             (root/'main.go').write_text('package main\nfunc main() {}\n')
@@ -83,10 +85,15 @@ class EnvironmentTools(unittest.TestCase):
             marker.write_text('previous release')
             for version in ('v0.1.1', 'v0.1.2-preview.20261112'):
                 with self.subTest(dry_run=version):
-                    result = subprocess.run(['make', '-n', 'release', 'VERSION='+version,
+                    record = root/'unexpected-go'
+                    fake_go = root/'dry-run-go'
+                    fake_go.write_text('#!/bin/sh\ntouch "$PWD/unexpected-go"\nexit 1\n')
+                    fake_go.chmod(0o755)
+                    result = subprocess.run(['make', '-n', '-j2', 'release', 'VERSION='+version, 'GO='+str(fake_go),
                                              'GOWORK='+str(root/'go.work')], cwd=root,
                                             text=True, capture_output=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertFalse(record.exists())
                     self.assertEqual(marker.read_text(), 'previous release')
                     self.assertFalse((root/'package-env').exists())
             for version in ('v0.1.1', 'v0.1.2-preview.20261112'):
