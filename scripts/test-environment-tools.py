@@ -96,10 +96,14 @@ class EnvironmentTools(unittest.TestCase):
                     self.assertFalse(record.exists())
                     self.assertEqual(marker.read_text(), 'previous release')
                     self.assertFalse((root/'package-env').exists())
+            launcher = root/'go-from-owner'
+            launcher.write_text('#!/bin/sh\n[ "$PWD" = "$EXPECTED_OWNER" ] || exit 11\nexec go "$@"\n')
+            launcher.chmod(0o755)
             for version in ('v0.1.1', 'v0.1.2-preview.20261112'):
                 with self.subTest(version=version):
-                    result = subprocess.run(['make', 'release', 'VERSION='+version,
+                    result = subprocess.run(['make', 'release', 'VERSION='+version, 'GO='+str(launcher),
                                              'GOWORK='+str(root/'go.work')], cwd=root,
+                                            env=dict(os.environ, EXPECTED_OWNER=str(root)),
                                             text=True, capture_output=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     selected = (root/'build-env').read_text().strip()

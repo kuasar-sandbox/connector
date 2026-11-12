@@ -134,7 +134,8 @@ release:
 	$(release_recursive)@set -e; export GOWORK=off; \
 	if [[ "$(VERSION)" == *-preview.* ]]; then \
 	  work="$$(mktemp -d)"; trap 'rm -rf -- "$$work"' EXIT; \
-	  (cd "$$work" && $(GO) work init "$(CURDIR)"); \
+	  selected_go="$$( $(GO) env GOROOT)/bin/go"; \
+	  (cd "$$work" && "$$selected_go" work init "$(CURDIR)"); \
 	  export GOWORK="$$work/go.work"; \
 	fi; \
 	$(release_make) _release-bundle GOWORK="$$GOWORK"
