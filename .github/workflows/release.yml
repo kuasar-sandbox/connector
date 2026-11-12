@@ -164,9 +164,13 @@ jobs:
             set -euo pipefail
             cd connector
             # Child Go commands use the compiler selected for this module.
+            export GOWORK=off
             selected_go_root=$(env -u GOROOT go env GOROOT)
             export GOROOT="$selected_go_root"
             export PATH="$selected_go_root/bin:$PATH"
+            GOWORK="$(python3 -B /inputs/release/ci/integration/go_workspace.py \
+              --root /src --owners connector --bound-release --version '${{ needs.preflight.outputs.version }}')"
+            export GOWORK
             if [ "$TARGET_ARCH" = x86_64 ]; then make test; make vet; fi
             make build
             VERSION='${{ needs.preflight.outputs.version }}'

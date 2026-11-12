@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Release jobs consume the environment CLI without installing or selecting tools."""
+import json
 import os
 from pathlib import Path
 import shutil
@@ -58,6 +59,41 @@ class EnvironmentTools(unittest.TestCase):
                                      ":" if policy is None else "x:" + policy)
                     self.assertEqual(cli.read_bytes(), before)
                     self.assertFalse((root / "github-path").exists())
+
+    def test_local_release_selects_its_own_go_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            recipe = (ROOT/'Makefile').read_text().split('\nrelease:\n', 1)[1].split('\n\n', 1)[0]
+            (root/'Makefile').write_text(
+                "SHELL := /bin/bash\nGO := go\nBUILD_DIR := build\nTARGET_ARCH := x86_64\n"
+                "release:\n" + recipe + "\n.PHONY: build\nbuild:\n"
+                "\t@go env GOWORK > build-env\n\t@go build -o checked .\n")
+            (root/'go.mod').write_text('module example.com/release-fixture\n\ngo 1.20\n')
+            (root/'main.go').write_text('package main\nfunc main() {}\n')
+            (root/'go.work').write_text('invalid workspace supplied by the caller\n')
+            (root/'scripts').mkdir()
+            (root/'scripts/release.sh').write_text(
+                'set -eu\n./checked\ngo env GOWORK > package-env\n'
+                'if [[ "$GOWORK" != off ]]; then go work edit -json "$GOWORK" > selected.json; fi\n')
+            for cmd in (['init', '-q'], ['add', '.'],
+                        ['-c','user.name=test','-c','user.email=test@example.invalid','commit','-qm','fixture']):
+                subprocess.run(['git', *cmd], cwd=root, check=True, capture_output=True)
+            for version in ('v0.1.1', 'v0.1.2-preview.20261112'):
+                with self.subTest(version=version):
+                    result = subprocess.run(['make', 'release', 'VERSION='+version,
+                                             'GOWORK='+str(root/'go.work')], cwd=root,
+                                            text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    selected = (root/'build-env').read_text().strip()
+                    self.assertEqual((root/'package-env').read_text().strip(), selected)
+                    if '-preview.' in version:
+                        work = Path(selected)
+                        self.assertFalse(work.exists())
+                        doc = json.loads((root/'selected.json').read_text())
+                        self.assertEqual([(work.parent / use['DiskPath']).resolve() for use in doc['Use']], [root])
+                        self.assertFalse(doc.get('Replace'))
+                    else:
+                        self.assertEqual(selected, 'off')
 
     def test_missing_cli_fails_without_installing(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -120,9 +156,17 @@ class ReleaseGoHandoff(unittest.TestCase):
             for path in (tools, stale, module):
                 path.mkdir(parents=True)
             (tools / "go").symlink_to(real_go)
+            helper = root / "go_workspace.py"
+            helper.write_text("import os, sys\nfrom pathlib import Path\n"
+                              "assert Path(os.environ['GOROOT'], 'bin/go').is_file()\nassert sys.argv[1:] == "
+                              "['--root', '/src', '--owners', 'connector', '--bound-release', '--version', 'v0.1.1']\n"
+                              "print('off')\n")
+            command = "\n".join(command).replace("/inputs/release/ci/integration/go_workspace.py", str(helper))
+            command = command.replace("${{ needs.preflight.outputs.version }}", "v0.1.1")
             scripts = {
                 tools / "make": '''#!/bin/sh
 set -e
+[ "$GOWORK" = off ] || exit 63
 [ "$(go env GOROOT)" = "$GOROOT" ] || exit 64
 go tool compile -V=full >/dev/null
 printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >> "$OBSERVED"
@@ -144,7 +188,7 @@ printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >>
                     github_path = root / "github-path"
                     github_env.unlink(missing_ok=True)
                     github_path.unlink(missing_ok=True)
-                    env = dict(os.environ, PATH=path, TARGET_ARCH="x86_64", GOWORK="off",
+                    env = dict(os.environ, PATH=path, TARGET_ARCH="x86_64", GOWORK=str(root/"bad.work"),
                                OBSERVED=str(observed),
                                GOENV=str(goenv), GITHUB_ENV=str(github_env),
                                GITHUB_PATH=str(github_path))
@@ -158,11 +202,12 @@ printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >>
                         env["GOTOOLCHAIN"] = policy
                     probe_env = dict(env)
                     probe_env.pop("GOROOT", None)
+                    probe_env["GOWORK"] = "off"
                     expected = subprocess.run([real_go, "env", "GOROOT"], cwd=module,
                                               env=probe_env, text=True, capture_output=True,
                                               timeout=10, check=True).stdout.strip()
                     with self.subTest(goroot=inherited_goroot, policy=policy):
-                        result = subprocess.run([shutil.which("bash"), "-e", "-c", "\n".join(command)],
+                        result = subprocess.run([shutil.which("bash"), "-e", "-c", command],
                                                 cwd=root, env=env, text=True,
                                                 capture_output=True, timeout=10)
                         self.assertEqual(result.returncode, 0, result.stderr)
@@ -179,12 +224,12 @@ printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >>
             github_path = root / "github-path"
             github_env.unlink(missing_ok=True)
             github_path.unlink(missing_ok=True)
-            env = dict(os.environ, PATH=path, TARGET_ARCH="x86_64", GOWORK="off",
+            env = dict(os.environ, PATH=path, TARGET_ARCH="x86_64", GOWORK=str(root/"bad.work"),
                        OBSERVED=str(observed),
                        GOENV=str(goenv), GOROOT=str(stale),
                        GOTOOLCHAIN="go9.99.9+path", GITHUB_ENV=str(github_env),
                        GITHUB_PATH=str(github_path))
-            result = subprocess.run([shutil.which("bash"), "-e", "-c", "\n".join(command)],
+            result = subprocess.run([shutil.which("bash"), "-e", "-c", command],
                                     cwd=root, env=env, text=True,
                                     capture_output=True, timeout=10)
             self.assertNotEqual(result.returncode, 0)

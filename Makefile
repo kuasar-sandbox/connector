@@ -125,9 +125,16 @@ bench: connector-ctl
 # ---------------------------------------------------------------------------
 # The binary is self-contained (eBPF objects are embedded). The release bundle
 # contains one target archive, checksums and release notes.
-release: build
-	@mkdir -p $(BUILD_DIR)
-	rm -rf $(BUILD_DIR)/release-bundle
+release:
+	@set -e; export GOWORK=off; \
+	if [[ "$(VERSION)" == *-preview.* ]]; then \
+	  work="$$(mktemp -d)"; trap 'rm -rf -- "$$work"' EXIT; \
+	  (cd "$$work" && $(GO) work init "$(CURDIR)"); \
+	  export GOWORK="$$work/go.work"; \
+	fi; \
+	$(MAKE) build GOWORK="$$GOWORK"; \
+	mkdir -p $(BUILD_DIR); \
+	rm -rf $(BUILD_DIR)/release-bundle; \
 	SOURCE_DATE_EPOCH="$$(git show -s --format=%ct HEAD)" \
 		bash scripts/release.sh package "$(VERSION)" "$(TARGET_ARCH)" \
 		$(BUILD_DIR)/release-bundle
