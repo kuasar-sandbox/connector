@@ -75,7 +75,7 @@ class EnvironmentTools(unittest.TestCase):
             (root/'go.work').write_text('invalid workspace supplied by the caller\n')
             (root/'scripts').mkdir()
             (root/'scripts/release.sh').write_text(
-                'set -eu\n./checked\ngo env GOWORK > package-env\n'
+                'set -eu\n[ "$GOTOOLCHAIN" = auto ]\n./checked\ngo env GOWORK > package-env\n'
                 'if [[ "$GOWORK" != off ]]; then go work edit -json "$GOWORK" > selected.json; fi\n')
             for cmd in (['init', '-q'], ['add', '.'],
                         ['-c','user.name=test','-c','user.email=test@example.invalid','commit','-qm','fixture']):
@@ -97,13 +97,27 @@ class EnvironmentTools(unittest.TestCase):
                     self.assertEqual(marker.read_text(), 'previous release')
                     self.assertFalse((root/'package-env').exists())
             launcher = root/'go-from-owner'
-            launcher.write_text('#!/bin/sh\n[ "$PWD" = "$EXPECTED_OWNER" ] || exit 11\nexec go "$@"\n')
+            selected_root = root / "selected toolchain"
+            selected_bin = selected_root / "bin"
+            selected_bin.mkdir(parents=True)
+            selected_go = selected_bin / "go"
+            selected_go.write_text('#!/bin/sh\nset -eu\n'
+                                   '[ "$1 $2" = "work init" ]\n'
+                                   '[ "$GOTOOLCHAIN" = local ]\n'
+                                   'exec go "$@"\n')
+            selected_go.chmod(0o755)
+            launcher.write_text('#!/bin/sh\nset -eu\n'
+                                '[ "$PWD" = "$EXPECTED_OWNER" ]\n'
+                                '[ "$1 $2" = "env GOROOT" ]\n'
+                                '[ "$GOTOOLCHAIN" = auto ]\n'
+                                'printf "%s\\n" "$SELECTED_ROOT"\n')
             launcher.chmod(0o755)
             for version in ('v0.1.1', 'v0.1.2-preview.20261112'):
                 with self.subTest(version=version):
                     result = subprocess.run(['make', 'release', 'VERSION='+version, 'GO='+str(launcher),
                                              'GOWORK='+str(root/'go.work')], cwd=root,
-                                            env=dict(os.environ, EXPECTED_OWNER=str(root)),
+                                            env=dict(os.environ, EXPECTED_OWNER=str(root),
+                                                     SELECTED_ROOT=str(selected_root), GOTOOLCHAIN="auto"),
                                             text=True, capture_output=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     selected = (root/'build-env').read_text().strip()
