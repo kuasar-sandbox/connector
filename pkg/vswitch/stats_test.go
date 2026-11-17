@@ -98,6 +98,25 @@ func TestStatsResetValidityAcrossDetachAndReuse(t *testing.T) {
 	}
 }
 
+func TestObservePortStatsSkipsOnlyUnreadyPorts(t *testing.T) {
+	defer resetDeps()
+	s, slots := newGeneveAttachTestContext(&SwitchConfig{N_ports: 2}, true)
+	statsLockFixture(t)
+	s.statsMgr = NewStatsManager(&resettableStatsMap{value: SlotStats{Generation: 1, MgmtRxBytes: 17}}, 2)
+	for _, slot := range []uint32{0, 1} {
+		slots.TryAllocate(slot, slot+1)
+		slots.GetSlot(slot).Flags = PortFUp
+	}
+	slots.GetSlot(1).StatsReady = 1
+	result, err := ObservePortStats(s)
+	if err != nil || len(result.Ports) != 1 || result.Ports[0].Port != 2 || result.Ports[0].MgmtRxBytes != 17 {
+		t.Fatalf("observed ports: %+v, %v", result, err)
+	}
+	if result, err := s.Stats(nil); result != nil || !errors.Is(err, ErrStatsUnavailable) {
+		t.Fatal("strict diagnostic read accepted partial data", result, err)
+	}
+}
+
 func TestStatsControlContentionAndReplacementFailClosed(t *testing.T) {
 	defer resetDeps()
 	s, slots := newGeneveAttachTestContext(&SwitchConfig{N_ports: 2}, true)

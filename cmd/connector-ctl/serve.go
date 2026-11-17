@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/kuasar-sandbox/connector/internal/hostmetrics"
 	"github.com/kuasar-sandbox/connector/pkg/daemon"
 	"github.com/kuasar-sandbox/connector/pkg/vswitch"
 )
@@ -151,6 +152,25 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	statusTicker := time.NewTicker(serveWatchInterval)
 	defer statusTicker.Stop()
+	telemetryPublisher := hostmetrics.New("connector-ctl", "connector", map[string]string{"switch": cfg.Name})
+	type switchObservation struct {
+		status *vswitch.StatusOutput
+		at     time.Time
+	}
+	telemetryPulse := make(chan switchObservation, 1)
+	telemetryDone := make(chan struct{})
+	defer func() { stopServe(); <-telemetryDone }()
+	go func() {
+		defer close(telemetryDone)
+		for {
+			select {
+			case <-serveCtx.Done():
+				return
+			case obs := <-telemetryPulse:
+				emitConnectorHostMetrics(serveCtx, telemetryPublisher, sw, obs.status, obs.at)
+			}
+		}
+	}()
 
 	var wdC <-chan time.Time
 	if wdInterval, ok := watchdogEnabled(); ok {
@@ -191,7 +211,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 			if !provisioned {
 				continue
 			}
-			if w.checkAndReportStatus() {
+			if status := w.checkAndReportStatus(); status != nil {
+				select {
+				case telemetryPulse <- switchObservation{status: status, at: time.Now()}:
+				default:
+				}
 				consecutiveStatusErrs = 0
 			} else {
 				consecutiveStatusErrs++
@@ -227,8 +251,8 @@ func newServeWatcher(name string) *serveWatcher {
 
 // checkAndReportStatus checks switch status, prints summary, and sends sd_notify STATUS.
 // It detects state transitions and reports them.
-// Returns true if the health check succeeded, false otherwise.
-func (w *serveWatcher) checkAndReportStatus() bool {
+// Successful observations are shared with the metrics worker.
+func (w *serveWatcher) checkAndReportStatus() *vswitch.StatusOutput {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -236,7 +260,7 @@ func (w *serveWatcher) checkAndReportStatus() bool {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[warn] switch %s: health check failed: %v\n", w.name, err)
 		daemon.NotifyStatus("health check error")
-		return false
+		return nil
 	}
 
 	ready := output.IsReady()
@@ -262,7 +286,7 @@ func (w *serveWatcher) checkAndReportStatus() bool {
 
 	// Always send STATUS so systemd can display current state
 	daemon.NotifyStatus(summary)
-	return true
+	return output
 }
 
 // formatHealthSummary formats a one-line health summary from StatusOutput.

@@ -709,3 +709,13 @@ sandboxer 负责恢复资格、网络重绑定与资源准入，Connector 不重
 - [网络不变量](vswitch_zh.md)
 - [TAPFD 协议](tapfd_zh.md)
 - [构建与验证](../CONTRIBUTING_zh.md#build-and-validation)
+
+### Host OTLP 指标
+
+`connector-ctl vswitch serve` 常驻进程在现有健康检查周期上，通过 Host 专用
+Unix Socket `/run/sandbox-telemetry/host.sock` 主动上报交换机容量以及端口
+Mgmt/Transit 包数、字节数（可使用 `KS_HOST_OTLP_SOCKET` 覆盖路径）。
+来源标识为 `sandbox.telemetry.source=connector`，并保留交换机、端口和
+attachment generation。**Connector 不生成 SandboxID，也不维护沙箱—端口归属**；
+Conductor 在已有绑定校验下生成需要按沙箱归集的网络指标。
+端口重置期间缺失的统计不补零，Telemetry 不可用不影响交换机就绪或报文转发。
