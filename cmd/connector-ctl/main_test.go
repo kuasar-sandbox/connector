@@ -1428,9 +1428,9 @@ func TestCheckAndReportStatusError(t *testing.T) {
 	}
 
 	w := newServeWatcher("sw0")
-	// Should not panic, should return false
-	if w.checkAndReportStatus() {
-		t.Error("expected checkAndReportStatus to return false on error")
+	// A failed check has no observation.
+	if w.checkAndReportStatus() != nil {
+		t.Error("expected checkAndReportStatus to return nil on error")
 	}
 }
 
@@ -1487,8 +1487,8 @@ func TestCheckAndReportStatusReturnsTrueOnSuccess(t *testing.T) {
 	}
 
 	w := newServeWatcher("sw0")
-	if !w.checkAndReportStatus() {
-		t.Error("expected checkAndReportStatus to return true on success")
+	if w.checkAndReportStatus() == nil {
+		t.Error("expected checkAndReportStatus to return the observation on success")
 	}
 }
 

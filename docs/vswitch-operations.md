@@ -682,3 +682,16 @@ allow/deny and return-path checks after recovery before reopening admission.
 - [Network invariants](vswitch.md)
 - [TAPFD protocol](tapfd.md)
 - [Build and validation](../CONTRIBUTING.md#build-and-validation)
+
+### Host OTLP metrics
+
+The long-lived `connector-ctl vswitch serve` process publishes its own switch
+capacity and port Mgmt/Transit packet/byte counters through OTLP/HTTP on the
+host-only Unix socket `/run/sandbox-telemetry/host.sock` (override
+`KS_HOST_OTLP_SOCKET`). The existing serve health-watch cadence drives
+collection. Metrics have `sandbox.telemetry.source=connector`, switch, port and
+attachment-generation attributes; Connector **does not** create SandboxID
+or manage sandbox-to-port ownership. The conductor owns sandbox attribution
+using its existing binding checks. Telemetry outages never affect switch
+readiness or packet handling. When an attachment is resetting, unavailable
+counter observations are omitted rather than reported as zero.
