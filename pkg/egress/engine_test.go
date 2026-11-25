@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func validConfig() Config {
@@ -299,5 +300,62 @@ func TestAmbiguousLifecycleAcknowledgementFailsClosed(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestRegistrationRetryKeepsIdentityAfterRenewal(t *testing.T) {
+	live := false
+	grants, renewals := 0, 0
+	runner := &recordingRunner{reply: func(command string) (string, error) {
+		switch {
+		case command == "show egress-geneve":
+			if live {
+				return `{"table":10000,"remaining":30}`, nil
+			}
+			return "", nil
+		case strings.HasPrefix(command, "egress-geneve session "):
+			grants++
+			live = true
+			return `{"table":10000,"interface":5,"lease":60}`, nil
+		case command == "egress-geneve renew table 10000 lease 30":
+			renewals++
+			return `{"table":10000,"retiring":false}`, nil
+		default:
+			return "", fmt.Errorf("unexpected command %q", command)
+		}
+	}}
+	engine, err := NewEngine(validConfig(), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1000, 0)
+	engine.now = func() time.Time { return now }
+	request := SessionRequest{ID: "sandbox", Attachment: "local", Slot: 0, Generation: 1, InnerIP: "10.7.0.2", ReturnMAC: "02:00:00:00:80:01", LeaseSeconds: 60}
+	original, err := engine.Open(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(10 * time.Second)
+	renewed, err := engine.Renew(context.Background(), request.ID, original.Token, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !renewed.ExpiresAt.Equal(now.Add(30 * time.Second)) {
+		t.Fatal("renewal did not update expiry")
+	}
+	retry, err := engine.Open(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry != renewed || retry.SessionRequest != request || retry.Token != original.Token || retry.Table != original.Table {
+		t.Fatal("registration retry changed the live grant")
+	}
+	changed := request
+	changed.LeaseSeconds = 30
+	if _, err := engine.Open(context.Background(), changed); err == nil {
+		t.Fatal("a changed registration replaced the original identity")
+	}
+	if grants != 1 || renewals != 1 {
+		t.Fatal("registration retry created or renewed a native grant")
 	}
 }

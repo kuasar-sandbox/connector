@@ -434,7 +434,7 @@ func (e *Engine) Renew(ctx context.Context, id, token string, ttl uint32) (Sessi
 		return Session{}, e.failed
 	}
 	s.ExpiresAt = e.now().Add(time.Duration(ttl) * time.Second)
-	s.LeaseSeconds = ttl
+	// SessionRequest is the immutable registration identity used by Open retries.
 	e.sessions[id] = s
 	return s, nil
 }

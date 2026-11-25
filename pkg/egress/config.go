@@ -19,6 +19,8 @@ import (
 const MaxSessions = 4096
 const MaxLeaseSeconds = 300
 
+const maxJSONBytes = 4 << 20
+
 var identifier = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$`)
 
 type Config struct {
@@ -107,12 +109,16 @@ type SessionRequest struct {
 }
 
 func Decode(r io.Reader, value any) error {
-	raw, err := io.ReadAll(io.LimitReader(r, (4<<20)+1))
+	return decodeBounded(r, value, maxJSONBytes)
+}
+
+func decodeBounded(r io.Reader, value any, limit int64) error {
+	raw, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err != nil {
 		return err
 	}
-	if len(raw) > 4<<20 {
-		return errors.New("JSON exceeds 4 MiB")
+	if int64(len(raw)) > limit {
+		return fmt.Errorf("JSON exceeds %d-byte limit", limit)
 	}
 	if trimmed := bytes.TrimSpace(raw); len(trimmed) == 0 || trimmed[0] != '{' {
 		return errors.New("expected a JSON object")

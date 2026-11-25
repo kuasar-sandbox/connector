@@ -9,6 +9,10 @@ import (
 	"path/filepath"
 )
 
+// A snapshot combines up to 256 independently accepted Area requests. Keep
+// the public request limit, but allow their aggregate plus the snapshot envelope.
+const maxPolicySnapshotBytes = 256*maxJSONBytes + 1024
+
 type storedPolicy struct {
 	Configuration string `json:"configuration"`
 	Areas         []Area `json:"areas"`
@@ -32,7 +36,7 @@ func restorePolicy(c *Config, identity string) error {
 	}
 	defer f.Close()
 	var saved storedPolicy
-	if err = Decode(f, &saved); err != nil {
+	if err = decodeBounded(f, &saved, maxPolicySnapshotBytes); err != nil {
 		return err
 	}
 	// An explicit change to the deployment file selects a new desired baseline.
@@ -51,6 +55,9 @@ func persistPolicy(dir, identity string, areas []Area) error {
 	body, err := json.Marshal(storedPolicy{Configuration: identity, Areas: areas})
 	if err != nil {
 		return err
+	}
+	if len(body) > maxPolicySnapshotBytes {
+		return errors.New("policy snapshot exceeds the restore limit")
 	}
 	f, err := os.CreateTemp(dir, ".policy-")
 	if err != nil {
