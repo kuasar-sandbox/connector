@@ -1,0 +1,14 @@
+{
+  "switch_name": "sw0",
+  "switch_netns": "switch",
+  "port_netns": "ports",
+  "num_ports": 128,
+  "mac_addr": "02:00:00:00:00:01",
+  "floating_ip_base": "100.100.96.0",
+  "generation_bits": 4,
+  "transit_dev": "egress-tx",
+  "transit_dev_addr": "198.18.0.2/24:198.18.0.1",
+  "geneve_locator": "port",
+  "geneve_port_base": 50000,
+  "geneve_encap_eth": true
+}

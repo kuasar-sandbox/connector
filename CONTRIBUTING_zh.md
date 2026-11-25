@@ -60,7 +60,7 @@ PR 应当：
 遵循[项目文档规范](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/CONTRIBUTING_zh.md#文档贡献)。维护 `name.md` 与 `name_zh.md` 的完整英中版本及互相可达的语言选择链接。保留要求、标识符、示例、图、事实与链接；对修正内容记录源码依据。已有完整的纯英文资料可以维持英文；摘要或语言检测通过不能替代完整翻译。
 
 
-三个维护主题各有明确职责：`vswitch-operations_zh.md` 负责操作流程、CLI/配置与故障恢复；`vswitch_zh.md` 负责转发、身份、隔离、并发与 ABI；`tapfd_zh.md` 负责可独立实现的 provider/consumer wire 契约。源码、构建与测试流程放在本指南或相应执行器旁。仅为独立任务或独立消费的契约增页，不按 package 或实现机制逐项建文件。
+各维护主题有明确职责：`vswitch-operations_zh.md` 负责 vSwitch 操作流程、CLI/配置与故障恢复；`vswitch_zh.md` 负责转发、身份、隔离、并发与 ABI；`tapfd_zh.md` 负责可独立实现的 provider/consumer wire 契约；`egress_zh.md` 负责原生网关部署、会话授权、策略与恢复操作。源码、构建与测试流程放在本指南或相应执行器旁。仅为独立任务或独立消费的契约增页，不按 package 或实现机制逐项建文件。
 
 ## 贡献许可
 
@@ -110,6 +110,8 @@ make build TARGET_ARCH=aarch64  # 交叉编译(纯 Go,无需交叉工具链);别
 make release VERSION=vX.Y.Z     # 打包并校验 build/release-bundle
 make generate                   # 仅修改 bpf/*.c 时需要(clang 12+);仓库自带预生成 .o
 make test-source-checks          # race、真实 pinned-BPF 统计与 vet；需要 sudo
+make egress-runtime             # 构建并暂存独立的固定版本原生网关
+sudo make test-egress           # 隔离原生网关验收；见 egress/README_zh.md
 make test                       # 单元测试
 sudo make test-integration      # 集成测试(root + BPF 内核)
 sudo make bench                 # 性能基准(root + iperf3)
@@ -121,6 +123,8 @@ make vmlinux                    # 重新生成 bpf/vmlinux.h(需 bpftool)
 源码构建需要 Go 1.26.1+；仅重新生成已跟踪 BPF 对象时需要 Clang/LLVM 12+。特权测试被跳过不等于网络验证完成。应在隔离候选环境运行特权测试，清理本次运行拥有的所有 TAP、namespace、route、rule、BPF map 与 pin path。产品 E2E 使用[已准备平台的网络 suite](docs/vswitch-operations_zh.md#已准备平台的网络验证)。
 
 ## 测试
+
+原生 Egress 构建及 x86_64/aarch64 验收由 [egress/README_zh.md](egress/README_zh.md) 维护。源码门禁还要求真实 BPF 代际隔离测试（`REQUIRE_CONNECTOR_BPF=1`）和本地链路生命周期/归属测试（`REQUIRE_CONNECTOR_EGRESS=1`）。原生网关验收覆盖本地/远端布线、全部 locator/封装组合、报文正确性、策略/生命周期故障路径，以及 4096 个授权会话和 65536 条活动 NAT 映射。其证据补充受保护集成门禁。
 
 ### 分层
 
@@ -175,6 +179,8 @@ GOWORK=off go test -tags=integration -exec 'sudo -n env REQUIRE_CONNECTOR_STATS=
 | pkg/tapfd/ | 公开协议参考:PortMetadata、OpenTap、SendFd、RecvFd、RecvFds、RecvFdsWithNetns、ConnectUnix、UnixConnFromFd。 |
 | pkg/vswitch/ | 公开生命周期 API:context/Open、lifecycle/Start/StartReserved、provision、stop、Attach/Detach/Reserve、Status/Stats、Config/FileConfig、metadata、flock 和 exports。 |
 | pkg/netlink/ | 公开 veth/TAP/TC 与批量 netlink 操作。 |
+| pkg/egress/ | 网关配置、租约会话控制、策略持久化与归属明确的本地链路生命周期。 |
+| egress/ | 固定版本原生数据面、运行时暂存和特权报文/容量验收执行器。 |
 | pkg/netns/ | 公开 namespace enter/move/exec。 |
 | pkg/dhcp/ | 公开 DHCP 客户端/服务端。 |
 | pkg/daemon/ | 公开 systemd sd_notify。 |

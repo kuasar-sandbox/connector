@@ -1,0 +1,32 @@
+{
+  "name": "local",
+  "runtime_dir": "/var/lib/connector-egress/egress-local",
+  "vpp": "/opt/connector-egress/bin/vpp",
+  "vppctl": "/opt/connector-egress/bin/vppctl",
+  "plugin_path": "/opt/connector-egress/lib/x86_64-linux-gnu/vpp_plugins",
+  "library_path": "/opt/connector-egress/lib/x86_64-linux-gnu",
+  "max_connections": 65536,
+  "interfaces": [
+    {"name": "egress-rx", "address": "198.18.0.1/24", "mtu": 9000},
+    {"name": "egress-uplink", "address": "192.0.2.1/24", "mtu": 1500}
+  ],
+  "exits": [
+    {"name": "public", "interface": "egress-uplink", "next_hop": "192.0.2.2", "addresses": ["192.0.2.1"]}
+  ],
+  "attachments": [
+    {"name": "sw0-area7", "interface": "egress-rx", "peer": "198.18.0.2", "area": 7,
+     "locator": "port", "port_base": 50000, "encapsulation": "ether", "generation_bits": 4,
+     "gateway": "10.7.0.1", "inner_mtu": 1500}
+  ],
+  "areas": [
+    {"vni": 7,
+     "pools": [{"id": 0, "exit": "public", "addresses": ["192.0.2.1"], "max_connections": 1024}],
+     "acl": [
+       {"destination": "203.0.113.0/24", "protocol": "any", "action": "allow"},
+       {"destination": "198.18.1.1/32", "protocol": "tcp", "port_first": 443, "port_last": 443, "action": "allow"}
+     ],
+     "dnat": [{"destination": "198.18.1.1/32", "protocol": "tcp", "port_first": 443, "port_last": 443,
+               "pool": 0, "target": "203.0.113.11", "target_port": 8443}],
+     "routes": [{"destination": "0.0.0.0/0", "pool": 0}]}
+  ]
+}

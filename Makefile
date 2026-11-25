@@ -1,7 +1,23 @@
 # connector Makefile
 SHELL := /bin/bash
+.DEFAULT_GOAL := all
 
 .PHONY: all generate build connector-ctl clean test test-integration test-all test-source-checks bench release test-release release-clean deps fmt lint vet vmlinux help
+.PHONY: egress egress-runtime test-egress
+
+EGRESS_BUILD_DIR ?= $(CURDIR)/build/egress
+EGRESS_RUNTIME_DIR ?= $(EGRESS_BUILD_DIR)/runtime
+EGRESS_TEST_DIR ?= $(EGRESS_BUILD_DIR)/acceptance
+
+# Native pinned VPP build is separate from the pure-Go connector-ctl build.
+egress:
+	EGRESS_BUILD_DIR="$(EGRESS_BUILD_DIR)" bash egress/build.sh
+
+egress-runtime: egress
+	python3 egress/stage.py --build "$(EGRESS_BUILD_DIR)" --output "$(EGRESS_RUNTIME_DIR)"
+
+test-egress:
+	bash egress/tests/run.sh "$(CURDIR)/$(BINARY)" "$(EGRESS_RUNTIME_DIR)" "$(EGRESS_TEST_DIR)"
 
 # ---------------------------------------------------------------------------
 # Architecture selection
@@ -191,6 +207,9 @@ help:
 	@echo "  test-integration - Run all tests incl. integration (requires root + BPF)"
 	@echo "  test-all         - Alias for test-integration"
 	@echo "  test-source-checks - Required race, real pinned-BPF stats and vet checks"
+	@echo "  egress           - Build the pinned native Geneve Egress runtime"
+	@echo "  egress-runtime   - Stage that runtime into a new EGRESS_RUNTIME_DIR"
+	@echo "  test-egress      - Isolated privileged local/remote, wire and 4096/65536 acceptance"
 	@echo "  bench            - Run performance benchmark (requires root + iperf3)"
 	@echo "  release          - Build a validated component release bundle"
 	@echo "  test-release     - Test component release packaging"

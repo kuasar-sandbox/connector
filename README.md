@@ -40,7 +40,7 @@ The base vSwitch provides:
 
 The top-level purpose is not a particular Slot, VNI, UDP-port, or TLV encoding. Those mechanisms let a deployment assign each sandbox an independent tunnel-plane identity and carry trusted sandbox metadata to an external policy gateway. The gateway can then apply sandbox-level public-network, private-network, DNS, proxy, audit, and traffic-governance rules without embedding application policy in the base switch.
 
-A node-local lightweight Egress policy plane is tracked as a [proposed extension](https://github.com/kuasar-sandbox/connector/issues/9). It is not presented as an already delivered feature of the base vSwitch.
+The [Geneve Egress gateway](docs/egress.md) adds the same Area/Pool policy and native NAT service to local and remote deployments. Local deployment owns a dedicated transit veth and its namespace handoff. Build its pinned native runtime separately from the pure-Go control binary; see [Egress build and acceptance](egress/README.md). This implements [proposal #117](https://github.com/kuasar-sandbox/connector/issues/117), which supersedes #9.
 
 ## Main interfaces
 
