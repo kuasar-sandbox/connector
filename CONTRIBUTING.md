@@ -76,7 +76,7 @@ for supported names, checks and historical-input compatibility.
 Follow the [project documentation policy](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/CONTRIBUTING.md#documentation-contributions). Maintain full English/Chinese pairs at `name.md` and `name_zh.md` with reciprocal selectors. Preserve requirements, identifiers, examples, diagrams, facts and links; record source-backed corrections. Existing complete English-only material may remain English-only. A summary or language-detector pass is not a complete translation.
 
 
-The three maintained topics have explicit ownership: `vswitch-operations.md` owns operator workflows, CLI/configuration and failure recovery; `vswitch.md` owns forwarding, identity, isolation, concurrency and ABI; `tapfd.md` owns the independent provider/consumer wire contract. Source/build/test procedures belong here or beside their executor. Add a new page only for a distinct task or independently consumed contract, not for each package or implementation mechanism.
+The maintained topics have explicit ownership: `vswitch-operations.md` owns vSwitch operator workflows, CLI/configuration and failure recovery; `vswitch.md` owns forwarding, identity, isolation, concurrency and ABI; `tapfd.md` owns the independent provider/consumer wire contract; `egress.md` owns native gateway deployment, session authorization and policy/recovery operations. Source/build/test procedures belong here or beside their executor. Add a new page only for a distinct task or independently consumed contract, not for each package or implementation mechanism.
 
 ## Licensing of contributions
 
@@ -170,6 +170,8 @@ make build TARGET_ARCH=aarch64  # Pure-Go cross-build; amd64/arm64 aliases are a
 make release VERSION=vX.Y.Z     # Package and validate build/release-bundle
 make generate                   # Regenerate changed BPF source; clang 12+ (prebuilt .o files are tracked)
 make test-source-checks          # race, real pinned-BPF stats and vet; requires sudo
+make egress-runtime             # Build and stage the separate pinned native gateway
+sudo make test-egress           # Isolated native gateway acceptance; see egress/README.md
 make test                       # Unit tests
 sudo make test-integration      # Integration: root and a BPF-capable kernel
 sudo make bench                 # Benchmarks: root and iperf3
@@ -181,6 +183,8 @@ make vmlinux                    # Regenerate bpf/vmlinux.h; requires bpftool
 Go 1.26.1+ is required for source builds. Clang/LLVM 12+ is needed only when regenerating the tracked BPF objects. A skipped privileged test is not completed network validation. Run privileged tests in an isolated candidate environment and clean up every TAP, namespace, route, rule, BPF map and pin path owned by the run. Product E2E uses the [prepared platform network suite](docs/vswitch-operations.md#prepared-platform-validation).
 
 ## Tests
+
+Native Egress builds and x86_64/aarch64 acceptance are owned by [egress/README.md](egress/README.md). The source gate additionally requires real BPF generation-fencing tests (`REQUIRE_CONNECTOR_BPF=1`) and local-link lifecycle/ownership tests (`REQUIRE_CONNECTOR_EGRESS=1`). Native gateway acceptance covers local/remote wiring, all locator/encapsulation combinations, packet correctness, policy/lifecycle failure paths and 4096 authorized sessions with 65536 active NAT mappings. Its evidence supplements the protected integration gate.
 
 ### Layers
 
@@ -231,6 +235,8 @@ GOWORK=off go test -tags=integration -exec 'sudo -n env REQUIRE_CONNECTOR_STATS=
 | `pkg/tapfd/` | Public protocol reference: PortMetadata, OpenTap, SendFd, RecvFd, RecvFds, RecvFdsWithNetns, ConnectUnix and UnixConnFromFd. |
 | `pkg/vswitch/` | Public lifecycle API: context/Open, lifecycle/Start/StartReserved, provision, stop, Attach/Detach/Reserve, Status/Stats, Config/FileConfig, metadata, flock and exported helpers. |
 | `pkg/netlink/` | Public veth/TAP/TC and batched netlink operations. |
+| `pkg/egress/` | Gateway configuration, leased session control, policy persistence and owned local-link lifecycle. |
+| `egress/` | Pinned native dataplane, runtime staging and privileged packet/capacity acceptance executors. |
 | `pkg/netns/` | Public namespace enter/move/exec. |
 | `pkg/dhcp/` | Public embedded DHCP client/server. |
 | `pkg/daemon/` | Public systemd sd_notify support. |

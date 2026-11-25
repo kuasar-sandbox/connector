@@ -272,6 +272,7 @@ int tc_ingress_nx(struct __sk_buff *skb)
     __u32 floating_ip_base = cfg->floating_ip_base;
     __u32 geneve_port_base = cfg->geneve_port_base;
     __u8  geneve_encap_eth = cfg->geneve_encap_eth;
+    __u8  generation_bits = cfg->generation_bits;
     __u8  geneve_locator = cfg->geneve_locator;
     __u8  geneve_tlv_type = cfg->geneve_tlv_type;
     __u16 geneve_tlv_class = cfg->geneve_tlv_class;
@@ -300,6 +301,7 @@ int tc_ingress_nx(struct __sk_buff *skb)
     __u32 transit_ip = slot->transit_ip;
     __u32 transit_gateway_ip = slot->transit_gateway_ip;
     __u32 transit_geneve_vni = slot->transit_geneve_vni;
+    __u32 attachment_generation = slot->generation;
     __u8 geneve_opts_len = slot->geneve_opts_len;
 
     __be16 proto = eth->h_proto;
@@ -615,8 +617,16 @@ int tc_ingress_nx(struct __sk_buff *skb)
         if (is_transit_mac_zero)
             __bpf_memset(inner_dst, 0xff, 6);
         __bpf_memcpy(inner_eth->h_dest, inner_dst, 6);
-        // Source: port MAC (fixed or per-slot derived)
-        get_port_mac(inner_eth->h_source, cfg, slot_id);
+        // The inner alias carries the existing attachment generation without
+        // changing the Guest MAC or adding another Attach/wire identity field.
+        if (generation_bits) {
+            inner_eth->h_source[0] = 0x02;
+            inner_eth->h_source[1] = 0xfe;
+            __be32 tag = bpf_htonl(attachment_generation);
+            __bpf_memcpy(inner_eth->h_source + 2, &tag, sizeof(tag));
+        } else {
+            get_port_mac(inner_eth->h_source, cfg, slot_id);
+        }
         inner_eth->h_proto = proto;  // preserve inner protocol (IPv4/IPv6)
     }
 
@@ -1062,6 +1072,16 @@ int tc_ingress_transit(struct __sk_buff *skb)
         if ((void *)(inner_eth + 1) > data_end)
             return TC_ACT_OK;
         inner_eth_proto = inner_eth->h_proto;
+        // A gateway preserves the alias captured by the original NAT mapping.
+        // Legacy untagged returns keep their prior compatibility behavior.
+        if (cfg->generation_bits && inner_eth->h_dest[0] == 0x02 &&
+            inner_eth->h_dest[1] == 0xfe) {
+            __be32 tag = 0;
+            __bpf_memcpy(&tag, inner_eth->h_dest + 2, sizeof(tag));
+            if (cfg->generation_bits > 20 ||
+                bpf_ntohl(tag) != slot->generation)
+                return TC_ACT_SHOT;
+        }
     }
 
     // Sanity check: decap_len must not exceed data beyond outer ETH

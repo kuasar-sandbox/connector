@@ -1,0 +1,800 @@
+diff --git a/src/plugins/nat/nat44-ed/nat44_ed.c b/src/plugins/nat/nat44-ed/nat44_ed.c
+index 3c3c51f..cf65cab 100644
+--- a/src/plugins/nat/nat44-ed/nat44_ed.c
++++ b/src/plugins/nat/nat44-ed/nat44_ed.c
+@@ -30,6 +30,102 @@
+ 
+ snat_main_t snat_main;
+ 
++nat44_ed_policy_hooks_t nat44_ed_policy_hooks;
++
++__clib_export int
++nat44_ed_policy_register (const nat44_ed_policy_hooks_t *hooks)
++{
++  if (nat44_ed_policy_hooks.prepare)
++    return -1;
++  nat44_ed_policy_hooks = *hooks;
++  return 0;
++}
++
++__clib_export u32
++nat44_ed_policy_walk (nat44_ed_policy_visit_t visit, void *opaque)
++{
++  snat_main_t *sm = &snat_main;
++  snat_main_per_thread_data_t *tsm;
++  snat_session_t *s;
++  u32 *remove = 0, i, *pi, deleted = 0;
++  vec_foreach (tsm, sm->per_thread_data)
++    {
++      pool_foreach_index (i, tsm->sessions)
++        {
++          s = pool_elt_at_index (tsm->sessions, i);
++          if (s->policy_cookie == NAT44_ED_POLICY_NONE || !s->policy_committed)
++            continue;
++          nat44_ed_policy_flow_t flow = {
++            .cookie = s->policy_cookie,
++            .path_signature = s->policy_path_signature,
++            .thread_index = tsm - sm->per_thread_data, .native_index = i,
++            .inside_fib = s->in2out.fib_index,
++            .outside_fib = s->out2in.fib_index,
++            .route_fib = s->i2o.rewrite.fib_index,
++            .local = s->i2o.match.saddr,
++            .original_remote = s->i2o.match.daddr,
++            .backend = s->i2o.rewrite.daddr,
++            .snat = s->out2in.addr,
++            .local_port = s->in2out.port,
++            .original_remote_port = s->i2o.match.dport,
++            .backend_port = s->i2o.rewrite.dport,
++            .snat_port = s->out2in.port, .proto = s->proto,
++          };
++          if (visit (&flow, opaque))
++            vec_add1 (remove, i);
++        }
++      vec_foreach (pi, remove)
++        {
++          s = pool_elt_at_index (tsm->sessions, *pi);
++          nat44_ed_free_session_data (sm, s, tsm - sm->per_thread_data, 0);
++          nat_ed_session_delete (sm, s, tsm - sm->per_thread_data, 1);
++          deleted++;
++        }
++      vec_reset_length (remove);
++    }
++  vec_free (remove);
++  return deleted;
++}
++
++
++__clib_export int
++nat44_ed_interface_bind (u32 sw_if_index, u8 enable)
++{
++  return enable ? nat44_ed_add_interface (sw_if_index, 1) :
++                  nat44_ed_del_interface (sw_if_index, 1);
++}
++
++/* Caller holds the worker barrier; reuse native LRU/timeouts and deletion. */
++__clib_export u32
++nat44_ed_policy_expire (u32 per_worker_budget)
++{
++  snat_main_t *sm = &snat_main;
++  if (!sm->enabled) return 0;
++  u32 i, deleted = 0;
++  f64 now = vlib_time_now (vlib_get_main ());
++  vec_foreach_index (i, sm->per_thread_data)
++    {
++      if (vec_len (sm->per_thread_data[i].lru_pool) == 0) continue;
++      u32 budget = per_worker_budget;
++      while (budget-- && nat_lru_free_one (sm, i, now)) deleted++;
++    }
++  return deleted;
++}
++
++__clib_export u32
++nat44_ed_fib_live_sessions (u32 fib)
++{
++  snat_main_per_thread_data_t *tsm;
++  snat_session_t *s;
++  u32 count = 0;
++  vec_foreach (tsm, snat_main.per_thread_data)
++    pool_foreach (s, tsm->sessions)
++      if (s->in2out.fib_index == fib)
++        count++;
++  return count;
++}
++
++
+ static_always_inline void nat_validate_interface_counters (snat_main_t *sm,
+ 							   u32 sw_if_index);
+ 
+@@ -3912,26 +4008,52 @@ nat_6t_flow_icmp_translate (vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b,
+ 	      icmp->checksum = new_icmp_sum;
+ 	      break;
+ 	    case IP_PROTOCOL_TCP:
+-	      tcp = (tcp_header_t *) (inner_ip + 1);
+-	      if (!it_fits (vm, b, tcp, sizeof (*tcp)))
+-		{
+-		  return NAT_ED_TRNSL_ERR_PACKET_TRUNCATED;
+-		}
+-	      old_tcp_sum = tcp->checksum;
+-	      nat_6t_flow_ip4_translate (sm, b, inner_ip, f, inner_proto,
+-					 1 /* is_icmp_inner_ip4 */,
+-					 0 /* skip_saddr_rewrite */);
+-	      new_icmp_sum = ip_csum_sub_even (old_icmp_sum, f->l3_csum_delta);
+-	      new_icmp_sum = ip_csum_sub_even (new_icmp_sum, f->l4_csum_delta);
+-	      new_icmp_sum =
+-		ip_csum_update (new_icmp_sum, old_inner_ip_sum,
+-				inner_ip->checksum, ip4_header_t, checksum);
+-	      new_icmp_sum =
+-		ip_csum_update (new_icmp_sum, old_tcp_sum, tcp->checksum,
+-				tcp_header_t, checksum);
+-	      new_icmp_sum = ip_csum_fold (new_icmp_sum);
+-	      icmp->checksum = new_icmp_sum;
+-	      break;
++            {
++              /* RFC-style errors may quote only the first eight TCP bytes.
++               * Keep native flow lookup/rewrite deltas; never access a TCP
++               * checksum field which the quoted packet does not contain. */
++              tcp = (tcp_header_t *) ip4_next_header (inner_ip);
++              u32 tcp_offset = (u8 *) tcp - (u8 *) ip;
++              u32 outer_length = clib_net_to_host_u16 (ip->length);
++              if (outer_length < tcp_offset + 8 || !it_fits (vm, b, tcp, 8))
++                return NAT_ED_TRNSL_ERR_PACKET_TRUNCATED;
++              u32 quoted = outer_length - tcp_offset;
++              u32 checksum_end = STRUCT_OFFSET_OF (tcp_header_t, checksum) +
++                                 sizeof (tcp->checksum);
++              if (quoted == checksum_end - 1)
++                return NAT_ED_TRNSL_ERR_PACKET_TRUNCATED;
++              int has_tcp_checksum = quoted >= checksum_end &&
++                                     it_fits (vm, b, tcp, checksum_end);
++              old_tcp_sum = has_tcp_checksum ? tcp->checksum : 0;
++              if (quoted >= sizeof (*tcp) && it_fits (vm, b, tcp, sizeof (*tcp)))
++                nat_6t_flow_ip4_translate (sm, b, inner_ip, f, inner_proto,
++                                          1 /* is_icmp_inner_ip4 */,
++                                          0 /* skip_saddr_rewrite */);
++              else
++                {
++                  inner_ip->src_address = f->rewrite.daddr;
++                  inner_ip->dst_address = f->rewrite.saddr;
++                  tcp->src_port = f->rewrite.dport;
++                  tcp->dst_port = f->rewrite.sport;
++                  inner_ip->checksum = ip_csum_fold (
++                      ip_csum_sub_even (old_inner_ip_sum, f->l3_csum_delta));
++                  if (inner_ip->checksum == 0xffff) inner_ip->checksum = 0;
++                  if (has_tcp_checksum)
++                    {
++                      ip_csum_t delta = ip_csum_sub_even (old_tcp_sum, f->l3_csum_delta);
++                      tcp->checksum = ip_csum_fold (ip_csum_sub_even (delta, f->l4_csum_delta));
++                    }
++                }
++              new_icmp_sum = ip_csum_sub_even (old_icmp_sum, f->l3_csum_delta);
++              new_icmp_sum = ip_csum_sub_even (new_icmp_sum, f->l4_csum_delta);
++              new_icmp_sum = ip_csum_update (new_icmp_sum, old_inner_ip_sum,
++                                             inner_ip->checksum, ip4_header_t, checksum);
++              if (has_tcp_checksum)
++                new_icmp_sum = ip_csum_update (new_icmp_sum, old_tcp_sum,
++                                               tcp->checksum, tcp_header_t, checksum);
++              icmp->checksum = ip_csum_fold (new_icmp_sum);
++              break;
++            }
+ 	    case IP_PROTOCOL_ICMP:
+ 	      nat_6t_flow_ip4_translate (sm, b, inner_ip, f, inner_proto,
+ 					 1 /* is_icmp_inner_ip4 */,
+diff --git a/src/plugins/nat/nat44-ed/nat44_ed.h b/src/plugins/nat/nat44-ed/nat44_ed.h
+index 634599f..f08b24f 100644
+--- a/src/plugins/nat/nat44-ed/nat44_ed.h
++++ b/src/plugins/nat/nat44-ed/nat44_ed.h
+@@ -21,6 +21,7 @@
+ #include <vlibapi/api.h>
+ 
+ #include <nat/lib/lib.h>
++#include <nat/nat44-ed/nat44_ed_policy.h>
+ 
+ /* Default NAT handoff queue size in buffer indices. */
+ #define NAT_HQ_SIZE_DEFAULT 8192
+@@ -326,6 +327,9 @@ typedef CLIB_PACKED(struct
+   u32 per_vrf_sessions_index;
+ 
+   u32 thread_index;
++  u64 policy_cookie;
++  u64 policy_path_signature;
++  u8 policy_committed;
+ }) snat_session_t;
+ 
+ typedef struct
+diff --git a/src/plugins/nat/nat44-ed/nat44_ed_in2out.c b/src/plugins/nat/nat44-ed/nat44_ed_in2out.c
+index 700f269..1f153ee 100644
+--- a/src/plugins/nat/nat44-ed/nat44_ed_in2out.c
++++ b/src/plugins/nat/nat44-ed/nat44_ed_in2out.c
+@@ -136,6 +136,26 @@ nat_ed_alloc_addr_and_port_with_snat_address (
+   return 1;
+ }
+ 
++
++static int
++nat_ed_alloc_policy_address (snat_main_t *sm,
++                            const nat44_ed_policy_decision_t *decision,
++                            u8 proto, u32 thread_index, u32 snat_thread_index,
++                            snat_session_t *s, ip4_address_t *address, u16 *port)
++{
++  u32 k;
++  snat_address_t *a;
++  for (k = 0; k < decision->address_count; k++)
++    vec_foreach (a, sm->addresses)
++      if (a->addr.as_u32 == decision->addresses[k].as_u32 &&
++          !nat_ed_alloc_addr_and_port_with_snat_address (
++              sm, proto, thread_index, a, sm->port_per_thread,
++              snat_thread_index, s, address, port))
++        return 0;
++  /* A selected policy pool never falls back to any other NAT address. */
++  return 1;
++}
++
+ static int
+ nat_ed_alloc_addr_and_port (snat_main_t *sm, u32 rx_fib_index,
+ 			    u32 tx_sw_if_index, u32 nat_proto,
+@@ -455,8 +475,32 @@ slow_path_ed (vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b,
+   u16 sm_port;
+   u32 sm_fib_index;
+   int is_sm = 0;
++  nat44_ed_policy_decision_t decision = { .cookie = NAT44_ED_POLICY_NONE };
++  int managed = 0;
++  if (PREDICT_FALSE (nat44_ed_policy_hooks.prepare != 0))
++    managed = nat44_ed_policy_hooks.prepare (
++        rx_fib_index, thread_index, proto, l_addr, l_port, r_addr, r_port,
++        &decision);
++  if (managed < 0)
++    {
++      b->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
++      return NAT_NEXT_DROP;
++    }
++  if (managed)
++    {
++      int guard = nat44_ed_policy_guard (
++          b, vlib_buffer_get_current (b), decision.cookie, decision.path_signature,
++          rx_fib_index, decision.tx_fib_index, decision.backend_addr, decision.backend_addr, 0);
++      if (guard)
++        {
++          *sessionp = NULL;
++          if (guard < 0)
++            b->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
++          return guard > 0 ? NAT_NEXT_ICMP_ERROR : NAT_NEXT_DROP;
++        }
++    }
+   // First try to match static mapping by local address and port
+-  if (!snat_static_mapping_match (vm, l_addr, l_port, rx_fib_index, proto,
++  if (!managed && !snat_static_mapping_match (vm, l_addr, l_port, rx_fib_index, proto,
+ 				  &sm_addr, &sm_port, &sm_fib_index, 0, 0, 0,
+ 				  &lb, 0, &is_identity_nat, 0))
+     {
+@@ -481,7 +525,20 @@ slow_path_ed (vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b,
+   s = nat_ed_session_alloc (sm, thread_index, now, proto);
+   ASSERT (s);
+ 
+-  tx_fib_index = get_tx_fib_index (rx_fib_index, r_addr);
++  if (managed)
++    {
++      if (nat44_ed_policy_hooks.reserve &&
++          !nat44_ed_policy_hooks.reserve (decision.cookie, thread_index))
++        {
++          b->error = node->errors[NAT_IN2OUT_ED_ERROR_MAX_SESSIONS_EXCEEDED];
++          nat_ed_session_delete (sm, s, thread_index, 1);
++          return NAT_NEXT_DROP;
++        }
++      s->policy_cookie = decision.cookie;
++      s->policy_path_signature = decision.path_signature;
++    }
++  tx_fib_index = managed ? decision.tx_fib_index :
++                          get_tx_fib_index (rx_fib_index, r_addr);
+ 
+   if (!is_sm)
+     {
+@@ -489,12 +546,19 @@ slow_path_ed (vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b,
+       s->in2out.port = l_port;
+       s->proto = proto;
+       s->in2out.fib_index = rx_fib_index;
+-      s->out2in.fib_index = tx_fib_index;
++      s->out2in.fib_index = managed ? decision.return_key_fib : tx_fib_index;
+ 
+       // suggest using local port to allocation function
+       outside_port = l_port;
+ 
+-      if (PREDICT_FALSE (nat44_ed_external_sm_lookup (sm, r_addr, r_port,
++      if (managed)
++        {
++          daddr = decision.backend_addr;
++          dport = decision.backend_port;
++          if (daddr.as_u32 != r_addr.as_u32 || dport != r_port)
++            s->flags |= SNAT_SESSION_FLAG_HAIRPINNING;
++        }
++      else if (PREDICT_FALSE (nat44_ed_external_sm_lookup (sm, r_addr, r_port,
+ 						      proto, &daddr, &dport)))
+ 	{
+ 	  s->flags |= SNAT_SESSION_FLAG_HAIRPINNING;
+@@ -516,7 +580,12 @@ slow_path_ed (vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b,
+       nat_6t_flow_txfib_rewrite_set (&s->o2i, rx_fib_index);
+       nat_6t_flow_saddr_rewrite_set (&s->o2i, r_addr.as_u32);
+ 
+-      if (nat_ed_alloc_addr_and_port (
++      if (managed && proto != IP_PROTOCOL_ICMP)
++        nat_6t_flow_sport_rewrite_set (&s->o2i, r_port);
++      if (managed ? nat_ed_alloc_policy_address (
++                         sm, &decision, proto, thread_index,
++                         tsm->snat_thread_index, s, &outside_addr, &outside_port)
++                  : nat_ed_alloc_addr_and_port (
+ 	    sm, rx_fib_index, tx_sw_if_index, proto, thread_index, l_addr,
+ 	    r_addr, tsm->snat_thread_index, s, &outside_addr, &outside_port))
+ 	{
+@@ -605,6 +674,12 @@ slow_path_ed (vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b,
+ 			 &s->ext_host_addr, s->ext_host_port, s->proto, 0);
+ 
+   per_vrf_sessions_register_session (s, thread_index);
++  if (managed)
++    {
++      s->policy_committed = 1;
++      if (nat44_ed_policy_hooks.commit)
++        nat44_ed_policy_hooks.commit (s->policy_cookie);
++    }
+ 
+   *sessionp = s;
+   return next;
+@@ -625,6 +700,8 @@ nat44_ed_not_translate (vlib_main_t *vm, vlib_node_runtime_t *node,
+   snat_main_t *sm = &snat_main;
+ 
+   clib_bihash_kv_16_8_t kv, value;
++  if (nat44_ed_policy_hooks.managed && nat44_ed_policy_hooks.managed(rx_fib_index))
++    return 0; /* Managed Area policy resolves the original VIP before routing. */
+   ip4_address_t placeholder_addr;
+   u32 placeholder_fib_index;
+   u16 placeholder_port;
+@@ -1236,6 +1313,14 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t *vm,
+ 	  goto trace0;
+ 	}
+ 
++      int guard = nat44_ed_policy_session_guard (b0, ip0, s0, 0);
++      if (PREDICT_FALSE (guard))
++        {
++          next[0] = guard > 0 ? NAT_NEXT_ICMP_ERROR : NAT_NEXT_DROP;
++          if (guard < 0) b0->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
++          goto trace0;
++        }
++
+       if (NAT_ED_TRNSL_ERR_SUCCESS !=
+ 	  (translation_error = nat_6t_flow_buf_translate_i2o (
+ 	     vm, sm, b0, ip0, f, proto0, is_output_feature)))
+@@ -1388,11 +1473,28 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t *vm,
+ 
+       if (PREDICT_FALSE (nat44_ed_is_unk_proto (proto0)))
+ 	{
++          if (nat44_ed_policy_hooks.managed &&
++              nat44_ed_policy_hooks.managed (rx_fib_index0))
++            {
++              b0->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
++              next[0] = NAT_NEXT_DROP;
++              goto trace0;
++            }
+ 	  s0 = nat44_ed_in2out_slowpath_unknown_proto (
+ 	    sm, b0, ip0, rx_fib_index0, thread_index, now, vm, node);
+ 	  if (!s0)
+ 	    next[0] = NAT_NEXT_DROP;
+ 
++          if (NAT_NEXT_DROP != next[0] && s0)
++            {
++              int guard = nat44_ed_policy_session_guard (b0, ip0, s0, 0);
++              if (guard)
++                {
++                  next[0] = guard > 0 ? NAT_NEXT_ICMP_ERROR : NAT_NEXT_DROP;
++                  if (guard < 0) b0->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
++                  goto trace0;
++                }
++            }
+ 	  if (NAT_NEXT_DROP != next[0] && s0 &&
+ 	      NAT_ED_TRNSL_ERR_SUCCESS !=
+ 		(translation_error = nat_6t_flow_buf_translate_i2o (
+@@ -1417,6 +1519,16 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t *vm,
+ 	    sm, b0, ip0, icmp0, rx_sw_if_index0, tx_sw_if_index0,
+ 	    rx_fib_index0, node, next[0], now, thread_index, &s0,
+ 	    is_multi_worker);
++          if (NAT_NEXT_DROP != next[0] && s0)
++            {
++              int guard = nat44_ed_policy_session_guard (b0, ip0, s0, 0);
++              if (guard)
++                {
++                  next[0] = guard > 0 ? NAT_NEXT_ICMP_ERROR : NAT_NEXT_DROP;
++                  if (guard < 0) b0->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
++                  goto trace0;
++                }
++            }
+ 	  if (NAT_NEXT_DROP != next[0] && s0 &&
+ 	      NAT_ED_TRNSL_ERR_SUCCESS !=
+ 		(translation_error = nat_6t_flow_buf_translate_i2o (
+@@ -1497,6 +1609,14 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t *vm,
+ 
+       b0->flags |= VNET_BUFFER_F_IS_NATED;
+ 
++      int guard = nat44_ed_policy_session_guard (b0, ip0, s0, 0);
++      if (PREDICT_FALSE (guard))
++        {
++          next[0] = guard > 0 ? NAT_NEXT_ICMP_ERROR : NAT_NEXT_DROP;
++          if (guard < 0) b0->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
++          goto trace0;
++        }
++
+       if (NAT_ED_TRNSL_ERR_SUCCESS !=
+ 	  (translation_error = nat_6t_flow_buf_translate_i2o (
+ 	     vm, sm, b0, ip0, &s0->i2o, proto0, is_output_feature)))
+diff --git a/src/plugins/nat/nat44-ed/nat44_ed_inlines.h b/src/plugins/nat/nat44-ed/nat44_ed_inlines.h
+index 51f2832..16c1edc 100644
+--- a/src/plugins/nat/nat44-ed/nat44_ed_inlines.h
++++ b/src/plugins/nat/nat44-ed/nat44_ed_inlines.h
+@@ -19,6 +19,42 @@
+ #include <nat/nat44-ed/nat44_ed.h>
+ #include <vnet/ip/ip4_to_ip6.h>
+ 
++/* Bounded pre-translation guard. Error helper receives the untouched quote. */
++static_always_inline int
++nat44_ed_policy_guard (vlib_buffer_t *b, ip4_header_t *ip, u64 cookie,
++                       u64 expected_path, u32 inside_fib, u32 route_fib,
++                       ip4_address_t translated_dst, ip4_address_t forward_dst, u8 out2in)
++{
++  if (!nat44_ed_policy_hooks.path_mtu)
++    return 0;
++  int mtu = nat44_ed_policy_hooks.path_mtu (
++      cookie, expected_path, inside_fib, route_fib, translated_dst, forward_dst, out2in);
++  if (mtu < 0)
++    return -1;
++  if (mtu && clib_net_to_host_u16 (ip->length) > mtu &&
++      (clib_net_to_host_u16 (ip->flags_and_fragment_offset) & 0x4000))
++    {
++      vnet_buffer (b)->sw_if_index[VLIB_TX] = ~0;
++      b->flags &= ~VNET_BUFFER_F_IS_NATED;
++      icmp4_error_set_vnet_buffer (
++        b, ICMP4_destination_unreachable,
++        ICMP4_destination_unreachable_fragmentation_needed_and_dont_fragment_set,
++        mtu);
++      return 1;
++    }
++  return 0;
++}
++
++static_always_inline int
++nat44_ed_policy_session_guard (vlib_buffer_t *b, ip4_header_t *ip,
++                               snat_session_t *s, u8 out2in)
++{
++  nat_6t_flow_t *f = out2in ? &s->o2i : &s->i2o;
++  return nat44_ed_policy_guard (b, ip, s->policy_cookie, s->policy_path_signature,
++                                s->in2out.fib_index, f->rewrite.fib_index,
++                                f->rewrite.daddr, s->i2o.rewrite.daddr, out2in);
++}
++
+ always_inline void
+ init_ed_k (clib_bihash_kv_16_8_t *kv, u32 l_addr, u16 l_port, u32 r_addr,
+ 	   u16 r_port, u32 fib_index, ip_protocol_t proto)
+@@ -308,6 +344,9 @@ nat_ed_session_delete (snat_main_t *sm, snat_session_t *ses, u32 thread_index,
+   snat_main_per_thread_data_t *tsm =
+     vec_elt_at_index (sm->per_thread_data, thread_index);
+ 
++  const u64 policy_cookie = ses->policy_cookie;
++  const u8 policy_committed = ses->policy_committed;
++  ses->policy_cookie = NAT44_ED_POLICY_NONE;
+   if (lru_delete)
+     {
+       clib_dlist_remove (tsm->lru_pool, ses->lru_index);
+@@ -320,6 +359,9 @@ nat_ed_session_delete (snat_main_t *sm, snat_session_t *ses, u32 thread_index,
+   pool_put (tsm->sessions, ses);
+   vlib_set_simple_counter (&sm->total_sessions, thread_index, 0,
+ 			   pool_elts (tsm->sessions));
++  if (PREDICT_FALSE (policy_cookie != NAT44_ED_POLICY_NONE) &&
++      nat44_ed_policy_hooks.release)
++    nat44_ed_policy_hooks.release (policy_cookie, policy_committed);
+ }
+ 
+ static_always_inline int
+@@ -383,6 +425,7 @@ nat_ed_session_alloc (snat_main_t *sm, u32 thread_index, f64 now, u8 proto)
+ 
+   pool_get (tsm->sessions, s);
+   clib_memset (s, 0, sizeof (*s));
++  s->policy_cookie = NAT44_ED_POLICY_NONE;
+ 
+   nat_ed_lru_insert (tsm, s, now, proto);
+ 
+diff --git a/src/plugins/nat/nat44-ed/nat44_ed_out2in.c b/src/plugins/nat/nat44-ed/nat44_ed_out2in.c
+index 8a86181..63f18be 100644
+--- a/src/plugins/nat/nat44-ed/nat44_ed_out2in.c
++++ b/src/plugins/nat/nat44-ed/nat44_ed_out2in.c
+@@ -944,6 +944,14 @@ nat44_ed_out2in_fast_path_node_fn_inline (vlib_main_t * vm,
+ 	    }
+ 	}
+ 
++      int guard = nat44_ed_policy_session_guard (b0, ip0, s0, 1);
++      if (PREDICT_FALSE (guard))
++        {
++          next[0] = guard > 0 ? NAT_NEXT_ICMP_ERROR : NAT_NEXT_DROP;
++          if (guard < 0) b0->error = node->errors[NAT_OUT2IN_ED_ERROR_TRNSL_FAILED];
++          goto trace0;
++        }
++
+       if (NAT_ED_TRNSL_ERR_SUCCESS !=
+ 	  (translation_error = nat_6t_flow_buf_translate_o2i (
+ 	     vm, sm, b0, ip0, f, proto0, 0 /* is_output_feature */)))
+@@ -1097,6 +1105,16 @@ nat44_ed_out2in_slow_path_node_fn_inline (vlib_main_t * vm,
+ 	      if (!s0)
+ 		next[0] = NAT_NEXT_DROP;
+ 	    }
++          if (NAT_NEXT_DROP != next[0] && s0)
++            {
++              int guard = nat44_ed_policy_session_guard (b0, ip0, s0, 1);
++              if (guard)
++                {
++                  next[0] = guard > 0 ? NAT_NEXT_ICMP_ERROR : NAT_NEXT_DROP;
++                  if (guard < 0) b0->error = node->errors[NAT_OUT2IN_ED_ERROR_TRNSL_FAILED];
++                  goto trace0;
++                }
++            }
+ 	  if (NAT_NEXT_DROP != next[0] && s0 &&
+ 	      NAT_ED_TRNSL_ERR_SUCCESS !=
+ 		(translation_error = nat_6t_flow_buf_translate_o2i (
+@@ -1119,6 +1137,16 @@ nat44_ed_out2in_slow_path_node_fn_inline (vlib_main_t * vm,
+ 	    (sm, b0, ip0, icmp0, sw_if_index0, rx_fib_index0, node,
+ 	     next[0], now, thread_index, &s0);
+ 
++          if (NAT_NEXT_DROP != next[0] && s0)
++            {
++              int guard = nat44_ed_policy_session_guard (b0, ip0, s0, 1);
++              if (guard)
++                {
++                  next[0] = guard > 0 ? NAT_NEXT_ICMP_ERROR : NAT_NEXT_DROP;
++                  if (guard < 0) b0->error = node->errors[NAT_OUT2IN_ED_ERROR_TRNSL_FAILED];
++                  goto trace0;
++                }
++            }
+ 	  if (NAT_NEXT_DROP != next[0] && s0 &&
+ 	      NAT_ED_TRNSL_ERR_SUCCESS !=
+ 		(translation_error = nat_6t_flow_buf_translate_o2i (
+@@ -1222,6 +1250,14 @@ nat44_ed_out2in_slow_path_node_fn_inline (vlib_main_t * vm,
+ 	    }
+ 	}
+ 
++      int guard = nat44_ed_policy_session_guard (b0, ip0, s0, 1);
++      if (PREDICT_FALSE (guard))
++        {
++          next[0] = guard > 0 ? NAT_NEXT_ICMP_ERROR : NAT_NEXT_DROP;
++          if (guard < 0) b0->error = node->errors[NAT_OUT2IN_ED_ERROR_TRNSL_FAILED];
++          goto trace0;
++        }
++
+       if (NAT_ED_TRNSL_ERR_SUCCESS !=
+ 	  (translation_error = nat_6t_flow_buf_translate_o2i (
+ 	     vm, sm, b0, ip0, &s0->o2i, proto0, 0 /* is_output_feature */)))
+diff --git a/src/vnet/ip/reass/ip4_full_reass.c b/src/vnet/ip/reass/ip4_full_reass.c
+index ed04022..3b9f1b8 100644
+--- a/src/vnet/ip/reass/ip4_full_reass.c
++++ b/src/vnet/ip/reass/ip4_full_reass.c
+@@ -18,6 +18,9 @@
+ #include <vppinfra/bihash_16_8.h>
+ #include <vnet/ip/reass/ip4_full_reass.h>
+ #include <stddef.h>
++#include <vlib/threads.h>
++#include <vlib/handoff.h>
++#include <vnet/ip/reass/ip4_sv_reass.h>
+ 
+ #define MSEC_PER_SEC 1000
+ #define IP4_REASS_TIMEOUT_DEFAULT_MS 200
+@@ -2089,3 +2092,145 @@ ip4_local_full_reass_enabled ()
+ }
+ 
+ #endif
++
++
++#ifndef CLIB_MARCH_VARIANT
++/* Connector retirement experiment: the caller owns the worker barrier.
++ * A barrier alone does not empty inter-worker handoff queues. Do not recycle
++ * an RX interface/FIB while any pending graph or handoff buffer can refer to it.
++ * This deliberately conservative guard may delay retirement under other load.
++ */
++int
++ip4_reass_fib_retire_ready (void)
++{
++  vlib_main_t *vm = vlib_get_main ();
++  vlib_handoff_queue_main_t *hqm;
++  vlib_handoff_queue_t **hq;
++  if (vlib_get_thread_index () != 0 ||
++      (vlib_get_n_threads () > 1 && !vlib_worker_thread_barrier_held ()))
++    return 0;
++  for (u32 ti = 0; ti < vlib_get_n_threads (); ti++)
++    if (vec_len (vlib_get_main_by_index (ti)->node_main.pending_frames))
++      return 0;
++  vec_foreach (hqm, vm->handoff_queue_mains)
++    vec_foreach (hq, hqm->vlib_handoff_queues)
++      if (hq[0] && (__atomic_load_n (&hq[0]->head, __ATOMIC_RELAXED) !=
++                    __atomic_load_n (&hq[0]->tail, __ATOMIC_RELAXED)))
++        return 0;
++  return 1;
++}
++
++u32
++ip4_full_reass_purge_fib (u32 fib_index)
++{
++  vlib_main_t *vm = vlib_get_main ();
++  ip4_full_reass_main_t *rm = &ip4_full_reass_main;
++  vlib_node_runtime_t *node =
++    vlib_node_get_runtime (vm, rm->ip4_full_reass_expire_node_idx);
++  u32 *indices = 0, *index, removed = 0;
++  ASSERT (ip4_reass_fib_retire_ready ());
++  for (u32 ti = 0; ti < vec_len (rm->per_thread_data); ti++)
++    {
++      ip4_full_reass_per_thread_t *rt = &rm->per_thread_data[ti];
++      u32 pi;
++      clib_spinlock_lock (&rt->lock);
++      vec_reset_length (indices);
++      pool_foreach_index (pi, rt->pool)
++        if (pool_elt_at_index (rt->pool, pi)->key.fib_index == fib_index)
++          vec_add1 (indices, pi);
++      vec_foreach (index, indices)
++        {
++          ip4_full_reass_t *r = pool_elt_at_index (rt->pool, index[0]);
++          /* Retiring state is freed, never re-enqueued to a custom error app. */
++          r->error_next_index = ~0;
++          ip4_full_reass_drop_all (vm, node, r);
++          ip4_full_reass_free (rm, rt, r);
++          removed++;
++        }
++      clib_spinlock_unlock (&rt->lock);
++    }
++  vec_free (indices);
++  return removed;
++}
++
++static clib_error_t *
++ip4_reass_retire_probe (vlib_main_t *vm, unformat_input_t *input,
++                       CLIB_UNUSED (vlib_cli_command_t *cmd))
++{
++  u32 fib_index = ~0, full, shallow;
++  if (!unformat (input, "fib-index %u", &fib_index) ||
++      unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
++    return clib_error_return (0, "expected fib-index <native-index>");
++  vlib_worker_thread_barrier_sync (vm);
++  if (!ip4_reass_fib_retire_ready ())
++    {
++      vlib_worker_thread_barrier_release (vm);
++      return clib_error_return (0, "busy: pending graph/handoff buffers; FIB must remain allocated");
++    }
++  full = ip4_full_reass_purge_fib (fib_index);
++  shallow = ip4_sv_reass_purge_fib (fib_index);
++  vlib_worker_thread_barrier_release (vm);
++  vlib_cli_output (vm, "fib_index %u full_purged %u shallow_purged %u", fib_index,
++                   full, shallow);
++  return 0;
++}
++
++VLIB_CLI_COMMAND (ip4_reass_retire_probe_cmd, static) = {
++  .path = "test ip4-reassembly purge-fib",
++  .short_help = "test ip4-reassembly purge-fib fib-index <native-index>",
++  .function = ip4_reass_retire_probe,
++};
++
++/* Queue a real incomplete fragment while workers are stopped. The ready guard
++ * must reject retirement, then the ordinary worker graph consumes the buffer
++ * after the barrier opens. This is a queue probe, not a wire traffic test. */
++static clib_error_t *
++ip4_reass_handoff_guard_probe (vlib_main_t *vm, unformat_input_t *input,
++                             CLIB_UNUSED (vlib_cli_command_t *cmd))
++{
++  u32 fib_index = ~0, rx = ~0, bi, sent;
++  u16 ti = 1;
++  int ready;
++  if (!unformat (input, "fib-index %u rx %u", &fib_index, &rx) ||
++      unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
++    return clib_error_return (0, "expected fib-index <native-index> rx <sw-if-index>");
++  if (vlib_get_n_threads () < 2)
++    return clib_error_return (0, "queue probe requires a worker thread");
++  vlib_worker_thread_barrier_sync (vm);
++  if (!vlib_buffer_alloc (vm, &bi, 1))
++    {
++      vlib_worker_thread_barrier_release (vm);
++      return clib_error_return (0, "buffer allocation failed");
++    }
++  vlib_buffer_t *b = vlib_get_buffer (vm, bi);
++  ip4_header_t *ip = vlib_buffer_get_current (b);
++  clib_memset (ip, 0, 28);
++  b->current_length = 28;
++  vnet_buffer (b)->sw_if_index[VLIB_RX] = rx;
++  vnet_buffer (b)->sw_if_index[VLIB_TX] = fib_index;
++  ip->ip_version_and_header_length = 0x45;
++  ip->length = clib_host_to_net_u16 (28);
++  ip->fragment_id = clib_host_to_net_u16 (0x7171);
++  ip->flags_and_fragment_offset = clib_host_to_net_u16 (0x2000);
++  ip->ttl = 64;
++  ip->protocol = IP_PROTOCOL_UDP;
++  ip->src_address.as_u32 = clib_host_to_net_u32 (0x0a070002);
++  ip->dst_address.as_u32 = clib_host_to_net_u32 (0xc6336402);
++  ip->checksum = ip4_header_checksum (ip);
++  sent = vlib_buffer_enqueue_to_thread (
++    vm, vlib_node_get_runtime (vm, ip4_full_reass_main.ip4_full_reass_expire_node_idx),
++    ip4_full_reass_main.fq_index, &bi, &ti, 1);
++  ready = ip4_reass_fib_retire_ready ();
++  vlib_worker_thread_barrier_release (vm);
++  if (sent != 1 || ready)
++    return clib_error_return (0, "queue guard failed: enqueued %u ready %u", sent, ready);
++  vlib_cli_output (vm, "enqueued %u retire_ready %u worker %u", sent, ready, ti);
++  return 0;
++}
++
++VLIB_CLI_COMMAND (ip4_reass_handoff_guard_probe_cmd, static) = {
++  .path = "test ip4-reassembly handoff-guard",
++  .short_help = "test ip4-reassembly handoff-guard fib-index <native-index> rx <sw-if-index>",
++  .function = ip4_reass_handoff_guard_probe,
++};
++#endif /* CLIB_MARCH_VARIANT */
+diff --git a/src/vnet/ip/reass/ip4_full_reass.h b/src/vnet/ip/reass/ip4_full_reass.h
+index b1ed2dc..eea099a 100644
+--- a/src/vnet/ip/reass/ip4_full_reass.h
++++ b/src/vnet/ip/reass/ip4_full_reass.h
+@@ -40,4 +40,9 @@ uword ip4_full_reass_custom_register_next_node (uword node_index);
+ 
+ void ip4_local_full_reass_enable_disable (int enable);
+ int ip4_local_full_reass_enabled ();
++/* Experimental main-thread retirement helpers. Caller holds worker barrier,
++ * closes ingress admission, and confirms no native NAT references before FIB
++ * deletion. ready==0 requires retaining FIB/ifindex and retrying later. */
++int ip4_reass_fib_retire_ready (void);
++u32 ip4_full_reass_purge_fib (u32 fib_index);
+ #endif /* __included_ip4_full_reass_h__ */
+diff --git a/src/vnet/ip/reass/ip4_sv_reass.c b/src/vnet/ip/reass/ip4_sv_reass.c
+index b6798d7..3e75bb6 100644
+--- a/src/vnet/ip/reass/ip4_sv_reass.c
++++ b/src/vnet/ip/reass/ip4_sv_reass.c
+@@ -17,6 +17,7 @@
+ #include <vppinfra/fifo.h>
+ #include <vppinfra/bihash_16_8.h>
+ #include <vnet/ip/reass/ip4_sv_reass.h>
++#include <vnet/ip/reass/ip4_full_reass.h>
+ 
+ #define MSEC_PER_SEC			1000
+ #define IP4_SV_REASS_TIMEOUT_DEFAULT_MS 100
+@@ -2199,3 +2200,36 @@ ip4_sv_reass_extended_unlock (vlib_buffer_t *b)
+ }
+ 
+ #endif
++
++
++#ifndef CLIB_MARCH_VARIANT
++/* Standard FIB-keyed shallow reassembly only. The controlled egress graph does
++ * not use a custom-context SV key namespace overlapping native FIB indexes. */
++u32
++ip4_sv_reass_purge_fib (u32 fib_index)
++{
++  vlib_main_t *vm = vlib_get_main ();
++  ip4_sv_reass_main_t *rm = &ip4_sv_reass_main;
++  u32 *indices = 0, *index, removed = 0;
++  ASSERT (ip4_reass_fib_retire_ready ());
++  for (u32 ti = 0; ti < vec_len (rm->per_thread_data); ti++)
++    {
++      ip4_sv_reass_per_thread_t *rt = &rm->per_thread_data[ti];
++      u32 pi;
++      clib_spinlock_lock (&rt->lock);
++      vec_reset_length (indices);
++      pool_foreach_index (pi, rt->pool)
++        if (pool_elt_at_index (rt->pool, pi)->key.fib_index == fib_index)
++          vec_add1 (indices, pi);
++      vec_foreach (index, indices)
++        {
++          ip4_sv_reass_free (vm, rm, rt,
++                             pool_elt_at_index (rt->pool, index[0]), true);
++          removed++;
++        }
++      clib_spinlock_unlock (&rt->lock);
++    }
++  vec_free (indices);
++  return removed;
++}
++#endif /* CLIB_MARCH_VARIANT */
+diff --git a/src/vnet/ip/reass/ip4_sv_reass.h b/src/vnet/ip/reass/ip4_sv_reass.h
+index be45f8d..a079b4a 100644
+--- a/src/vnet/ip/reass/ip4_sv_reass.h
++++ b/src/vnet/ip/reass/ip4_sv_reass.h
+@@ -71,4 +71,6 @@ void ip4_sv_reass_extended_unlock (vlib_buffer_t *b);
+ uword ip4_sv_reass_custom_register_next_node (uword node_index);
+ uword ip4_sv_reass_custom_context_register_next_node (uword node_index);
+ 
++/* Experimental FIB-keyed retirement; same barrier/queue guard as full. */
++u32 ip4_sv_reass_purge_fib (u32 fib_index);
+ #endif /* __included_ip4_sv_reass_h__ */

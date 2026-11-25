@@ -128,7 +128,7 @@ If the floating base is not aligned to the derived prefix, the identity window c
 
 The static start-time maps are `mgmt_svc_fwd` (`{VIP,vport,proto}` → `{targetIP,targetPort}`) and `mgmt_svc_rev` (the reverse key/value). These are hash lookups without connection tracking. A service-table miss and non-TCP/UDP traffic follow the original management path. VIP must match an extraction route, target IP/port pairs must be globally unique for reverse lookup, and the service mapping is IPv4-only. Deployment owns backend reachability. A loopback target requires route_localnet on the management device; otherwise the kernel can reject it as martian traffic.
 
-**Sandbox → external network:** a non-management destination, such as 8.8.8.8, enters port TC. TC encapsulates it in GENEVE and increments transit_tx. The outer IPv4 source is transit_ip, destination is gateway_ip, and the UDP source is derived from selected inner packet fields ([GENEVE tunnels](#geneve-tunnels)). The configured locator encodes the zero-based slot; opaque options travel only in this outbound direction. Ether-over-GENEVE sets inner source to the selected port MAC and inner destination to transit MAC; IP-over-GENEVE has no inner Ethernet header. The transit device sends the packet to the gateway.
+**Sandbox → external network:** a non-management destination, such as 8.8.8.8, enters port TC. TC encapsulates it in GENEVE and increments transit_tx. The outer IPv4 source is transit_ip, destination is gateway_ip, and the UDP source is derived from selected inner packet fields ([GENEVE tunnels](#geneve-tunnels)). The configured locator encodes the zero-based slot; opaque options travel only in this outbound direction. Ether-over-GENEVE sets the inner source to the generation alias when fencing is enabled, otherwise the selected port MAC; the inner destination is transit MAC. IP-over-GENEVE has no inner Ethernet header. The transit device sends the packet to the gateway.
 
 **External network → sandbox:** the gateway sends a packet satisfying the configured strict locator contract. Transit TC recovers the slot, verifies allocation, ifindex, outer gateway-source IP and VNI, removes encapsulation, rewrites the destination MAC for the port and increments transit_rx before delivery.
 
@@ -304,7 +304,7 @@ hash. This does not guarantee distinct ports or balanced distribution for every
 flow set. An omitted locator means port. With no opaque options, default
 port-mode framing retains the legacy wire encoding for equivalent inputs.
 
-For outer L2 delivery, bpf_redirect_neigh uses the kernel neighbor subsystem; the BPF program maintains no ARP cache. In Ether-over-GENEVE, the inner destination is transit-mac-addr or broadcast, and the inner source is the selected port MAC, matching the device/VMM configuration for gateway bridge learning.
+For outer L2 delivery, bpf_redirect_neigh uses the kernel neighbor subsystem; the BPF program maintains no ARP cache. In Ether-over-GENEVE, the inner destination is transit-mac-addr or broadcast. With `generation_bits=0`, the inner source remains the selected port MAC. With fencing enabled, the source is `02:fe:<big-endian 32-bit attachment generation>`, including generation zero. The [native Egress gateway](egress.md) retains that immutable alias for returns. Transit TC rejects a tagged destination alias whose generation differs from the current slot; untagged legacy returns retain compatibility. Delivery restores the actual port MAC, so the Guest/VMM receive configuration does not change. IP encapsulation has no generation alias; late-packet fencing there remains limited by its existing wire identity.
 
 Packet-capture commands and field inspection belong to [GENEVE packet capture](vswitch-operations.md#geneve-packet-capture).
 
@@ -477,7 +477,7 @@ Connector is a defense-in-depth layer outside the MicroVM; the VMM remains the p
 
 1. **No direct port-to-port path:** the dedicated local forwarding program has no branch bridging one sandbox ingress to another sandbox ingress.
 2. **Switch-owned ARP replies:** port ARP requests are consumed and answered back to that port, not broadcast to other ports.
-3. **Controlled source MACs:** forwarded Ethernet headers use switch or selected port MACs rather than trusting the sandbox's source MAC as slot identity.
+3. **Controlled source MACs:** forwarded Ethernet headers use switch/selected port MACs or the generation alias, without trusting the sandbox's source MAC as slot identity.
 4. **Restricted transit return:** recover the slot using the configured locator and refuse sandbox decapsulation/delivery for invalid allocation/ifindex, gateway-source IP or VNI. Current nonmatching paths return `TC_ACT_OK` to the namespace stack; they do not promise a drop at the TC hook.
 5. **Management address translation:** outbound source becomes floating IP and inbound destination becomes inner IP. This describes packet-header NAT, not concealment of IP values an application might put in payloads.
 

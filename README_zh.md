@@ -37,7 +37,7 @@
 
 组件目的不是某一种 Slot、VNI、UDP port 或 TLV 编码。这些机制让部署为各沙箱分配独立隧道面身份,并向外部策略网关携带可信的沙箱元数据。网关可据此实施沙箱级公网、私网、DNS、代理、审计和流量治理规则,不必将应用策略嵌入基础交换机。
 
-节点本地的轻量 Egress 策略面作为[拟议扩展](https://github.com/kuasar-sandbox/connector/issues/9)跟踪,不是基础 vSwitch 已交付的功能。
+[Geneve Egress 网关](docs/egress_zh.md) 为本地和远端部署提供同一套 Area/Pool 策略与原生 NAT 服务。本地部署管理专用 transit veth 及其 namespace 交接。固定版本的原生运行时与纯 Go 控制程序分别构建，参见 [Egress 构建与验收](egress/README_zh.md)。该功能实现了取代 #9 的[提案 #117](https://github.com/kuasar-sandbox/connector/issues/117)。
 
 ## 主要接口
 

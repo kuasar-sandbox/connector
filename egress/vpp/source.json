@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/FDio/vpp.git",
+  "commit": "4acb320269bc4f3533e35c80afedac38853b2f60",
+  "version": "26.10",
+  "patches": ["patches/native-policy.patch"]
+}

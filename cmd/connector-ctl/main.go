@@ -12,14 +12,16 @@ var rootCmd = &cobra.Command{
 	Short: "Sandbox network connector control tool",
 	Long: `connector-ctl manages sandbox network connector components.
 
-The current implementation provides the vswitch data path and tapfd handoff
-provider:
+Components: the vswitch data path, tapfd handoff provider and Geneve Egress gateway.
+The vSwitch provides:
 - Supports up to 4096 sandbox ports
 - Complete isolation between sandboxes
 - High-performance packet forwarding via eBPF
 - Support for management plane (sandbox support network)
 - GENEVE tunnel encapsulation for external network access
-- Configuration persists after process exits (eBPF programs continue running)`,
+- Configuration persists after process exits (eBPF programs continue running)
+Egress adds local/remote Area policy, per-session Pool quotas and native NAT;
+its separately built VPP dataplane runs under 'egress serve'.`,
 }
 
 var vswitchCmd = &cobra.Command{
