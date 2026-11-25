@@ -1,0 +1,16 @@
+[Unit]
+Description=Connector Geneve Egress in network namespace %i
+After=network.target
+
+[Service]
+Type=exec
+ExecStart=/usr/sbin/ip netns exec %i /usr/local/bin/connector-ctl egress serve --config /etc/connector-egress/%i.json
+StateDirectory=connector-egress/%i
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=5
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

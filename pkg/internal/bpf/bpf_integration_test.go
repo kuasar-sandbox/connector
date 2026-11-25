@@ -20,6 +20,9 @@ import (
 func ensureBPFEnv(t *testing.T) {
 	t.Helper()
 	if os.Getuid() != 0 {
+		if os.Getenv("REQUIRE_CONNECTOR_BPF") == "1" {
+			t.Fatal("required BPF validation needs root")
+		}
 		t.Skip("requires root")
 	}
 	ensureBPFFS(t)
@@ -43,6 +46,9 @@ func ensureMemlock(t *testing.T) {
 		MaxEntries: 1,
 	})
 	if err != nil {
+		if os.Getenv("REQUIRE_CONNECTOR_BPF") == "1" {
+			t.Fatalf("required BPF validation unavailable: %v", err)
+		}
 		t.Skipf("BPF not available (memlock insufficient): %v", err)
 	}
 	m.Close()
@@ -58,9 +64,15 @@ func ensureBPFFS(t *testing.T) {
 	}
 	// Not mounted — try to create and mount
 	if err := os.MkdirAll(bpf.BPFPath, 0755); err != nil {
+		if os.Getenv("REQUIRE_CONNECTOR_BPF") == "1" {
+			t.Fatal(err)
+		}
 		t.Skipf("cannot create %s: %v", bpf.BPFPath, err)
 	}
 	if err := unix.Mount("bpf", bpf.BPFPath, "bpf", 0, ""); err != nil {
+		if os.Getenv("REQUIRE_CONNECTOR_BPF") == "1" {
+			t.Fatal(err)
+		}
 		t.Skipf("cannot mount bpffs: %v", err)
 	}
 }

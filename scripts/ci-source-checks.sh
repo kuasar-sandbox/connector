@@ -6,8 +6,12 @@ echo "==> connector source/helper regressions"
 bash scripts/test-notify-helpers.sh
 
 echo "==> connector source unit, race and real BPF stats regressions"
-CGO_ENABLED=1 go test -race -count=1 ./pkg/vswitch ./pkg/internal/bpfmap
+CGO_ENABLED=1 go test -race -count=1 ./pkg/vswitch ./pkg/internal/bpfmap ./pkg/egress ./cmd/connector-ctl
 CGO_ENABLED=1 go test -race -tags=integration -count=1 -v \
     -exec 'sudo -n env REQUIRE_CONNECTOR_STATS=1' \
     -run 'TestNativeStatsReal|TestVerifyCurrentSwitchWithRealPinnedMaps' ./pkg/vswitch
+CGO_ENABLED=1 go test -race -tags=integration -count=1 -v \
+    -exec 'sudo -n env REQUIRE_CONNECTOR_BPF=1' ./pkg/internal/bpf
+CGO_ENABLED=1 go test -race -tags=integration -count=1 -v \
+    -exec 'sudo -n env REQUIRE_CONNECTOR_EGRESS=1' -run TestLocalLink ./pkg/egress
 CGO_ENABLED=0 go vet ./...

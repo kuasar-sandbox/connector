@@ -168,7 +168,7 @@ TCP/UDP 流量走原管理路径。VIP 须匹配 extraction,所有 target IP/por
 **沙箱 → 外部网络**:非管理目的(如 8.8.8.8)进入 port TC 后封装 GENEVE,增加
 transit_tx。外层 IPv4 源为 transit_ip、目的为 gateway_ip,UDP 源端口取 inner
 选定字段的 hash（见 [GENEVE 隧道](#geneve-隧道)）；locator 编码零基 slot，opaque options 仅随出向发送。
-Ether-over-GENEVE 的 inner 源 MAC 为选定端口 MAC,目的为 transit MAC;
+Ether-over-GENEVE 在启用代际隔离时使用 generation 别名作为 inner 源 MAC，否则使用选定端口 MAC，目的为 transit MAC；
 IP-over-GENEVE 没有 inner Ethernet header。transit 设备发往 gateway。
 
 **外部网络 → 沙箱**:gateway 返回满足严格 locator 契约的报文。transit TC 恢复
@@ -376,8 +376,13 @@ L4 offset 处、通过边界检查的两个 port 字段。IPv6 仅混合每个�
 未配置 opaque options 时，相同输入的默认 port 模式保留旧版 wire 编码。
 
 L2 寻址:外层以太网由 `bpf_redirect_neigh` 经内核邻居子系统解析,eBPF 程序不维护
-ARP 缓存;内层(仅 Ether-over-GENEVE)目标 MAC 取 `--transit-mac-addr`(未指定则
-广播），源 MAC 为选定的端口 MAC，与设备/VMM 配置一致，便于网关侧网桥 L2 学习。
+ARP 缓存；内层（仅 Ether-over-GENEVE）目标 MAC 取 `--transit-mac-addr`（未指定则广播）。
+`generation_bits=0` 时，源 MAC 仍为选定端口 MAC。启用代际隔离时，源为
+`02:fe:<大端 32-bit attachment generation>`，包括 generation 零。
+[原生 Egress 网关](egress_zh.md) 为回程保留该不可变别名。Transit TC 丢弃目的别名中
+generation 与当前 slot 不匹配的带标签回包；无标签旧回包保持兼容。交付时恢复实际
+端口 MAC，因此 Guest/VMM 接收配置不变。IP 封装没有 generation 别名，其迟到报文
+隔离能力仍受现有 wire 身份限制。
 
 抓包命令与字段检查见 [GENEVE 抓包](vswitch-operations_zh.md#geneve-抓包)。
 
@@ -593,7 +598,7 @@ Connector 是 MicroVM 外的纵深防御层,VMM 仍是 Guest 的主要隔离边�
 
 1. **无直接 port→port 路径**:本地程序没有将一个 sandbox ingress 桥接到另一个的分支。
 2. **交换机拥有 ARP 回复**:消费端口 ARP request,构造回复交回本端口,不向其他端口广播。
-3. **源 MAC 受控**:转发 Ethernet header 使用 switch/选定 port MAC,不把沙箱源 MAC 当 slot 身份。
+3. **源 MAC 受控**：转发 Ethernet header 使用 switch/选定 port MAC 或 generation 别名，不把沙箱源 MAC 当 slot 身份。
 4. **回程受限**:按 locator 恢复 slot;未分配/无 ifindex、gateway 源 IP 或 VNI 不匹配时,
    不进行 sandbox 解封装/投递。当前不匹配分支返回 `TC_ACT_OK` 给 namespace 协议栈,
    不承诺在 TC hook 丢包。
