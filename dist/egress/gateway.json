@@ -4,7 +4,6 @@
   "vpp": "/opt/connector-egress/bin/vpp",
   "plugin_path": "/opt/connector-egress/lib/x86_64-linux-gnu/vpp_plugins",
   "library_path": "/opt/connector-egress/lib/x86_64-linux-gnu",
-  "max_connections": 65536,
   "interfaces": [
     {
       "name": "egress-rx",
@@ -17,34 +16,20 @@
       "mtu": 1500
     }
   ],
-  "exits": [
-    {
-      "name": "public",
-      "interface": "egress-uplink",
-      "next_hop": "192.0.2.2",
-      "addresses": [
-        "192.0.2.1"
-      ]
-    }
-  ],
   "attachments": [
     {
-      "name": "sw0-area7",
+      "name": "sw0",
       "interface": "egress-rx",
-      "peer": "198.18.0.2",
-      "area": 7,
+      "peer": [
+        "198.18.0.2"
+      ],
       "locator": "port",
-      "port_base": 50000,
-      "encapsulation": "ether",
-      "generation_bits": 4,
-      "gateway": "10.7.0.1",
       "inner_mtu": 1500
     }
   ],
   "area_files": [
     "area7.json"
   ],
-  "max_contexts": 65536,
   "heap_size": "4G",
   "timeouts": {
     "udp": 300,

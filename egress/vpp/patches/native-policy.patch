@@ -1,8 +1,24 @@
+diff --git a/src/plugins/af_packet/af_packet.c b/src/plugins/af_packet/af_packet.c
+index f662082..8962f51 100644
+--- a/src/plugins/af_packet/af_packet.c
++++ b/src/plugins/af_packet/af_packet.c
+@@ -776,6 +776,11 @@ af_packet_create_if (af_packet_create_if_arg_t *arg)
+ 
+   if (arg->flags & AF_PACKET_IF_FLAGS_CKSUM_GSO)
+     {
++      /* PACKET_VNET_HDR changes the socket framing even when the host device
++       * has offloads disabled. RX metadata and every TX frame still need
++       * the virtio header; hardware capabilities only control advertised
++       * output offloads. */
++      apif->is_cksum_gso_enabled = 1;
+       if (apif->host_interface_oflags & AF_PACKET_OFFLOAD_FLAG_TXCKSUM)
+ 	{
+ 	  apif->is_cksum_gso_enabled = 1;
 diff --git a/src/plugins/nat/nat44-ed/nat44_ed.c b/src/plugins/nat/nat44-ed/nat44_ed.c
-index 3c3c51f..8e90ae4 100644
+index 3c3c51f..7b449a0 100644
 --- a/src/plugins/nat/nat44-ed/nat44_ed.c
 +++ b/src/plugins/nat/nat44-ed/nat44_ed.c
-@@ -30,6 +30,112 @@
+@@ -30,6 +30,126 @@
  
  snat_main_t snat_main;
  
@@ -81,6 +97,20 @@ index 3c3c51f..8e90ae4 100644
 +                  nat44_ed_del_interface (sw_if_index, 1);
 +}
 +
++/* Private file-configured Egress resource ownership. The policy plugin
++ * publishes and retires these resources while workers are stopped. */
++__clib_export int
++nat44_ed_policy_outside (u32 sw, u8 enable)
++{
++  return enable ? nat44_ed_add_interface (sw, 0) : nat44_ed_del_interface (sw, 0);
++}
++
++__clib_export int
++nat44_ed_policy_address (ip4_address_t addr, u8 enable)
++{
++  return enable ? nat44_ed_add_address (&addr, ~0, 0) : nat44_ed_del_address (addr, 0);
++}
++
 +/* Caller holds the worker barrier; reuse native LRU/timeouts and deletion. */
 +__clib_export u32
 +nat44_ed_policy_expire (u32 per_worker_budget)
@@ -115,7 +145,7 @@ index 3c3c51f..8e90ae4 100644
  static_always_inline void nat_validate_interface_counters (snat_main_t *sm,
  							   u32 sw_if_index);
  
-@@ -3912,26 +4018,52 @@ nat_6t_flow_icmp_translate (vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b,
+@@ -3912,26 +4032,52 @@ nat_6t_flow_icmp_translate (vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b,
  	      icmp->checksum = new_icmp_sum;
  	      break;
  	    case IP_PROTOCOL_TCP:
@@ -524,7 +554,7 @@ index 700f269..461ce3a 100644
  	  (translation_error = nat_6t_flow_buf_translate_i2o (
  	     vm, sm, b0, ip0, &s0->i2o, proto0, is_output_feature)))
 diff --git a/src/plugins/nat/nat44-ed/nat44_ed_inlines.h b/src/plugins/nat/nat44-ed/nat44_ed_inlines.h
-index 51f2832..eb33150 100644
+index 51f2832..db35192 100644
 --- a/src/plugins/nat/nat44-ed/nat44_ed_inlines.h
 +++ b/src/plugins/nat/nat44-ed/nat44_ed_inlines.h
 @@ -19,6 +19,42 @@
@@ -570,7 +600,19 @@ index 51f2832..eb33150 100644
  always_inline void
  init_ed_k (clib_bihash_kv_16_8_t *kv, u32 l_addr, u16 l_port, u32 r_addr,
  	   u16 r_port, u32 fib_index, ip_protocol_t proto)
-@@ -308,6 +344,9 @@ nat_ed_session_delete (snat_main_t *sm, snat_session_t *ses, u32 thread_index,
+@@ -199,6 +235,11 @@ static_always_inline u8
+ nat44_ed_maximum_sessions_exceeded (snat_main_t *sm, u32 fib_index,
+ 				    u32 thread_index)
+ {
++  /* For managed Egress traffic the only business limit is its Pool quota.
++   * Native pools and bihash pages grow with available memory; initial session
++   * sizing is not an admission ceiling. Keep upstream behavior elsewhere. */
++  if (nat44_ed_policy_hooks.managed && nat44_ed_policy_hooks.managed (fib_index))
++    return 0;
+   u32 translations;
+   translations = pool_elts (sm->per_thread_data[thread_index].sessions);
+   if (vec_len (sm->max_translations_per_fib) <= fib_index)
+@@ -308,6 +349,9 @@ nat_ed_session_delete (snat_main_t *sm, snat_session_t *ses, u32 thread_index,
    snat_main_per_thread_data_t *tsm =
      vec_elt_at_index (sm->per_thread_data, thread_index);
  
@@ -580,7 +622,7 @@ index 51f2832..eb33150 100644
    if (lru_delete)
      {
        clib_dlist_remove (tsm->lru_pool, ses->lru_index);
-@@ -320,6 +359,9 @@ nat_ed_session_delete (snat_main_t *sm, snat_session_t *ses, u32 thread_index,
+@@ -320,6 +364,9 @@ nat_ed_session_delete (snat_main_t *sm, snat_session_t *ses, u32 thread_index,
    pool_put (tsm->sessions, ses);
    vlib_set_simple_counter (&sm->total_sessions, thread_index, 0,
  			   pool_elts (tsm->sessions));
@@ -590,7 +632,7 @@ index 51f2832..eb33150 100644
  }
  
  static_always_inline int
-@@ -383,6 +425,7 @@ nat_ed_session_alloc (snat_main_t *sm, u32 thread_index, f64 now, u8 proto)
+@@ -383,6 +430,7 @@ nat_ed_session_alloc (snat_main_t *sm, u32 thread_index, f64 now, u8 proto)
  
    pool_get (tsm->sessions, s);
    clib_memset (s, 0, sizeof (*s));
@@ -727,6 +769,36 @@ index 65cd137..5839f1d 100644
    /* If not explicitly configured, do not bind/enable, etc. */
    if (sm->socket_name == 0)
      return 0;
+diff --git a/src/vnet/ip/icmp4.c b/src/vnet/ip/icmp4.c
+index c8f0109..913c83d 100644
+--- a/src/vnet/ip/icmp4.c
++++ b/src/vnet/ip/icmp4.c
+@@ -11,6 +11,15 @@
+ #include <vnet/ip/ip_sas.h>
+ #include <vnet/util/throttle.h>
+ 
++/* Optional source selection for addressless, isolated Egress return FIBs.
++ * The gateway registers a hook; all other interfaces keep native selection. */
++static int (*ip4_icmp_error_source) (u32, ip4_address_t *);
++__clib_export void
++ip4_icmp_error_source_register (int (*source) (u32, ip4_address_t *))
++{
++  ip4_icmp_error_source = source;
++}
++
+ /** ICMP throttling */
+ static throttle_t icmp_throttle;
+ 
+@@ -307,7 +316,8 @@ ip4_icmp_error (vlib_main_t * vm,
+ 	  out_ip0->protocol = IP_PROTOCOL_ICMP;
+ 	  out_ip0->dst_address = ip0->src_address;
+ 	  /* Prefer a source address from "offending interface" */
+-	  if (!ip4_sas_by_sw_if_index (sw_if_index0, &out_ip0->dst_address,
++	  if (!(ip4_icmp_error_source && ip4_icmp_error_source (sw_if_index0, &out_ip0->src_address))
++              && !ip4_sas_by_sw_if_index (sw_if_index0, &out_ip0->dst_address,
+ 				       &out_ip0->src_address))
+ 	    { /* interface has no IP4 address - should not happen */
+ 	      next0 = IP4_ICMP_ERROR_NEXT_DROP;
 diff --git a/src/vnet/ip/reass/ip4_full_reass.c b/src/vnet/ip/reass/ip4_full_reass.c
 index ed04022..3b9f1b8 100644
 --- a/src/vnet/ip/reass/ip4_full_reass.c

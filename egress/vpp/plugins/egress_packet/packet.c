@@ -2,12 +2,121 @@
 /* Connector Egress: pre-NAT PMTU with native ICMP generation. */
 #include <vlib/vlib.h>
 #include <vnet/feature/feature.h>
+#include <vnet/gso/gso.h>
+#include <vnet/interface_output.h>
 #include <vnet/ip/ip.h>
 #include <vnet/ip/ip_frag.h>
 #include <vnet/ip/reass/ip4_full_reass.h>
 #include <vnet/plugin/plugin.h>
 #include <vnet/vnet.h>
 #include <vpp/app/version.h>
+
+/* AF_PACKET preserves kernel offload metadata. Normalize it before any
+ * IPv4/Geneve/NAT processing, rather than requiring a borrowed peer or NIC to
+ * disable its checksum/GSO features. Ordinary wire checksums stay untouched. */
+enum
+{
+  NORMALIZE_DROP,
+  NORMALIZE_N_NEXT
+};
+enum
+{
+  NORMALIZE_INVALID,
+  NORMALIZE_NO_BUFFERS,
+  NORMALIZE_SEGMENTED,
+  NORMALIZE_CHECKSUMS,
+  NORMALIZE_N_ERRORS
+};
+static char *normalize_errors[] = { "invalid offload metadata", "no segmentation buffers",
+                                    "GSO packets segmented", "partial checksums completed" };
+VLIB_NODE_FN (egress_normalize_node)
+(vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame)
+{
+  u32 *from = vlib_frame_vector_args (frame);
+  u32 retained[VLIB_FRAME_SIZE], count = 0;
+  u16 nexts[VLIB_FRAME_SIZE];
+  vnet_interface_per_thread_data_t *ptd
+      = vec_elt_at_index (vnet_get_main ()->interface_main.per_thread_data, vm->thread_index);
+  for (u32 i = 0; i < frame->n_vectors; i++)
+    {
+      vlib_buffer_t *b = vlib_get_buffer (vm, from[i]);
+      u32 next;
+      vnet_feature_next (&next, b);
+      if (b->flags & VNET_BUFFER_F_GSO)
+        {
+          i32 l4 = vnet_buffer (b)->l4_hdr_offset - b->current_data;
+          u32 header = l4 + vnet_buffer2 (b)->gso_l4_hdr_sz;
+          u32 total = vlib_buffer_length_in_chain (vm, b);
+          if (!(b->flags & VNET_BUFFER_F_IS_IP4)
+              || !(vnet_buffer (b)->oflags & VNET_BUFFER_OFFLOAD_F_TCP_CKSUM)
+              || !vnet_buffer2 (b)->gso_size || l4 < 20
+              || vnet_buffer2 (b)->gso_l4_hdr_sz < sizeof (tcp_header_t)
+              || header > b->current_length || header >= total)
+            {
+              b->error = node->errors[NORMALIZE_INVALID];
+              next = NORMALIZE_DROP;
+            }
+          else
+            {
+              /* Native segmentation selects IPv4 fixup by this flag.
+               * A kernel GSO packet may already have a valid aggregate IP
+               * checksum, but every segment needs its own length/checksum. */
+              vnet_buffer (b)->oflags |= VNET_BUFFER_OFFLOAD_F_IP_CKSUM;
+              vec_reset_length (ptd->split_buffers);
+              if (gso_segment_buffer_inline (vm, ptd, b, 1))
+                {
+                  vlib_buffer_enqueue_to_single_next (vm, node, ptd->split_buffers, next,
+                                                      vec_len (ptd->split_buffers));
+                  vec_reset_length (ptd->split_buffers);
+                  vlib_node_increment_counter (vm, node->node_index, NORMALIZE_SEGMENTED, 1);
+                  vlib_buffer_free_one (vm, from[i]);
+                  continue;
+                }
+              vec_reset_length (ptd->split_buffers);
+              b->error = node->errors[NORMALIZE_NO_BUFFERS];
+              next = NORMALIZE_DROP;
+            }
+        }
+      else if (b->flags & VNET_BUFFER_F_OFFLOAD)
+        {
+          vnet_calc_checksums_inline (vm, b, !!(b->flags & VNET_BUFFER_F_IS_IP4),
+                                      !!(b->flags & VNET_BUFFER_F_IS_IP6));
+          vlib_node_increment_counter (vm, node->node_index, NORMALIZE_CHECKSUMS, 1);
+        }
+      retained[count] = from[i];
+      nexts[count++] = next;
+    }
+  vlib_buffer_enqueue_to_next (vm, node, retained, nexts, count);
+  return frame->n_vectors;
+}
+VLIB_REGISTER_NODE (egress_normalize_node) = {
+  .name = "egress-input-normalize",
+  .vector_size = sizeof (u32),
+  .n_errors = NORMALIZE_N_ERRORS,
+  .error_strings = normalize_errors,
+  .n_next_nodes = NORMALIZE_N_NEXT,
+  .next_nodes = { [NORMALIZE_DROP] = "error-drop" },
+};
+VNET_FEATURE_INIT (egress_normalize_feature, static) = {
+  .arc_name = "device-input",
+  .node_name = "egress-input-normalize",
+  .runs_before = VNET_FEATURES ("ethernet-input"),
+};
+static clib_error_t *
+normalize_config (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
+{
+  u32 sw;
+  if (!unformat (in, "%U", unformat_vnet_sw_interface, vnet_get_main (), &sw)
+      || unformat_check_input (in) != UNFORMAT_END_OF_INPUT)
+    return clib_error_return (0, "expected admitted interface");
+  int rv = vnet_feature_enable_disable ("device-input", "egress-input-normalize", sw, 1, 0, 0);
+  return rv ? clib_error_return (0, "input normalization failed: %d", rv) : 0;
+}
+VLIB_CLI_COMMAND (normalize_command, static) = {
+  .path = "egress-packet-normalize",
+  .short_help = "Internal offload normalization",
+  .function = normalize_config,
+};
 
 static u32 *mtu_by_rx;
 
@@ -170,7 +279,15 @@ VLIB_CLI_COMMAND (egress_packet_id_cli, static) = {
 static clib_error_t *
 reass_config (vlib_main_t *vm, unformat_input_t *input, vlib_cli_command_t *cmd)
 {
-  int rv = ip4_full_reass_set (200, 1024, 128, 50);
+  /* Outstanding fragment sets are bounded by the actual packet buffers,
+   * not by an unrelated fixed object count. A valid IPv4 datagram can use
+   * eight-byte fragments up to its 16-bit wire length. */
+  u64 available = 0;
+  vlib_buffer_pool_t *pool;
+  vec_foreach (pool, vm->buffer_main->buffer_pools) available += pool->n_buffers;
+  if (!available)
+    return clib_error_return (0, "no native packet buffers");
+  int rv = ip4_full_reass_set (200, clib_min (available, (u64)~0U), 8192, 50);
   return rv ? clib_error_return (0, "native full reassembly configuration: %d", rv) : 0;
 }
 

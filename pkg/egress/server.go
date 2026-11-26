@@ -88,10 +88,12 @@ func checkInterfaces(c Config, requireUp bool) error {
 			return err
 		}
 		owned := map[string]bool{netip.MustParsePrefix(i.Address).Addr().String(): true}
-		for _, exit := range c.Exits {
-			if exit.Interface == i.Name {
-				for _, a := range exit.Addresses {
-					owned[a] = true
+		for _, area := range c.Areas {
+			for _, pool := range area.Pools {
+				if pool.Interface == i.Name {
+					for _, a := range pool.Addresses {
+						owned[a] = true
+					}
 				}
 			}
 		}
@@ -153,11 +155,6 @@ func Serve(ctx context.Context, path string, log io.Writer) error {
 		return fmt.Errorf("gateway already running: %w", err)
 	}
 	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN)
-	for _, i := range c.Interfaces {
-		if err = disableOffloads(i.Name); err != nil {
-			return err
-		}
-	}
 	conf := filepath.Join(c.RuntimeDir, "startup.conf")
 	if err = writeOutput(conf, []byte(startup(*c))); err != nil {
 		return err
@@ -211,6 +208,14 @@ func Serve(ctx context.Context, path string, log io.Writer) error {
 	if err != nil {
 		return err
 	}
+	engine.interfaceMACs = make(map[string]string, len(identities))
+	for name, identity := range identities {
+		mac, parseErr := net.ParseMAC(identity.mac)
+		if parseErr != nil || len(mac) != 6 {
+			return fmt.Errorf("interface %s requires an Ethernet MAC address", name)
+		}
+		engine.interfaceMACs[name] = mac.String()
+	}
 	if err = engine.Setup(ctx); err != nil {
 		return fmt.Errorf("configure Egress: %w", err)
 	}
@@ -251,6 +256,9 @@ func Serve(ctx context.Context, path string, log io.Writer) error {
 			return fmt.Errorf("native dataplane stopped: %v", err)
 		case <-reloads:
 			next, e := LoadConfig(path)
+			if e == nil {
+				e = checkInterfaces(*next, false)
+			}
 			if e == nil {
 				e = engine.Reload(ctx, *next)
 			}

@@ -29,11 +29,18 @@ func (e *Engine) uncertain(operation string, err error) error {
 	return err
 }
 
+type poolKey struct {
+	area uint32
+	name string
+}
+
 type Engine struct {
-	mu     sync.Mutex
-	config Config
-	runner Runner
-	failed error
+	mu            sync.Mutex
+	config        Config
+	runner        Runner
+	failed        error
+	poolIDs       map[poolKey]uint32
+	interfaceMACs map[string]string
 }
 
 func NewEngine(c Config, r Runner) (*Engine, error) {
@@ -83,7 +90,12 @@ func (e *Engine) Setup(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, i := range e.config.Interfaces {
-		cmd := fmt.Sprintf("create host-interface v2 name %s qdisc-bypass-disable cksum-gso-disable rx-size 2048 tx-size 2048 rx-per-block 256 tx-per-block 256", i.Name)
+		cmd := fmt.Sprintf("create host-interface v2 name %s qdisc-bypass-disable rx-size 69632 tx-size 69632 rx-per-block 16 tx-per-block 16", i.Name)
+		// Keep the admitted device's MAC across process restarts so peers'
+		// existing neighbor entries remain usable without an external probe.
+		if mac := e.interfaceMACs[i.Name]; mac != "" {
+			cmd += " hw-addr " + mac
+		}
 		out, err := e.runner.Run(ctx, cmd)
 		if err != nil {
 			return err
@@ -97,7 +109,7 @@ func (e *Engine) Setup(ctx context.Context) error {
 			}
 		}
 	}
-	if err := e.empty(ctx, fmt.Sprintf("nat44 plugin enable sessions %d", e.config.MaxConnections)); err != nil {
+	if err := e.empty(ctx, "nat44 plugin enable"); err != nil {
 		return err
 	}
 	for _, i := range e.config.Interfaces {
@@ -113,47 +125,14 @@ func (e *Engine) Setup(ctx context.Context) error {
 			return err
 		}
 	}
-	configuredOut := map[string]bool{}
-	configuredAddress := map[string]bool{}
-	for index, x := range e.config.Exits {
-		table := len(e.config.Interfaces) + 1 + index
-		if err := e.empty(ctx, fmt.Sprintf("ip table add %d", table)); err != nil {
-			return err
-		}
-		for _, addr := range x.Addresses {
-			if configuredAddress[addr] {
-				continue
-			}
-			configuredAddress[addr] = true
-			if err := e.empty(ctx, "nat44 add address "+addr); err != nil {
-				return err
-			}
-			// Native NAT registers each public /32 as local on outside FIBs,
-			// including ARP response. An interface /32 alias would overlap its
-			// connected prefix and is rejected by VPP for ordinary address pools.
-		}
-		if !configuredOut[x.Interface] {
-			if err := e.empty(ctx, "set interface nat44 out host-"+x.Interface); err != nil {
-				return err
-			}
-			configuredOut[x.Interface] = true
-		}
-		for _, cmd := range []string{
-			fmt.Sprintf("ip route add table %d 0.0.0.0/0 via %s host-%s", table, x.NextHop, x.Interface),
-			fmt.Sprintf("set interface reassembly host-%s ip4", x.Interface),
-			fmt.Sprintf("egress-packet-id host-%s mtu 65535", x.Interface),
-		} {
-			if err := e.empty(ctx, cmd); err != nil {
-				return err
-			}
-		}
-	}
 	if err := e.empty(ctx, "egress-packet-reassembly"); err != nil {
 		return err
 	}
 	for _, i := range e.config.Interfaces {
-		if err := e.empty(ctx, "set interface reassembly host-"+i.Name+" ip4"); err != nil {
-			return err
+		for _, command := range []string{"egress-packet-normalize host-" + i.Name, "egress-geneve ingress host-" + i.Name, "set interface reassembly host-" + i.Name + " ip4", "egress-packet-id host-" + i.Name + " mtu 65535"} {
+			if err := e.empty(ctx, command); err != nil {
+				return err
+			}
 		}
 	}
 	return e.configure(ctx, e.config)
@@ -170,8 +149,8 @@ func matchCommand(m Match) string {
 	p, _ := protocol(m.Protocol)
 	return fmt.Sprintf("dst %s proto %d ports %d %d", m.Destination, p, m.PortFirst, m.PortLast)
 }
-func (e *Engine) stageArea(ctx context.Context, a Area) (err error) {
-	if err = e.config.ValidateArea(a); err != nil {
+func (e *Engine) stageArea(ctx context.Context, c Config, a Area, ids map[poolKey]uint32) (err error) {
+	if err = c.ValidateArea(a); err != nil {
 		return err
 	}
 	if err = e.empty(ctx, fmt.Sprintf("egress-policy begin area %d", a.VNI)); err != nil {
@@ -185,17 +164,12 @@ func (e *Engine) stageArea(ctx context.Context, a Area) (err error) {
 		}
 	}()
 	for _, p := range a.Pools {
-		table := 0
-		for i, x := range e.config.Exits {
-			if x.Name == p.Exit {
-				table = len(e.config.Interfaces) + 1 + i
-			}
-		}
-		if err = e.empty(ctx, fmt.Sprintf("egress-policy pool id %d table %d return-table %d limit %d", p.ID, table, e.exitReturnTable(p.Exit), p.MaxConnections)); err != nil {
+		id := ids[poolKey{a.VNI, p.Name}]
+		if err = e.empty(ctx, fmt.Sprintf("egress-policy pool id %d interface host-%s next-hop %s return-table %d limit %d", id, p.Interface, p.NextHop, e.interfaceTable(p.Interface), p.MaxConnections)); err != nil {
 			return err
 		}
 		for _, addr := range p.Addresses {
-			if err = e.empty(ctx, fmt.Sprintf("egress-policy address pool %d %s", p.ID, addr)); err != nil {
+			if err = e.empty(ctx, fmt.Sprintf("egress-policy address pool %d %s", id, addr)); err != nil {
 				return err
 			}
 		}
@@ -206,12 +180,12 @@ func (e *Engine) stageArea(ctx context.Context, a Area) (err error) {
 		}
 	}
 	for _, r := range a.DNAT {
-		if err = e.empty(ctx, fmt.Sprintf("egress-policy dnat %s pool %d target %s port %d", matchCommand(r.Match), r.Pool, r.Target, r.TargetPort)); err != nil {
+		if err = e.empty(ctx, fmt.Sprintf("egress-policy dnat %s pool %d target %s port %d", matchCommand(r.Match), ids[poolKey{a.VNI, r.Pool}], r.Target, r.TargetPort)); err != nil {
 			return err
 		}
 	}
 	for _, r := range a.Routes {
-		if err = e.empty(ctx, fmt.Sprintf("egress-policy route dst %s pool %d", r.Destination, r.Pool)); err != nil {
+		if err = e.empty(ctx, fmt.Sprintf("egress-policy route dst %s pool %d", r.Destination, ids[poolKey{a.VNI, r.Pool}])); err != nil {
 			return err
 		}
 	}
@@ -228,13 +202,40 @@ func (e *Engine) stageArea(ctx context.Context, a Area) (err error) {
 	return nil
 }
 
-func (e *Engine) exitReturnTable(name string) int {
-	for _, x := range e.config.Exits {
-		if x.Name == name {
-			return e.interfaceTable(x.Interface)
+// Pool names are public references. Native cookies use compact, stable IDs
+// for the currently published names; these never depend on array positions.
+// An ID removed by a successful publication is reusable because that same
+// publication revokes all mappings for the removed Pool.
+func (e *Engine) candidatePoolIDs(c Config) map[poolKey]uint32 {
+	ids := make(map[poolKey]uint32)
+	used := make(map[uint32]bool)
+	for _, a := range c.Areas {
+		for _, p := range a.Pools {
+			key := poolKey{a.VNI, p.Name}
+			if id, ok := e.poolIDs[key]; ok {
+				ids[key], used[id] = id, true
+			}
 		}
 	}
-	panic("validated exit disappeared")
+	// Do not alias a removed name within the same transaction. Its old
+	// mappings are still present until the native publication barrier.
+	for _, id := range e.poolIDs {
+		used[id] = true
+	}
+	next := uint32(0)
+	for _, a := range c.Areas {
+		for _, p := range a.Pools {
+			key := poolKey{a.VNI, p.Name}
+			if _, exists := ids[key]; exists {
+				continue
+			}
+			for used[next] {
+				next++
+			}
+			ids[key], used[next] = next, true
+		}
+	}
+	return ids
 }
 
 // configure prepares the entire file set before one native publication point.
@@ -242,6 +243,7 @@ func (e *Engine) configure(ctx context.Context, c Config) (err error) {
 	if err = c.Validate(); err != nil {
 		return err
 	}
+	ids := e.candidatePoolIDs(c)
 	if err = e.empty(ctx, "egress-policy reset"); err != nil {
 		return err
 	}
@@ -253,29 +255,31 @@ func (e *Engine) configure(ctx context.Context, c Config) (err error) {
 			_ = e.empty(cleanup, "egress-geneve abort")
 		}
 	}()
-	if err = e.empty(ctx, fmt.Sprintf("egress-geneve begin max-contexts %d idle %d udp %d tcp-established %d tcp-transitory %d icmp %d",
-		c.MaxContexts, c.ContextIdleSeconds, c.Timeouts.UDP, c.Timeouts.TCPEstablished, c.Timeouts.TCPTransitory, c.Timeouts.ICMP)); err != nil {
+	if err = e.empty(ctx, fmt.Sprintf("egress-geneve begin idle %d udp %d tcp-established %d tcp-transitory %d icmp %d",
+		c.ContextIdleSeconds, c.Timeouts.UDP, c.Timeouts.TCPEstablished, c.Timeouts.TCPTransitory, c.Timeouts.ICMP)); err != nil {
 		return err
 	}
 	for _, a := range c.Areas {
-		if err = e.stageArea(ctx, a); err != nil {
+		if err = e.stageArea(ctx, c, a, ids); err != nil {
 			return err
 		}
 	}
 	for _, a := range c.Attachments {
 		_, i, _ := c.attachment(a.Name)
-		overhead := uint32(36)
-		if a.Encapsulation == "ether" {
-			overhead += 14
+		sources := a.Peer
+		if len(sources) == 0 {
+			sources = []string{"0.0.0.0/0"}
 		}
-		if a.Locator == "tlv" {
-			overhead += 8
+		hop := a.NextHop
+		if hop == "" {
+			hop = "0.0.0.0" // learn the actual peer; zero is never an identity
 		}
-		mtu := min(a.MTU, a.InnerMTU+overhead)
-		command := fmt.Sprintf("egress-geneve profile underlay host-%s underlay-table %d local %s peer %s next-hop %s area %d locator %s encap %s bits %d gateway %s mtu %d port-base %d tlv-class %d tlv-type %d",
-			i.Name, e.interfaceTable(i.Name), netip.MustParsePrefix(i.Address).Addr(), a.Peer, a.NextHop, a.Area, a.Locator, a.Encapsulation, a.GenerationBits, a.Gateway, mtu, a.PortBase, a.TLVClass, a.TLVType)
-		if err = e.empty(ctx, command); err != nil {
-			return err
+		for _, source := range sources {
+			command := fmt.Sprintf("egress-geneve profile underlay host-%s underlay-table %d local %s peer %s next-hop %s locator %s mtu %d inner-mtu %d tlv-class %d tlv-type %d",
+				i.Name, e.interfaceTable(i.Name), netip.MustParsePrefix(i.Address).Addr(), source, hop, a.Locator, a.MTU, a.InnerMTU, a.TLVClass, a.TLVType)
+			if err = e.empty(ctx, command); err != nil {
+				return err
+			}
 		}
 	}
 	var ack struct {
@@ -289,6 +293,7 @@ func (e *Engine) configure(ctx context.Context, c Config) (err error) {
 		e.failed = errors.New("configuration commit acknowledgement mismatch")
 		return e.failed
 	}
+	e.poolIDs = ids
 	return nil
 }
 
@@ -305,15 +310,29 @@ func (e *Engine) Snapshot(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows := []json.RawMessage{}
+	rows := []map[string]any{}
+	names := map[uint32]string{}
+	for key, id := range e.poolIDs {
+		names[id] = key.name
+	}
 	for _, line := range strings.Split(out, "\n") {
 		if line == "" {
 			continue
 		}
-		if !json.Valid([]byte(line)) {
+		var row map[string]any
+		if json.Unmarshal([]byte(line), &row) != nil {
 			return nil, errors.New("invalid native counters")
 		}
-		rows = append(rows, json.RawMessage(line))
+		id, ok := row["pool"].(float64)
+		if !ok || id < 0 || id > float64(^uint32(0)) || float64(uint32(id)) != id {
+			return nil, errors.New("invalid native Pool key")
+		}
+		name, ok := names[uint32(id)]
+		if !ok {
+			return nil, errors.New("unknown native Pool key")
+		}
+		row["pool"] = name
+		rows = append(rows, row)
 	}
 	state["pools"] = rows
 	errors, err := e.runner.Run(ctx, "show errors")
@@ -353,8 +372,6 @@ func (e *Engine) Reload(ctx context.Context, c Config) error {
 	newResources.AreaFiles = nil
 	oldResources.Attachments = nil
 	newResources.Attachments = nil
-	oldResources.MaxContexts = 0
-	newResources.MaxContexts = 0
 	oldResources.ContextIdleSeconds = 0
 	newResources.ContextIdleSeconds = 0
 	oldResources.Timeouts = NATTimeouts{}

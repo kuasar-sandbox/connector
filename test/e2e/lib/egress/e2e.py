@@ -28,7 +28,14 @@ def tcp(ip):
  while True:
   c,p=s.accept()
   with c:
-   d=c.recv(65535);c.sendall(json.dumps({'data':d.decode(),'backend':ip,'peer':p}).encode())
+   chunks=[]
+   while True:
+    chunk=c.recv(65535)
+    if not chunk:break
+    chunks.append(chunk)
+   d=b''.join(chunks);reply={'data':d.decode(),'backend':ip,'peer':p}
+   if d.startswith(b'EGRESS-BULK:'):reply['bulk']='x'*int(d.split(b':',2)[1])
+   c.sendall(json.dumps(reply).encode())
 for ip in ('203.0.113.11','203.0.113.12'):
  for f in (udp,tcp):threading.Thread(target=f,args=(ip,),daemon=True).start()
 threading.Event().wait()
@@ -46,7 +53,14 @@ for line in sys.stdin:
    if protocol=='tcp':s.connect((q['target'],q.get('port',18080)))
    sessions[key]=s
   s=sessions[key];data=(uuid.uuid4().hex+':'+q.get('data','probe')).encode()
-  if protocol=='tcp':s.sendall(data);payload=s.recv(65535);peer=s.getpeername();s.close();del sessions[key]
+  if protocol=='tcp':
+   if q.get('response_bytes'):data=b'EGRESS-BULK:'+str(q['response_bytes']).encode()+b':'+data
+   peer=s.getpeername();s.settimeout(10);s.sendall(data);s.shutdown(socket.SHUT_WR);chunks=[]
+   while True:
+    chunk=s.recv(65535)
+    if not chunk:break
+    chunks.append(chunk)
+   payload=b''.join(chunks);s.close();del sessions[key]
   else:
    s.sendto(data,(q['target'],q.get('port',18080)))
    deadline=time.monotonic()+.4
@@ -57,7 +71,10 @@ for line in sys.stdin:
     if remaining<=0:raise TimeoutError('no matching UDP reply')
     s.settimeout(remaining);payload,peer=s.recvfrom(65535)
     if json.loads(payload).get('data')==data.decode():break
-  out={'ok':True,'peer':peer,'reply':json.loads(payload)}
+  reply=json.loads(payload)
+  if q.get('response_bytes'):
+   bulk=reply.pop('bulk');assert bulk=='x'*q['response_bytes'];reply['bulk_bytes']=len(bulk)
+  out={'ok':True,'peer':peer,'reply':reply}
  except Exception as e:out={'ok':False,'error':str(e)}
  print(json.dumps(out),flush=True)
 '''
@@ -174,31 +191,28 @@ def main():
             run('ip','link','set',a,'netns',names['eg']);run('ip','link','set',b,'netns',names['out'])
             for ns,dev in [(names['eg'],a),(names['out'],b)]:
                 run('ip','-n',ns,'link','set',dev,'up')
-                run('ip','netns','exec',ns,'ethtool','-K',dev,'tx','off','rx','off','gso','off','gro','off','tso','off',check=False)
             run('ip','-n',names['out'],'addr','add',network+'.2/24','dev',b)
         run('ip','-n',names['out'],'addr','add','203.0.113.11/32','dev','lo')
         run('ip','-n',names['out'],'addr','add','203.0.113.12/32','dev','lo')
         spawn(['ip','netns','exec',names['out'],'python3','-u','-c',SERVER],'backend.log')
         build=Path(args.vpp_build);lib=next((build/'lib').glob('*-linux-gnu'))
-        area={'vni':7,'pools':[{'id':0,'exit':'x','addresses':['192.0.2.1'],'max_connections':2},
-                               {'id':1,'exit':'y','addresses':['198.19.0.1'],'max_connections':1}],
+        area={'vni':7,'pools':[{'name':'primary','interface':tag+'x0','next_hop':'192.0.2.2','addresses':['192.0.2.1'],'max_connections':2},
+                               {'name':'secondary','interface':tag+'x1','next_hop':'198.19.0.2','addresses':['198.19.0.1'],'max_connections':1}],
               'acl':[{'destination':'203.0.113.0/24','protocol':'any','action':'allow'},
                      {'destination':'198.18.1.1/32','protocol':'udp','action':'allow'}],
-              'routes':[{'destination':'0.0.0.0/0','pool':0},{'destination':'203.0.113.12/32','pool':1}],
-              'dnat':[{'destination':'198.18.1.1/32','protocol':'udp','pool':1,'target':'203.0.113.11','target_port':18080}]}
+              'routes':[{'destination':'0.0.0.0/0','pool':'primary'},{'destination':'203.0.113.12/32','pool':'secondary'}],
+              'dnat':[{'destination':'198.18.1.1/32','protocol':'udp','pool':'secondary','target':'203.0.113.11','target_port':18080}]}
         bits=4 if args.encap=='ether' and not args.legacy else 0
         cfg={'name':tag,'runtime_dir':str(runtime_dir),'vpp':str(build/'bin/vpp'),
-             'plugin_path':str(lib/'vpp_plugins'),'library_path':str(lib),'max_connections':65536,
+             'plugin_path':str(lib/'vpp_plugins'),'library_path':str(lib),
              'interfaces':[{'name':gateway,'address':'198.18.0.1/24','mtu':9000},
                            {'name':tag+'x0','address':'192.0.2.1/24','mtu':1500},
                            {'name':tag+'x1','address':'198.19.0.1/24','mtu':1500}],
-             'exits':[{'name':'x','interface':tag+'x0','next_hop':'192.0.2.2','addresses':['192.0.2.1']},
-                      {'name':'y','interface':tag+'x1','next_hop':'198.19.0.2','addresses':['198.19.0.1']}],
-             'attachments':[{'name':'local','interface':gateway,'peer':'198.18.0.2','area':7,'locator':args.locator,
-                             'port_base':51000,'tlv_class':258,'tlv_type':129,'encapsulation':args.encap,'generation_bits':bits,'gateway':'10.7.0.1'}],
+             'attachments':[{'name':'local','interface':gateway,'peer':['198.18.0.2'],'locator':args.locator}],
              'area_files':['area.json']}
+        if args.locator=='tlv':cfg['attachments'][0].update(tlv_class=258,tlv_type=129)
         if args.remote:
-            cfg['attachments'][0]['peer']='198.18.1.2'
+            cfg['attachments'][0]['peer']=['198.18.1.2']
             cfg['attachments'][0]['next_hop']='198.18.0.2'
         cpus=sorted(os.sched_getaffinity(0))
         if len(cpus)<args.workers+1:raise RuntimeError('not enough CPUs for requested workers')
@@ -249,14 +263,16 @@ def main():
         check('default-deny ACL',not denied['ok'],denied)
         dnat=call('gb','dnat',31300,'198.18.1.1',port=53)
         check('DNAT fixes Pool and restores original tuple',dnat.get('ok') and dnat['peer']==['198.18.1.1',53] and dnat['reply']['peer'][0]=='198.19.0.1',dnat)
-        tcp=call('gb','tcp',31400,'203.0.113.11',protocol='tcp')
-        check('native TCP roundtrip',tcp.get('ok'),tcp)
+        tcp=call('gb','tcp',31400,'203.0.113.11',protocol='tcp',response_bytes=1<<20)
+        check('native TCP large return with default backend offloads',tcp.get('ok') and tcp['reply'].get('bulk_bytes')==1<<20,tcp)
+        wait_status(lambda st: 'GSO packets segmented' in st['native_errors'])
+        check('large return exercises native GSO segmentation',True)
         before=status();(output/'status-before.json').write_text(json.dumps(before,indent=2))
         lower=copy.deepcopy(area);lower['pools'][0]['max_connections']=1
         reload_area(lower)
         kept=call('ga','a1',31000,'203.0.113.11',data='still-authorized')
         check('lowering quota preserves established mapping',kept.get('ok') and kept['reply']['peer']==a1['reply']['peer'],kept)
-        invalid=copy.deepcopy(lower);invalid['routes'][0]['pool']=63
+        invalid=copy.deepcopy(lower);invalid['routes'][0]['pool']='missing'
         failure=reload_area(invalid,ok=False)
         check('invalid file reload is rejected',bool(failure['reload_error']),failure['reload_error'])
         after_failure=call('ga','a1',31000,'203.0.113.11')

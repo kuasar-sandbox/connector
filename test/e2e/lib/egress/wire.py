@@ -81,19 +81,20 @@ def peer_process(config):
             sock.bind((config.get('address','198.18.0.2'),destination_port))
         payload = marker + bytes.fromhex(q.get('extra', ''))
         udp = struct.pack('!HHHH', 31000+flow, 53, 8+len(payload), 0) + payload
+        source_ip = q.get('inner_ip',inner_address(slot))
         protocol = 17
         if q.get('tcp'):
             protocol = 6
             tcp = struct.pack('!HHIIBBHHH', 31000+flow, 53, 1, 0, 0x50, 2, 65535, 0, 0)
-            pseudo = socket.inet_aton('10.7.0.2')+socket.inet_aton('198.18.1.1')+b'\0\x06'+struct.pack('!H', len(tcp))
+            pseudo = socket.inet_aton(source_ip)+socket.inet_aton('198.18.1.1')+b'\0\x06'+struct.pack('!H', len(tcp))
             udp = tcp[:16]+struct.pack('!H', checksum(pseudo+tcp))+tcp[18:]
         if q.get('ip_protocol'):
             protocol=q['ip_protocol'];udp=payload
-        inner = ip_packet(udp, protocol=protocol, ident=nonce & 65535, fragment=0x4000 if q.get('df', True) else 0, ttl=q.get('ttl', 64), source=inner_address(slot))
+        inner = ip_packet(udp, protocol=protocol, ident=nonce & 65535, fragment=0x4000 if q.get('df', True) else 0, ttl=q.get('ttl', 64), source=source_ip)
         packets = [inner]
         if q.get('fragment_inner'):
-            packets = [ip_packet(udp[:24], ident=nonce & 65535, fragment=0x2000, source=inner_address(slot)),
-                       ip_packet(udp[24:], ident=nonce & 65535, fragment=3, source=inner_address(slot))]
+            packets = [ip_packet(udp[:24], ident=nonce & 65535, fragment=0x2000, source=source_ip),
+                       ip_packet(udp[24:], ident=nonce & 65535, fragment=3, source=source_ip)]
             packets.reverse()  # Native reassembly must handle out-of-order input.
         packets = [geneve(slot, area, q.get('generation', 1), p, config['locator']) for p in packets]
         if q.get('mutations'):
@@ -105,6 +106,11 @@ def peer_process(config):
             data = bytearray(packets[0]); offset = 8+(data[0] & 63)*4
             data[offset:offset] = bytes.fromhex('1234020101020304')
             data[0] += 2; packets = [bytes(data)]
+        if q.get('max_options'):
+            data=bytearray(packets[0]);offset=8+(data[0]&63)*4
+            extra=252-(data[0]&63)*4
+            data[offset:offset]=bytes.fromhex('12340200')*(extra//4)
+            data[0]=63;packets=[bytes(data)]
         if q.get('critical'):
             data = bytearray(packets[0]); offset = 8+(data[0] & 63)*4
             data[offset:offset] = bytes.fromhex('12348200')
@@ -116,7 +122,7 @@ def peer_process(config):
             for offset, data in [(0, payload[:32]), (32, payload[32:])]:
                 header = struct.pack('!BBHHHBBH4s4s', 0x45, 0, 20+len(data), nonce & 65535,
                     0x2000 if offset == 0 else offset//8, 64, 17, 0,
-                    socket.inet_aton(config.get('address','198.18.0.2')), socket.inet_aton('198.18.0.1'))
+                    socket.inet_aton(config.get('address','198.18.0.2')), socket.inet_aton(config.get('gateway','198.18.0.1')))
                 fragments.append(header[:10]+struct.pack('!H', checksum(header))+header[12:]+data)
             packets = list(reversed(fragments))
             outer = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
@@ -130,7 +136,7 @@ def peer_process(config):
         expect = q.get('expect', True)
         for attempt in range(3 if expect else 1):
             for packet in packets:
-                (outer or sock).sendto(packet, ('198.18.0.1', destination_port))
+                (outer or sock).sendto(packet, (config.get('gateway','198.18.0.1'), destination_port))
             if outer:
                 outer.close(); outer = None
             deadline = time.monotonic() + (1 if expect else .25)
@@ -165,7 +171,7 @@ def peer_process(config):
                     assert checksum(body) == 0
                     if q.get('icmp'):
                         return {'ok': True, 'type': body[0], 'code': body[1], 'mtu': int.from_bytes(body[6:8], 'big'),
-                                'quote': body[8:].hex(), 'mac': wire['mac']}
+                                'quote': body[8:].hex(), 'mac': wire['mac'], 'source':socket.inet_ntoa(inner[12:16])}
                     continue
                 if wire['protocol'] != 17 or body[8:20] != marker:
                     continue
@@ -173,7 +179,7 @@ def peer_process(config):
                 source, target, length, csum = struct.unpack('!HHHH', body[:8])
                 assert (source, target) == (53, 31000+flow)
                 assert inner[12:16] == socket.inet_aton('198.18.1.1')
-                assert inner[16:20] == socket.inet_aton(inner_address(slot))
+                assert inner[16:20] == socket.inet_aton(source_ip)
                 if csum:
                     assert checksum(inner[12:20]+b'\0\x11'+struct.pack('!H', length)+body[:length]) == 0
                 assert wire['mac'] == '02fe'+struct.pack('!I', q.get('generation', 1)).hex()
@@ -334,33 +340,28 @@ def main():
         result['workers']=min(2,len(cpus)-1)
         cfg = dict(name=tag, runtime_dir=str(out/'runtime'), vpp=str(build/'bin/vpp'),
                    plugin_path=str(lib/'vpp_plugins'), library_path=str(lib), main_core=cpus[0], workers=cpus[1:3],
-                   max_connections=262144, max_contexts=65536, timeouts=dict(udp=900,tcp_transitory=900,tcp_established=900,icmp=900), interfaces=[], exits=[], attachments=[], areas=[])
+                   timeouts=dict(udp=900,tcp_transitory=900,tcp_established=900,icmp=900), interfaces=[], attachments=[], areas=[])
         for index in range(len(peer_keys)+1):
-            cfg['interfaces'].append(dict(name=tag+'i'+str(index), address='192.0.2.1/24' if index == len(peer_keys) else '198.18.0.1/24', mtu=1500 if index == len(peer_keys) else 9000))
-        cfg['exits'] = [dict(name='public', interface=tag+'i'+str(len(peer_keys)), next_hop='192.0.2.2', addresses=['192.0.2.'+str(i) for i in [1,3,4,5,6,7,8,9]])]
-        second_exit=copy.deepcopy(cfg['exits'][0]);second_exit['name']='public-other';cfg['exits'].append(second_exit)
+            cfg['interfaces'].append(dict(name=tag+'i'+str(index), address='192.0.2.1/24' if index == len(peer_keys) else '198.18.0.%d/24'%(1+index*2), mtu=1500 if index == len(peer_keys) else 9000))
         wide_policy = args.locator == 'tlv' and args.contexts == 32
         if wide_policy:
-            # Cross the previous fixed counts and FIB number-range boundary.
             extra_addresses = ['198.51.%d.%d' % (i//256,i%256) for i in range(1,258)]
-            cfg['exits'][0]['addresses'] += extra_addresses
             run('ip','-n',namespaces['out'],'route','add','198.51.0.0/16','via','192.0.2.1')
-            for index in range(1024):
-                cfg['exits'].append(dict(cfg['exits'][1],name='extra-'+str(index)))
         for area in [7, 8]:
-            cfg['areas'].append(dict(vni=area, pools=[dict(id=0, exit='public' if area==7 else 'public-other', addresses=['192.0.2.'+str(i) for i in ([1,4,6,8] if area==7 else [3,5,7,9])], max_connections=args.flows)],
-                acl=[dict(destination='198.18.1.1/32', protocol='any', action='allow')], routes=[dict(destination='0.0.0.0/0',pool=0)],
-                dnat=[dict(destination='198.18.1.1/32', protocol=protocol, pool=0, target='203.0.113.11', target_port=18080) for protocol in ['udp','tcp']]))
-            for index, peer in enumerate(peer_keys):
-                cfg['attachments'].append(dict(name=peer+str(area), interface=tag+'i'+str(index), peer='198.18.0.2', area=area,
-                    locator=args.locator, tlv_class=258, tlv_type=129, encapsulation='ether', generation_bits=4, gateway='10.7.0.1', mtu=1500))
+            cfg['areas'].append(dict(vni=area, pools=[dict(name='public',interface=tag+'i'+str(len(peer_keys)),next_hop='192.0.2.2',addresses=['192.0.2.'+str(i) for i in ([1,4,6,8] if area==7 else [3,5,7,9])], max_connections=args.flows)],
+                acl=[dict(destination='198.18.1.1/32', protocol='any', action='allow')], routes=[dict(destination='0.0.0.0/0',pool='public')],
+                dnat=[dict(destination='198.18.1.1/32', protocol=protocol, pool='public', target='203.0.113.11', target_port=18080) for protocol in ['udp','tcp']]))
+        for index, peer in enumerate(peer_keys):
+            attachment=dict(name=peer, interface=tag+'i'+str(index),peer=['198.18.0.2'],locator=args.locator,mtu=1500)
+            if args.locator=='tlv':attachment.update(tlv_class=258,tlv_type=129)
+            cfg['attachments'].append(attachment)
         config = out/'gateway.json'; config.write_text(json.dumps(cfg))
         gateway = spawn(['ip', 'netns', 'exec', namespaces['eg'], args.ctl, 'egress', 'serve', '--config', str(config)], 'gateway.log')
         wait_status(lambda st: st['configuration_generation']==1,timeout=120)
         spawn(['ip', 'netns', 'exec', namespaces['out'], sys.executable, __file__, 'backend'], 'backend.log')
-        peers = [spawn(['ip', 'netns', 'exec', namespaces[key], sys.executable, __file__, 'peer', json.dumps({'locator': args.locator,'index':index})]) for index,key in enumerate(peer_keys)]
+        peers = [spawn(['ip', 'netns', 'exec', namespaces[key], sys.executable, __file__, 'peer', json.dumps({'locator': args.locator,'index':index,'gateway':'198.18.0.%d'%(1+index*2)})]) for index,key in enumerate(peer_keys)]
         a = query(peers[0]); b = query(peers[1])
-        check('overlapping outer and inner identities remain independent', a['peer'] != b['peer'], [a, b])
+        check('same peer locator and inner IP at different gateway IPs remain independent', a['peer'] != b['peer'], [a, b])
         generation=query(peers[0],generation=2)
         check('new generation is learned automatically and keeps its own return marker',generation['peer']!=a['peer'])
         check('previous forwarding context keeps its original return marker',query(peers[0])['peer']==a['peer'])
@@ -368,6 +369,7 @@ def main():
         check('ordinary IPv4 protocol uses selected SNAT Pool',generic['snat'] in cfg['areas'][0]['pools'][0]['addresses'],generic)
         opaque = query(peers[0], opaque=True)
         check('opaque noncritical options are not reflected', opaque['options'] == ('0102810100000000' if args.locator == 'tlv' else ''), opaque)
+        check('full protocol option length accepts opaque noncritical metadata',query(peers[0],max_options=True)['ok'])
         for label, mutations in [('version', [[0, 0x40]]), ('reserved flags', [[1, 1]]), ('reserved byte', [[7, 1]]), ('unknown Area', [[6, 9]])]:
             query(peers[0], mutations=mutations, expect=False); check('reject '+label, True)
         query(peers[0], critical=True, expect=False); check('reject unknown critical option', True)
@@ -378,7 +380,7 @@ def main():
         check('large return reassembles and fragments within tunnel MTU', large['fragments'] >= 2 and large['payload_bytes'] == 2012, large)
         before = wait_status(lambda st: st['connections']>=3)
         pmtu = query(peers[0], flow=20, extra=(b'p'*1700).hex(), icmp=True)
-        check('pre-NAT DF error contains original tuple', pmtu['type'] == 3 and pmtu['code'] == 4 and pmtu['mtu'] == 1500 and bytes.fromhex(pmtu['quote'])[12:16] == socket.inet_aton('10.7.0.2'), pmtu)
+        check('pre-NAT DF error contains original tuple', pmtu['type'] == 3 and pmtu['code'] == 4 and pmtu['mtu'] == 1500 and pmtu['source']=='198.18.0.1' and bytes.fromhex(pmtu['quote'])[12:16] == socket.inet_aton('10.7.0.2'), pmtu)
         time.sleep(1.2); after = status()
         check('PMTU failure does not reserve quota', sum(p['current'] for p in before['pools']) == sum(p['current'] for p in after['pools']))
         quoted = query(peers[0], flow=21, tcp=True, icmp=True)
@@ -455,58 +457,97 @@ def main():
         area_update(original_area)
         query(peers[0],generation=2)
         check('reused resource accepts valid traffic without a new control-plane identity',True)
-        # Reload the full main configuration, including Area/profile membership.
+        # VNI selects the configured Area, with no per-Area attachment entry.
         retained=query(peers[0],generation=2)['peer']
         new_area=copy.deepcopy(original_area);new_area['vni']=9
-        new_profile=copy.deepcopy(cfg['attachments'][0]);new_profile.update(name='new-area',area=9)
-        cfg['areas'].append(new_area);cfg['attachments'].append(new_profile);reload_config(cfg)
+        cfg['areas'].append(new_area);reload_config(cfg)
         area9=query(peers[0],area=9)['peer']
-        check('Area and attachment additions become usable without restart',area9!=retained)
-        broken=copy.deepcopy(cfg);broken['areas'][0]['acl']=[];broken['areas'][-1]['routes'][0]['pool']=63
+        check('new Area is usable through the existing ingress without registration',area9!=retained)
+        broken=copy.deepcopy(cfg);broken['areas'][0]['acl']=[];broken['areas'][-1]['routes'][0]['pool']='missing'
         rejected=reject_reload(broken)
         check('invalid later Area leaves the whole previous configuration active',
               query(peers[0],generation=2)['peer']==retained and query(peers[0],area=9)['peer']==area9,rejected['reload_error'])
-        cfg['max_contexts']=1;reload_config(cfg)
-        check('lower context budget preserves existing flows',query(peers[0],generation=2)['peer']==retained)
-        query(peers[0],slot=6,expect=False);check('lower context budget rejects only new contexts',True)
-        cfg['max_contexts']=65536;reload_config(cfg)
-        query(peers[0],slot=6);check('increased context budget permits traffic automatically',True)
-        run('ip','-n',namespaces[peer_keys[0]],'addr','add','198.18.0.3/24','dev',tag+'p0')
-        changed_peer=spawn(['ip','netns','exec',namespaces[peer_keys[0]],sys.executable,__file__,'peer',
-                           json.dumps({'locator':args.locator,'index':0,'address':'198.18.0.3'})])
-        cfg['attachments'][-1]['peer']='198.18.0.3';reload_config(cfg)
+        cfg['areas']=cfg['areas'][:-1];reload_config(cfg)
         query(peers[0],area=9,expect=False)
-        query(changed_peer,area=9)
-        check('peer profile replacement updates return route and disables old peer',True)
-        check('profile replacement preserves other attachment mappings',query(peers[0],generation=2)['peer']==retained)
-        cfg['areas']=cfg['areas'][:-1];cfg['attachments']=cfg['attachments'][:-1];reload_config(cfg)
-        query(changed_peer,area=9,expect=False)
-        check('Area and profile removal revoke only their forwarding contexts',query(peers[0],generation=2)['peer']==retained)
+        check('Area removal revokes only that VNI',query(peers[0],generation=2)['peer']==retained)
+        # One source range can admit many distinct actual peers, then revoke
+        # one without changing another peer or gateway's established mapping.
+        run('ip','-n',namespaces[peer_keys[0]],'addr','add','198.18.0.20/24','dev',tag+'p0')
+        changed_peer=spawn(['ip','netns','exec',namespaces[peer_keys[0]],sys.executable,__file__,'peer',
+                           json.dumps({'locator':args.locator,'index':0,'address':'198.18.0.20'})])
+        query(changed_peer,expect=False)
+        cfg['attachments'][0]['peer']=['198.18.0.0/24'];reload_config(cfg)
+        second_source=query(changed_peer)['peer']
+        check('source CIDR admits distinct actual peer identities',second_source!=retained)
+        del cfg['attachments'][0]['peer'];reload_config(cfg)
+        check('omitted peer preserves the actual peer and return mapping',query(changed_peer)['peer']==second_source)
+        cfg['attachments'][0]['peer']=['198.18.0.2','198.18.0.20'];reload_config(cfg)
+        check('multiple allowed IPs preserve existing peer mappings',query(peers[0],generation=2)['peer']==retained)
+        cfg['attachments'][0]['peer']=['198.18.0.2'];reload_config(cfg)
+        query(changed_peer,expect=False)
+        check('source admission removal preserves another peer mapping',query(peers[0],generation=2)['peer']==retained)
+        # All inner IPs of one outer identity share its Pool quota.
+        for i in range(args.flows):
+            query(peers[0],slot=625,area=7,inner_ip='10.99.%d.%d'%(i//250,i%250+1))
+        query(peers[0],slot=625,area=7,inner_ip='10.98.0.1',expect=False)
+        query(peers[0],slot=625,area=7,generation=2,inner_ip='10.98.0.1',expect=False)
+        query(peers[0],slot=626,area=7,inner_ip='10.98.0.1')
+        check('multiple inner IPs share one access allowance while another locator is independent',True)
+        # Moving a Pool to an already admitted transit interface exercises
+        # both resource versioning and unambiguous ingress/exit sharing.
+        run('ip','netns','exec',namespaces[peer_keys[0]],'sysctl','-qw','net.ipv4.conf.all.arp_announce=2')
+        run('ip','-n',namespaces[peer_keys[0]],'addr','add','203.0.113.11/32','dev','lo')
+        run('ip','-n',namespaces[peer_keys[0]],'addr','add','198.18.1.1/32','dev','lo')
+        spawn(['ip','netns','exec',namespaces[peer_keys[0]],sys.executable,__file__,'backend'],'shared-backend.log')
+        changed=copy.deepcopy(cfg['areas'][0]);changed['pools'][0].update(interface=tag+'i0',next_hop='198.18.0.2',addresses=['198.18.0.10'])
+        area_update(changed)
+        check('Pool interface reload retains old connection exit',query(peers[0],generation=2)['peer']==retained)
+        new_exit=query(peers[0],slot=627,area=7)['peer']
+        check('new connections use a shared ingress and exit interface',new_exit[0]=='198.18.0.10',new_exit)
+        area_update(original_area)
+        check('old shared-interface mapping survives restoration of Pool definition',query(peers[0],slot=627,area=7)['peer']==new_exit)
         for profile in cfg['attachments']:
             if profile['interface']==cfg['attachments'][0]['interface']:profile['mtu']=1400
         reload_config(cfg)
         mtu_return=query(peers[0],generation=2,extra=(b'L'+struct.pack('!H',2000)).hex())
         check('attachment MTU reload applies while retaining the mapping',mtu_return['peer']==retained and mtu_return['fragments']>=2)
         expire_all();check('reload-created contexts are reclaimed without lifecycle notification',True)
+        # A newly admitted VTEP cannot steal a still-live public NAT address.
+        # Rejection is atomic, and the same config can load after idle expiry.
+        if args.contexts <= 32:
+            saved=copy.deepcopy(cfg)
+            first=copy.deepcopy(cfg['areas'][0]);first['pools'][0]['addresses']=['192.0.2.1'];area_update(first)
+            old_public=query(peers[0],generation=2)['peer']
+            assert old_public[0]=='192.0.2.1'
+            first['pools'][0]['addresses']=['192.0.2.4'];area_update(first)
+            candidate=copy.deepcopy(cfg)
+            candidate['attachments'].append(dict(name='new-vtep',interface=tag+'i'+str(len(peer_keys)),peer=['192.0.2.2']))
+            rejected=reject_reload(candidate)
+            check('reload rejects VTEP overlap with a retained SNAT mapping atomically',
+                  'retained' in rejected['reload_error'] and query(peers[0],generation=2)['peer']==old_public,
+                  rejected['reload_error'])
+            expire_all();reload_config(candidate)
+            check('VTEP address becomes available after old NAT mappings expire',True)
+            cfg=saved;reload_config(cfg)
         if wide_policy:
             retained = query(peers[0],generation=2)['peer']
             baseline = copy.deepcopy(cfg)
             wide = copy.deepcopy(cfg)
             area = wide['areas'][0]
             area['pools'][0]['addresses'] += extra_addresses
-            area['pools'] += [dict(id=i*65537,exit='public',addresses=['192.0.2.1'],max_connections=1)
-                              for i in range(1,66)]
-            area['pools'].append(dict(id=0xffffffff,exit='extra-1023',addresses=['192.0.2.1'],max_connections=1))
+            area['pools'] += [dict(name='pool-'+str(i),interface=tag+'i'+str(len(peer_keys)),next_hop='192.0.2.2',addresses=['192.0.2.1'],max_connections=1)
+                              for i in range(1,1025)]
+            area['pools'].append(dict(name='large-name-4294967295',interface=tag+'i'+str(len(peer_keys)),next_hop='192.0.2.2',addresses=['192.0.2.1'],max_connections=1))
             area['acl'] = [dict(destination='10.%d.%d.0/24' % (i//256,i%256),protocol='any',action='deny')
                            for i in range(4097)] + area['acl']
-            area['routes'] = [dict(destination='10.%d.%d.0/24' % (i//256,i%256),pool=0xffffffff)
-                              for i in range(4097)] + [dict(destination='0.0.0.0/0',pool=0xffffffff)]
-            area['dnat'] = [dict(destination='10.%d.%d.0/24' % (i//256,i%256),protocol='udp',pool=0xffffffff,
+            area['routes'] = [dict(destination='10.%d.%d.0/24' % (i//256,i%256),pool='large-name-4294967295')
+                              for i in range(4097)] + [dict(destination='0.0.0.0/0',pool='large-name-4294967295')]
+            area['dnat'] = [dict(destination='10.%d.%d.0/24' % (i//256,i%256),protocol='udp',pool='large-name-4294967295',
                                 target='203.0.113.11',target_port=18080) for i in range(4097)] + area['dnat']
-            for rule in area['dnat']: rule['pool']=0xffffffff
+            for rule in area['dnat']: rule['pool']='large-name-4294967295'
             for i in range(257):
                 extra=copy.deepcopy(original_area);extra['vni']=1000+i;wide['areas'].append(extra)
-                profile=copy.deepcopy(wide['attachments'][0]);profile.update(name='wide-'+str(i),area=1000+i)
+                profile=copy.deepcopy(wide['attachments'][0]);profile.update(name='wide-'+str(i),peer=['198.51.%d.%d'%(i//250,i%250+1)])
                 wide['attachments'].append(profile)
             reload_config(wide,timeout=120);cfg=wide
             check('large policy preserves established Pool mapping',query(peers[0],generation=2)['peer']==retained)
@@ -514,18 +555,18 @@ def main():
             query(peers[0],slot=5000,flow=1,expect=False)
             query(peers[0],slot=5001,area=7)
             query(peers[0],area=1256)
-            check('dynamic Areas Pools Exits rules and TLV IDs exceed prior fixed limits',True,
-                  dict(areas=len(wide['areas']),attachments=len(wide['attachments']),exits=len(wide['exits']),
+            check('dynamic Areas named Pools source ranges rules and TLV IDs exceed prior fixed limits',True,
+                  dict(areas=len(wide['areas']),attachments=len(wide['attachments']),
                        pools=len(area['pools']),acl=len(area['acl']),dnat=len(area['dnat']),routes=len(area['routes']),
-                       pool_id=0xffffffff,tlv_locator=5000,snat_addresses=len(area['pools'][0]['addresses'])))
+                       pool_name='large-name-4294967295',tlv_locator=5000,snat_addresses=len(area['pools'][0]['addresses'])))
             area['pools'].reverse();reload_config(wide,timeout=120)
             query(peers[0],slot=5000,flow=1,expect=False)
-            check('Pool reorder retains sparse-ID quota and old flows',query(peers[0],generation=2)['peer']==retained)
-            area['pools']=[p for p in area['pools'] if p['id']!=0xffffffff]
-            for rule in [*area['routes'],*area['dnat']]:rule['pool']=65537
+            check('Pool reorder retains named quota and old flows',query(peers[0],generation=2)['peer']==retained)
+            area['pools']=[p for p in area['pools'] if p['name']!='large-name-4294967295']
+            for rule in [*area['routes'],*area['dnat']]:rule['pool']='pool-1'
             reload_config(wide,timeout=120)
             query(peers[0],slot=5000)
-            check('removed sparse-ID Pool releases mappings without affecting other Pools',query(peers[0],generation=2)['peer']==retained)
+            check('removed named Pool releases mappings without affecting other Pools',query(peers[0],generation=2)['peer']==retained)
             cfg=baseline;reload_config(cfg)
             query(peers[0],slot=5000)
             expire_all()

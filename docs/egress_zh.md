@@ -8,7 +8,7 @@ Egress 是通过文件配置的 IPv4 Geneve 转发网关，提供有序 ACL、TC
 
 ## 部署和归属
 
-按照[构建与验收](../egress/README_zh.md)构建相互匹配的原生运行时和纯 Go 控制程序。可执行文件、运行库与插件须配套。配置中的网关/SNAT 地址归 VPP 所有，Linux 不得在同一接口重复持有这些地址；无关 Linux IPv4 地址可以保留。AF_PACKET 的校验和及分段 offload 通过内核 API 关闭并核验。
+按照[构建与验收](../egress/README_zh.md)构建相互匹配的原生运行时和纯 Go 控制程序。可执行文件、运行库与插件须配套。配置中的网关/SNAT 地址归 VPP 所有，Linux 不得在同一接口重复持有这些地址；无关 Linux IPv4 地址可以保留。数据面在转发前处理 AF_PACKET 携带的校验和和 TCP 分段元数据，不要求修改借用设备或外部对端的 offload 设置；本地专用 veth 仍按既有 vSwitch 报文契约准备。
 
 本地部署参考 [link.json](../dist/egress/link.json)、[switch.json](../dist/egress/switch.json)、[gateway.json](../dist/egress/gateway.json) 和 [area7.json](../dist/egress/area7.json)。部署前替换示例地址和资源；ARM64 使用 `aarch64-linux-gnu` 库路径。
 
@@ -19,9 +19,9 @@ Egress 是通过文件配置的 IPv4 Geneve 转发网关，提供有序 ACL、TC
 5. 运行 `connector-ctl egress link start --config link.json --switch-config switch.json --mode veth`。默认模式与既有 vSwitch 一样为 `tap`。包装流程从记录的稳定 owner namespace 启动 vSwitch。
 6. 通过既有 vSwitch 接口 Attach 沙箱，并验证所需 Pool 的真实请求与回包。无需调用 Egress 登记接口。
 
-重复 prepare 核验并复用自有 pair，拒绝外部同名设备、变化的 namespace 身份和已损坏的已安装 pair。每个本地 vSwitch 使用独立 pair，多个 pair 可以共用 Egress 实例。独立 underlay FIB 支持外层地址重叠。既有 vSwitch `transit_dev_mtu:auto` 可以将其端点 MTU 调低至网关预留 MTU 以下，这不改变 pair 归属。
+重复 prepare 核验并复用自有 pair，拒绝外部同名设备、变化的 namespace 身份和已损坏的已安装 pair。每个本地 vSwitch 使用独立 pair，多个 pair 可以共用 Egress 实例。不同 gatewayIP 使用不同的接收地址；相同 peer、locator 和内层地址可以分别接入这些 gatewayIP，而不串用状态。既有 vSwitch `transit_dev_mtu:auto` 可以将其端点 MTU 调低至网关预留 MTU 以下，这不改变 pair 归属。
 
-远端部署使用外部拥有的 transit 设备，不使用本地 pair 管理器。`peer` 是 vSwitch 外层源地址，路由接入的 `next_hop` 是同链路路由器，默认等于 `peer`。沿用 vSwitch 的 transit 地址与 Geneve 网关配置。接收接口、本地 VTEP、peer 和 Area 选择配置的转发域。Geneve 和 generation MAC 不是密码学认证，underlay 资源归属必须防止发送方伪造。
+远端部署使用外部拥有的 transit 设备。`peer` 为可选的 IPv4 地址/CIDR 列表，例如 `["198.18.0.2", "203.0.113.0/24"]`；省略或空列表不额外限制来源，实际 peer 从外层源 IP 获取。`next_hop` 省略时对实际 peer 按直连回程处理，路由接入应指定同链路路由器。报文 VNI 直接选择已配置 Area，不按 attachment 重复登记 Area。同一入口和外层网关地址的来源范围重叠时，解码、MTU 和回程约定必须一致，否则整批拒绝。同一网关/来源范围不能指向不同回程设备；不同 peer 范围可以跨设备复用网关地址。远端 transit 与 Pool 可以共用接口，但 Geneve 网关地址必须与 SNAT 地址分离；本地专用 veth 保持独立。Geneve 和 generation MAC 不是密码学认证，underlay 资源归属必须防止发送方伪造。
 
 ## 文件与 reload
 
@@ -37,7 +37,7 @@ kill -HUP "$(cat /var/lib/connector-egress/egress-local/pid)"
 
 每次 reload 重新读取主配置和全部关联 Area 文件，完成整份候选配置的校验及暂存，再在同一个 worker barrier 内发布全部 Area 和接入配置。解析、引用或准备失败时保留原配置。不再存在独立可写的在线策略存储。使用原子替换文件，并在整套文件准备完成后发送 SIGHUP。
 
-reload 支持 Area 增删、ACL/DNAT/路由/Pool、接入配置及 peer 路由、上下文预算、空闲回收宽限和原生协议超时。删除 Area 时须同时删除其引用。当前实现中，运行程序/库路径、CPU/堆资源、物理接口/Exit 拓扑和 NAT 预分配容量需要重启；此类变更在发布前被拒绝，保留运行配置。原生发布应答不明确时停止网关，不报告未经证明的回滚。
+reload 支持 Area 增删、ACL/DNAT/路由/Pool、接入来源及 peer 回程、空闲回收和协议超时。在已接入设备范围内，Pool 的 `interface`、`next_hop` 和 `addresses` 也支持 reload；旧连接继续引用原出口资源直到回收，新连接采用新定义。新增入口地址若与旧连接仍在使用的 SNAT 地址重叠，整批 reload 拒绝；待旧映射回收后可重试。删除 Area 时同步更新 Area 文件清单。程序/库路径、CPU/预分配内存、物理设备接管和 namespace 变化需要维护重启；此类变更在发布前被拒绝，保留运行配置。原生发布应答不明确时停止网关，不报告未经证明的回滚。
 
 普通路由、DNAT 和 SNAT 选择变化作用于新映射，既有映射保留原公网元组、目的转换及出口。降低 Pool 额度只限制新映射，不驱逐已有映射。ACL 撤销、Pool/Area 删除和原路径不可用只使相关映射失效。不兼容的接入线协议/网关变更回收相关上下文；回程标记不会借用其他代次的身份。
 
@@ -48,18 +48,15 @@ reload 支持 Area 增删、ACL/DNAT/路由/Pool、接入配置及 peer 路由�
 | 对象 | 含义 |
 |---|---|
 | Interface | Linux 设备名、VPP 拥有的 IPv4 `address` 前缀和物理 L3 `mtu`。 |
-| Exit | 物理接口、同链路 `next_hop` 和可达 SNAT `addresses`。多个 Exit 可以共用接口；回包查找使用该物理接口的 FIB，各 Exit 保持独立路由 FIB。 |
-| Attachment | transit 接口、peer、Area、locator、封装、既有 generation 位宽和内层网关。`inner_mtu` 默认 1500，可选 `mtu` 限定外层路径。 |
+| Attachment | `name`、`interface`、可选 `peer` 来源列表、可选回程 `next_hop`、`locator` 及 TLV 解码字段。`locator` 默认 `port`；`inner_mtu` 默认 1500，`mtu` 默认采用接口 MTU。Ether/IP 和 fencing 从报文识别。 |
 | Area | 逻辑 `vni`、有序 `acl`、有序 TCP/UDP `dnat`、最长前缀 `routes` 和 Pool。 |
-| Pool | Area 内唯一的无符号 32 位 ID、Exit 及其地址子集。`max_connections` 限制每个转发上下文/Pool 的存活 NAT 映射，零取消业务额度，不取消物理资源限制。 |
+| Pool | Area 内唯一的 `name`，直接定义 `interface`、同链路 `next_hop` 和 SNAT `addresses`；路由与 DNAT 按名称引用。`max_connections` 限制每个外层接入在该 Pool 的存活 NAT 映射，零或省略取消业务额度。 |
 | Match | 规范 IPv4 目的前缀和 `any`、`icmp`、`tcp` 或 `udp`；端口仅适用于 TCP/UDP。`any` 也覆盖其他普通 IPv4 协议。 |
 
 ACL 对 DNAT 前的原始目的地址执行 first-match/default-deny。DNAT 命中直接选择其 Pool，否则使用最长前缀路由。无匹配路由、所选 Pool 耗尽或出口不可用时失败，不选择其他 Pool。没有端口的 IPv4 协议在远端地址/协议元组重叠时需要不同公网地址，因为无法用转换端口区分回包。
 
 | 资源配置 | 默认值与含义 |
 |---|---|
-| `max_contexts` | 65536 个并发转发上下文，包括等待安全回收的对象；可配置更大值，不是 4096 或 10000 的网关硬上限。 |
-| `max_connections` | **每个 worker** 默认 65536 条原生映射，可按可用资源调大；与 Pool 业务额度独立。容量验收使用每 worker 262144。 |
 | `heap_size` | 默认 `4G` 原生主堆预留，可使用正整数加 `M` 或 `G` 配置。实际驻留内存随负载变化。 |
 | `stats_size` | 默认 `1G` 原生统计堆预留，可用 `M` 或 `G` 配置。即使禁用统计监听接口，每上下文的原生接口计数仍需要这部分内存。 |
 | `context_idle_seconds` | 无存活映射后等待 1 秒，还须安全排空在途 graph/handoff/reassembly 引用。 |
@@ -68,7 +65,7 @@ ACL 对 DNAT 前的原始目的地址执行 first-match/default-deny。DNAT 命�
 | `timeouts.tcp_established` | 7440 秒。 |
 | `timeouts.icmp` | 60 秒。 |
 
-`main_core` 和 `workers` 选择互不重复且可用的 CPU；不指定 worker 时使用原生单线程模式。Area、attachment、Exit、Pool、地址与规则使用动态存储，不再设置额外固定数量上限。Pool ID 是稀疏键，不作为数组长度；移除的状态自动回收。原生统计段没有监听接口，但预算必须包含每上下文接口计数。应一起配置地址、NAT 槽位、上下文、内存及 CPU；Pool 不限额不等于网关容量无限。
+主配置不提供 `max_contexts` 或 `max_connections`，内部也不设置等效的独立接入/连接数门槛；初始内存分配不是准入上限。`main_core` 和 `workers` 选择互不重复且可用的 CPU；不指定 worker 时使用原生单线程模式。Area、attachment、Pool、地址和规则按实际资源动态存储。原生统计段没有监听接口，但内存规划仍需包含转发状态计数。实际内存、CPU、地址和端口资源有限；Pool 不限额不等于资源无限。
 
 验收目标为跨多个 vSwitch 来源的 12288 个同时活跃上下文和 196608 条双向 NAT 映射，使用两个原生 worker。应查看具体候选版本的验收清单和内存实测，不据此推导吞吐或时延承诺。
 
@@ -80,7 +77,9 @@ ACL 对 DNAT 前的原始目的地址执行 first-match/default-deny。DNAT 命�
 | `vni` | UDP 6081，VNI 为 `(slot << 12) | area`，逻辑 Area 为 12 位。 |
 | `tlv` | UDP 6081，配置的 class/type 标识第一个 locator option，Area 为 24 位。未知 critical option 拒绝，非 critical 元数据接收但不反射。 |
 
-Egress 不限制 slot 范围，按报文字段保留 locator，包括完整 32-bit TLV 值。上下文按来源及 locator 建立索引，不按 slot 数值分配数组。`port_base` 作为兼容配置继续接受，但不限制接入范围。Ether 封装且 generation 位宽为 1–20 时，源 MAC `02:fe:<32-bit big-endian generation>` 携带既有 generation，零也是有效值。Egress 从流量学习回程标记及内层源地址，并在该上下文内保持不变。vSwitch 按既有 generation 校验带标记目的 MAC，恢复 Guest MAC，并保留未标记 legacy 兼容。没有 vSwitch Go 配置、Attach 参数或代次方案变化。
+Egress 不限制 slot 范围，按报文字段保留 locator，包括完整 32-bit TLV 值。上下文按来源及 locator 建立索引，不按 slot 数值分配数组。Egress 不配置 `port_base`。Ether 封装且 generation 位宽为 1–20 时，源 MAC `02:fe:<32-bit big-endian generation>` 携带既有 generation，零也是有效值。Egress 从报文识别并保留各连接的回程标记，不重复配置 generation 位宽。接入身份为外层源 IP + Geneve 目的端口或 SlotID + VNI/逻辑 Area + 外层目的 IP（gatewayIP）。内层 IP 只参与转发和连接匹配；多个内层 IP 共用这一接入的 Pool 额度。vSwitch 按既有 generation 校验带标记目的 MAC，恢复 Guest MAC，并保留未标记 legacy 兼容。没有 vSwitch Go 配置、Attach 参数或代次方案变化。
+
+attachment 不设置内层 `gateway`。ICMP 差错以接入接口的数据面地址为来源，不修改 Guest 默认网关，也不限制内层源 IP。
 
 IP 封装和 legacy Ether 不增加新身份字段，既有协议无法区分身份复用后的任意迟到流量这一限制仍存在，不增加 Egress 租约协议掩盖它。
 
@@ -88,7 +87,7 @@ IP 封装和 legacy Ether 不增加新身份字段，既有协议无法区分身
 
 ## 诊断与恢复
 
-私有运行目录包含 `pid`、`startup.conf`、`owner.lock` 及原子替换的 `status.json`。状态文件报告配置代次、reload 错误、上下文及 NAT 数量、Area/Pool 计数、原生报文错误、原生 PID 和接口/carrier 状态。它只是输出，不会作为配置恢复。服务不暴露 HTTP、Unix CLI、二进制 API、统计监听或命名共享内存 API 传输。管理进程通过匿名父子进程描述符对控制原生进程。
+私有运行目录包含 `pid`、`startup.conf`、`owner.lock` 及原子替换的 `status.json`。状态文件报告配置代次、reload 错误、外层接入数（`accesses`）、内部回程版本数（`contexts`）、NAT 数量及按名称标识的 Area/Pool 计数、原生报文错误、原生 PID 和接口/carrier 状态。它只是输出，不会作为配置恢复。服务不暴露 HTTP、Unix CLI、二进制 API、统计监听或命名共享内存 API 传输。管理进程通过匿名父子进程描述符对控制原生进程。
 
 `egress link check --config link.json` 报告 pair 归属、位置和既有 vSwitch 状态。运行时检查覆盖网关进程、配置、部署拥有的接线和接口状态。Geneve 双向转发及 Pool 回程通过受控端到端测试验收。本部署能力不包含外部网络或目标探测、探测目标配置，也不以外部可达性作为启动门槛。
 
@@ -96,7 +95,7 @@ IP 封装和 legacy Ether 不增加新身份字段，既有协议无法区分身
 
 普通 `link stop` 将 switch 端点归还稳定 owner 并保留 pair。显式卸载应在 Detach 和停止两端后运行 `egress link uninstall --config link.json`。仅删除自有资源，保留借用 namespace 和 Pool 接口。仍有进程或其他设备的 namespace 保留供重试。这些操作不向 Egress 发送沙箱级通知。
 
-从先前实现升级时，删除主 JSON 的 `vppctl` 字段，停止使用 `egress request`、session grant 和 `policy.json`。重启前将需要的策略放入主配置或关联 Area 文件。
+配置只使用上述文件模型和随包示例。主配置不定义 `exits`，Pool 不定义数值 `id`；attachment 不定义 `area`、`port_base`、`encapsulation`、`generation_bits` 或内层 `gateway`，这些字段会被严格校验拒绝。
 
 ## 组件交付与 node-infra
 

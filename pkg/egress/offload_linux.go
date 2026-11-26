@@ -31,8 +31,8 @@ func offloadValue(fd int, device string, command, value uint32) (uint32, error) 
 	return request.data.value, nil
 }
 
-// AF_PACKET consumes complete wire packets. Dedicated endpoints must not hand
-// it CHECKSUM_PARTIAL or GSO frames. Use the kernel API, without an ethtool CLI
+// The dedicated local transit pair uses the existing vSwitch wire contract.
+// External Egress interfaces normalize metadata in the native dataplane. Use the kernel API, without an ethtool CLI
 // dependency, and verify each required feature actually became disabled.
 func disableOffloads(device string) error {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)

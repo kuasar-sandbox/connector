@@ -2,12 +2,13 @@
   "vni": 7,
   "pools": [
     {
-      "id": 0,
-      "exit": "public",
       "addresses": [
         "192.0.2.1"
       ],
-      "max_connections": 1024
+      "max_connections": 1024,
+      "name": "public",
+      "interface": "egress-uplink",
+      "next_hop": "192.0.2.2"
     }
   ],
   "acl": [
@@ -30,7 +31,7 @@
       "protocol": "tcp",
       "port_first": 443,
       "port_last": 443,
-      "pool": 0,
+      "pool": "public",
       "target": "203.0.113.11",
       "target_port": 8443
     }
@@ -38,7 +39,7 @@
   "routes": [
     {
       "destination": "0.0.0.0/0",
-      "pool": 0
+      "pool": "public"
     }
   ]
 }

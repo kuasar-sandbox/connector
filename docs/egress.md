@@ -8,7 +8,7 @@ Local and remote deployments use the same Area/Pool configuration and wire contr
 
 ## Deployment and ownership
 
-Build the matching native runtime and pure-Go control binary using [build and acceptance](../egress/README.md). Keep its executable, libraries and plugins together. VPP owns each configured gateway/SNAT address; Linux must not hold the same address on that interface. Unrelated Linux IPv4 addresses are permitted. AF_PACKET checksum and segmentation offloads are disabled and verified through the kernel API.
+Build the matching native runtime and pure-Go control binary using [build and acceptance](../egress/README.md). Keep its executable, libraries and plugins together. VPP owns each configured gateway/SNAT address; Linux must not hold the same address on that interface. Unrelated Linux IPv4 addresses are permitted. The dataplane normalizes AF_PACKET checksum and TCP segmentation metadata before forwarding, without changing borrowed devices or external peers. The dedicated local veth is prepared for the existing vSwitch wire contract.
 
 For a local gateway, use [link.json](../dist/egress/link.json), [switch.json](../dist/egress/switch.json), [gateway.json](../dist/egress/gateway.json) and [area7.json](../dist/egress/area7.json). Replace example addresses and resources before deployment; use `aarch64-linux-gnu` library paths on ARM64.
 
@@ -19,9 +19,9 @@ For a local gateway, use [link.json](../dist/egress/link.json), [switch.json](..
 5. Run `connector-ctl egress link start --config link.json --switch-config switch.json --mode veth`. The default is `tap`, as in existing vSwitch. The wrapper starts vSwitch from the recorded stable owner namespace.
 6. Attach sandboxes through existing vSwitch interfaces and verify real request/reply traffic through the required Pools. No Egress registration call is involved.
 
-Repeated prepare verifies and reuses the owned pair. It rejects foreign names, changed namespace identities and damaged installed pairs. Each local vSwitch uses a dedicated pair; multiple pairs may share an Egress instance. Separate underlay FIBs support overlapping outer addresses. Existing vSwitch `transit_dev_mtu:auto` may lower its endpoint below the provisioned gateway MTU; this does not change pair ownership.
+Repeated prepare verifies and reuses the owned pair. It rejects foreign names, changed namespace identities and damaged installed pairs. Each local vSwitch uses a dedicated pair; multiple pairs may share an Egress instance. Distinct gateway IPs use distinct ingress addresses. The same peer, locator and inner IP may access each gateway independently. Existing vSwitch `transit_dev_mtu:auto` may lower its endpoint below the provisioned gateway MTU; this does not change pair ownership.
 
-Remote deployments use externally owned transit devices rather than the local pair manager. Configure `peer` as the vSwitch outer source and `next_hop` as an on-link router for routed peers; it defaults to `peer`. Configure existing vSwitch transit addressing and the Geneve gateway normally. The receive interface, local VTEP, peer and Area select a configured forwarding domain. Geneve and generation MACs are not cryptographic authentication; underlay ownership must prevent sender impersonation.
+Remote deployments use externally owned transit devices. `peer` is an optional array of IPv4 addresses/CIDRs, for example `["198.18.0.2", "203.0.113.0/24"]`; omission or an empty list adds no source filter. The actual peer always comes from the outer source IP. An omitted `next_hop` uses the actual peer as a directly reachable next hop; routed peers require an on-link router. Packet VNI selects a configured Area without per-attachment Area registration. Overlapping source ranges for the same ingress/gateway must agree on decoding, MTU and return routing or the complete candidate is rejected. The same gateway/source range cannot select different return devices; disjoint peer ranges may reuse a gateway address across devices. Remote transit and Pool exits may share an interface when their Geneve gateway and SNAT addresses are distinct; the local dedicated veth remains separate. Geneve and generation MACs are not cryptographic authentication; underlay ownership must prevent sender impersonation.
 
 ## Files and reload
 
@@ -37,7 +37,7 @@ kill -HUP "$(cat /var/lib/connector-egress/egress-local/pid)"
 
 Each reload reads the main file and all referenced Area files, validates and stages the complete candidate, then publishes all Areas and attachment profiles under one worker barrier. A parse, reference or preparation error retains the previous configuration. No independently writable online policy store exists. Use atomic file replacement and send SIGHUP after the complete file set is ready.
 
-Reload supports Area addition/removal, ACL/DNAT/routes/Pools, attachment profiles and peer routes, context budget, idle grace and native protocol timeouts. Removing an Area also requires removing references to it. Runtime executable/library paths, CPU/heap allocation, physical interfaces/Exit topology and NAT preallocation currently require restart: such changes are rejected before publication, with the running configuration retained. An ambiguous native publication acknowledgement stops the gateway rather than reporting an unproven rollback.
+Reload supports Areas, ACL/DNAT/routes/Pools, source admission, peer return routing and inactivity timeouts. Pool `interface`, `next_hop` and `addresses` may change on already admitted devices: existing mappings retain their original exit resources until reclamation while new mappings use the new definition. A new ingress address that overlaps a retained SNAT mapping rejects the entire reload; retry after those mappings expire. Update the Area-file list when removing an Area. Executable/library paths, CPU/preallocated memory, physical device takeover and namespace changes require maintenance restart; these changes are rejected before publication with the running configuration retained. An ambiguous native publication acknowledgement stops the gateway rather than reporting an unproven rollback.
 
 Ordinary route, DNAT and SNAT selection changes affect new mappings. Existing mappings retain their original public tuple, destination translation and exit. Lower Pool quotas limit new mappings without evicting existing mappings. ACL revocation, removed Pools/Areas and unavailable original paths invalidate only affected mappings. Incompatible attachment wire/gateway changes retire affected contexts; immutable returns never borrow another generation's marker.
 
@@ -48,18 +48,15 @@ A process restart reads the files again and does not restore NAT state. Subseque
 | Object | Meaning |
 |---|---|
 | Interface | Linux device name, VPP-owned IPv4 `address` prefix and physical L3 `mtu`. |
-| Exit | Physical interface, on-link `next_hop` and reachable SNAT `addresses`. Multiple Exits may share an interface. Return lookup uses the shared physical FIB; each Exit has its own routing FIB. |
-| Attachment | Transit interface, peer, Area, locator, encapsulation, existing generation width and inner gateway. `inner_mtu` defaults to 1500; optional `mtu` caps the outer path. |
+| Attachment | `name`, `interface`, optional `peer` source list and return `next_hop`, `locator` and TLV decoding fields. The default locator is `port`; `inner_mtu` defaults to 1500 and `mtu` to the interface MTU. Ether/IP and fencing are recognized on the wire. |
 | Area | Logical `vni`, ordered `acl`, ordered TCP/UDP `dnat`, longest-prefix `routes` and Pools. |
-| Pool | Area-local unsigned 32-bit ID, Exit and a subset of its addresses. `max_connections` limits live NAT mappings per forwarding context/Pool; zero removes the business quota, not physical resource limits. |
+| Pool | Area-local unique `name`, with its own `interface`, on-link `next_hop` and SNAT `addresses`; routes and DNAT refer to its name. `max_connections` limits live NAT mappings for each outer access in that Pool. Zero or omission removes that business quota. |
 | Match | Canonical IPv4 destination prefix and `any`, `icmp`, `tcp` or `udp`; ports require TCP/UDP. `any` also covers other ordinary IPv4 protocols. |
 
 ACL first-match/default-deny applies to the original destination before DNAT. A DNAT match selects its Pool directly; otherwise routing uses longest-prefix selection. A missing route, exhausted selected Pool or unavailable exit fails without choosing another Pool. Portless IPv4 protocols require distinct public addresses for overlapping remote/protocol tuples because they have no translated port to disambiguate returns.
 
 | Resource setting | Default and meaning |
 |---|---|
-| `max_contexts` | 65536 concurrent forwarding contexts, including those awaiting safe reclamation. Configurable above this value; not a 4096 or 10000 gateway hard limit. |
-| `max_connections` | 65536 native mappings **per worker** by default; configurable according to available resources. Independent of Pool quotas. Capacity acceptance selects 262144 per worker. |
 | `heap_size` | `4G` native main heap reservation, configurable using an integer followed by `M` or `G`. Actual resident memory depends on load. |
 | `stats_size` | `1G` native statistics heap reservation, configurable using `M` or `G`. This is needed for per-context native interface counters even with the statistics listener disabled. |
 | `context_idle_seconds` | 1 second after the context has no live mapping; pending graph/handoff/reassembly references must also be safely drained. |
@@ -68,7 +65,7 @@ ACL first-match/default-deny applies to the original destination before DNAT. A 
 | `timeouts.tcp_established` | 7440 seconds. |
 | `timeouts.icmp` | 60 seconds. |
 
-`main_core` and `workers` select distinct available CPUs; omitting workers uses the native single-thread mode. Areas, attachments, Exits, Pools, addresses and rules use dynamically sized storage, with no additional fixed object-count ceiling. Pool IDs are sparse keys, not array indexes; removed state is reclaimed. The native statistics segment has no listener; its budget must include per-context interface counters. Size addresses, NAT slots, context budget, memory and CPUs together; an unlimited Pool quota is not unlimited gateway capacity.
+The main configuration has no `max_contexts` or `max_connections`, and the dataplane has no hidden equivalent independent admission ceiling. Initial memory allocation does not cap admission. `main_core` and `workers` select distinct available CPUs; omitting workers uses native single-thread mode. Areas, attachments, Pools, addresses and rules use dynamic storage. The native statistics segment has no listener but still needs memory for forwarding state counters. Available memory, CPU, addresses and ports remain finite; an unlimited Pool quota does not make gateway resources unlimited.
 
 The acceptance target is 12288 simultaneous active contexts and 196608 bidirectional NAT mappings across multiple switch sources, with two native workers. Consult the candidate's acceptance manifest and measured memory rather than inferring a throughput or latency guarantee.
 
@@ -80,7 +77,9 @@ The acceptance target is 12288 simultaneous active contexts and 196608 bidirecti
 | `vni` | UDP 6081; VNI is `(slot << 12) | area`, with a 12-bit logical Area. |
 | `tlv` | UDP 6081; configured class/type identify the first locator option, with a 24-bit Area. Unknown critical options fail; noncritical metadata is accepted without reflection. |
 
-Egress imposes no slot range. It preserves locator values within their wire fields, including the complete 32-bit TLV value; context storage is keyed by source and locator rather than sized by the numeric slot. `port_base` remains an accepted compatibility hint and does not restrict ingress. Ether encapsulation with 1–20 generation bits encodes the existing generation in source MAC `02:fe:<32-bit big-endian generation>`; zero is valid. Egress learns the return marker and inner source from traffic, and keeps them immutable in that context. vSwitch checks tagged destination MACs against its existing generation, restores the Guest MAC, and preserves untagged legacy compatibility. No vSwitch Go configuration, Attach parameter or generation scheme changes.
+Egress imposes no slot range. It preserves locator values within their wire fields, including the complete 32-bit TLV value; context storage is keyed by source and locator rather than sized by the numeric slot. Egress does not configure `port_base`. Ether encapsulation with 1–20 generation bits encodes the existing generation in source MAC `02:fe:<32-bit big-endian generation>`; zero is valid. Egress recognizes and retains each mapping’s return marker without configuring generation width again. Access identity is the outer source IP + Geneve destination port or SlotID + VNI/logical Area + outer destination IP (gatewayIP). Inner IPs participate in routing and connection lookup; multiple inner IPs share this access’s Pool quota. vSwitch checks tagged destination MACs against its existing generation, restores the Guest MAC, and preserves untagged legacy compatibility. No vSwitch Go configuration, Attach parameter or generation scheme changes.
+
+There is no inner `gateway` field. ICMP errors use the ingress data-plane address as their source; this neither changes the Guest default gateway nor constrains its inner IP.
 
 IP encapsulation and legacy Ether add no new wire identity. Their existing inability to distinguish arbitrary late traffic after identity reuse remains; no Egress lease protocol is added to disguise that limitation.
 
@@ -88,7 +87,7 @@ Return encapsulation respects the smaller of the configured outer budget and inn
 
 ## Diagnostics and recovery
 
-The private runtime directory contains `pid`, `startup.conf`, `owner.lock` and an atomically replaced `status.json`. The status file reports configuration generation, reload error, context and NAT counts, Area/Pool counters, native packet errors, native PID and interface/carrier state. It is output only and is never restored as configuration. No HTTP, Unix CLI, binary API, statistics listener or named shared-memory API transport is exposed. The supervisor uses an unnamed parent/child descriptor pair.
+The private runtime directory contains `pid`, `startup.conf`, `owner.lock` and an atomically replaced `status.json`. The status file reports configuration generation, reload error, outer accesses (`accesses`), internal return versions (`contexts`), NAT counts, named Area/Pool counters, native packet errors, native PID and interface/carrier state. It is output only and is never restored as configuration. No HTTP, Unix CLI, binary API, statistics listener or named shared-memory API transport is exposed. The supervisor uses an unnamed parent/child descriptor pair.
 
 `egress link check --config link.json` reports pair ownership/placement and existing vSwitch conditions. Runtime checks cover the gateway process, configuration, deployment-owned wiring and interface state. Controlled end-to-end tests verify bidirectional Geneve forwarding and Pool return. External network/target probes, probe-target configuration and external-reachability startup gates are outside this deployment capability.
 
@@ -96,7 +95,7 @@ Losing or replacing one physical interface disables that interface pending contr
 
 Normal `link stop` returns the switch endpoint to its stable owner and keeps the pair. Explicit uninstall follows Detach and stopping both sides, then `egress link uninstall --config link.json`. Only owned resources are removed; borrowed namespaces and Pool interfaces are retained. A namespace still containing processes or other devices is retained for a retry. No sandbox-specific notification is sent to Egress during these operations.
 
-When upgrading from the earlier implementation, remove `vppctl` from the main JSON and stop using `egress request`, session grants and `policy.json`. Move the intended policies into the main file or referenced Area files before restart.
+Use the file model and bundled examples above. The main file has no `exits`; Pools have no numeric `id`; attachments have no `area`, `port_base`, `encapsulation`, `generation_bits` or inner `gateway`. Strict validation rejects these fields.
 
 ## Component delivery and node-infra
 

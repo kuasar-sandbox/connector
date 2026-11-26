@@ -10,12 +10,10 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
-	"slices"
 	"strings"
 )
-
-const defaultMaxContexts = 65536
 
 var identifier = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
@@ -27,13 +25,10 @@ type Config struct {
 	LibraryPath        string       `json:"library_path,omitempty"`
 	Workers            []uint32     `json:"workers,omitempty"`
 	MainCore           *uint32      `json:"main_core,omitempty"`
-	MaxConnections     uint32       `json:"max_connections"`
 	Interfaces         []Interface  `json:"interfaces"`
-	Exits              []Exit       `json:"exits"`
 	Attachments        []Attachment `json:"attachments"`
 	Areas              []Area       `json:"areas,omitempty"`
 	AreaFiles          []string     `json:"area_files,omitempty"`
-	MaxContexts        uint32       `json:"max_contexts,omitempty"`
 	ContextIdleSeconds uint32       `json:"context_idle_seconds,omitempty"`
 	Timeouts           NATTimeouts  `json:"timeouts,omitempty"`
 	HeapSize           string       `json:"heap_size,omitempty"`
@@ -44,27 +39,16 @@ type Interface struct {
 	Address string `json:"address"`
 	MTU     uint32 `json:"mtu"`
 }
-type Exit struct {
+type Attachment struct {
 	Name      string   `json:"name"`
 	Interface string   `json:"interface"`
-	NextHop   string   `json:"next_hop"`
-	Addresses []string `json:"addresses"`
-}
-type Attachment struct {
-	Name           string `json:"name"`
-	Interface      string `json:"interface"`
-	Peer           string `json:"peer"`
-	NextHop        string `json:"next_hop,omitempty"`
-	Area           uint32 `json:"area"`
-	Locator        string `json:"locator"`
-	PortBase       uint32 `json:"port_base,omitempty"`
-	TLVClass       uint32 `json:"tlv_class,omitempty"`
-	TLVType        uint32 `json:"tlv_type,omitempty"`
-	Encapsulation  string `json:"encapsulation"`
-	GenerationBits uint32 `json:"generation_bits"`
-	Gateway        string `json:"gateway"`
-	MTU            uint32 `json:"mtu,omitempty"`
-	InnerMTU       uint32 `json:"inner_mtu,omitempty"`
+	Peer      []string `json:"peer,omitempty"`
+	NextHop   string   `json:"next_hop,omitempty"`
+	Locator   string   `json:"locator,omitempty"`
+	TLVClass  uint32   `json:"tlv_class,omitempty"`
+	TLVType   uint32   `json:"tlv_type,omitempty"`
+	MTU       uint32   `json:"mtu,omitempty"`
+	InnerMTU  uint32   `json:"inner_mtu,omitempty"`
 }
 type Match struct {
 	Destination string `json:"destination"`
@@ -78,17 +62,18 @@ type ACL struct {
 }
 type DNAT struct {
 	Match
-	Pool       uint32 `json:"pool"`
+	Pool       string `json:"pool"`
 	Target     string `json:"target"`
 	TargetPort uint16 `json:"target_port,omitempty"`
 }
 type Route struct {
 	Destination string `json:"destination"`
-	Pool        uint32 `json:"pool"`
+	Pool        string `json:"pool"`
 }
 type Pool struct {
-	ID             uint32   `json:"id"`
-	Exit           string   `json:"exit"`
+	Name           string   `json:"name"`
+	Interface      string   `json:"interface"`
+	NextHop        string   `json:"next_hop"`
 	Addresses      []string `json:"addresses"`
 	MaxConnections uint32   `json:"max_connections"`
 }
@@ -276,9 +261,6 @@ func (c *Config) Validate() error {
 	if strings.ContainsAny(c.LibraryPath, "\n\r") {
 		return errors.New("invalid library path")
 	}
-	if c.MaxContexts == 0 {
-		c.MaxContexts = defaultMaxContexts
-	}
 	if c.ContextIdleSeconds == 0 {
 		c.ContextIdleSeconds = 1
 	}
@@ -305,9 +287,6 @@ func (c *Config) Validate() error {
 	if c.Timeouts.ICMP == 0 {
 		c.Timeouts.ICMP = 60
 	}
-	if c.MaxConnections == 0 {
-		c.MaxConnections = 65536
-	}
 	cpus := map[uint32]bool{}
 	if c.MainCore != nil {
 		cpus[*c.MainCore] = true
@@ -318,8 +297,8 @@ func (c *Config) Validate() error {
 		}
 		cpus[cpu] = true
 	}
-	if len(c.Interfaces) == 0 || len(c.Exits) == 0 {
-		return errors.New("at least one interface and exit are required")
+	if len(c.Interfaces) == 0 {
+		return errors.New("at least one interface is required")
 	}
 	interfaces := map[string]Interface{}
 	for _, i := range c.Interfaces {
@@ -341,60 +320,25 @@ func (c *Config) Validate() error {
 		}
 		interfaces[i.Name] = i
 	}
-	exits := map[string]Exit{}
-	exitIf := map[string]bool{}
-	snat := map[string]string{}
-	for _, e := range c.Exits {
-		if !identifier.MatchString(e.Name) {
-			return errors.New("invalid exit name")
-		}
-		if _, ok := exits[e.Name]; ok {
-			return errors.New("duplicate exit")
-		}
-		i, ok := interfaces[e.Interface]
-		if !ok {
-			return errors.New("exit references unknown interface")
-		}
-		exitIf[e.Interface] = true
-		hop, err := ipv4(e.NextHop)
-		if err != nil {
-			return err
-		}
-		ip := netip.MustParsePrefix(i.Address)
-		if !ip.Contains(hop) || hop == ip.Addr() {
-			return errors.New("exit next hop must be a different on-link address")
-		}
-		if len(e.Addresses) == 0 {
-			return errors.New("exit requires SNAT addresses")
-		}
-		seenAddresses := map[string]bool{}
-		for _, a := range e.Addresses {
-			if seenAddresses[a] {
-				return errors.New("duplicate SNAT resource in exit")
-			}
-			seenAddresses[a] = true
-			if _, err := ipv4(a); err != nil {
-				return err
-			}
-			if prior, exists := snat[a]; exists && prior != e.Interface {
-				return errors.New("SNAT address cannot belong to different external interfaces")
-			}
-			snat[a] = e.Interface
-		}
-		exits[e.Name] = e
-	}
 	areas := map[uint32]bool{}
-	for _, a := range c.Areas {
-		if areas[a.VNI] {
+	snat := map[string]string{}
+	for _, area := range c.Areas {
+		if areas[area.VNI] {
 			return errors.New("duplicate Area")
 		}
-		areas[a.VNI] = true
-		if err := c.ValidateArea(a); err != nil {
-			return err
+		areas[area.VNI] = true
+		if err := c.ValidateArea(area); err != nil {
+			return fmt.Errorf("Area %d: %w", area.VNI, err)
+		}
+		for _, pool := range area.Pools {
+			for _, addr := range pool.Addresses {
+				if prior, exists := snat[addr]; exists && prior != pool.Interface {
+					return errors.New("SNAT address cannot belong to different external interfaces")
+				}
+				snat[addr] = pool.Interface
+			}
 		}
 	}
-	peers := map[string]Attachment{}
-	peerAreas := map[string]bool{}
 	names := map[string]bool{}
 	for n := range c.Attachments {
 		a := &c.Attachments[n]
@@ -403,44 +347,35 @@ func (c *Config) Validate() error {
 		}
 		names[a.Name] = true
 		i, ok := interfaces[a.Interface]
-		if !ok || exitIf[a.Interface] {
-			return errors.New("attachment requires a dedicated transit interface")
+		if !ok {
+			return errors.New("attachment references unknown interface")
 		}
-		if !areas[a.Area] {
-			return errors.New("attachment references unknown Area")
-		}
-		if _, e := ipv4(a.Peer); e != nil {
-			return e
-		}
-		if _, e := ipv4(a.Gateway); e != nil {
-			return e
-		}
-		key := a.Interface + "/" + a.Peer
 		addr := netip.MustParsePrefix(i.Address)
-		if addr.Addr().String() == a.Peer {
-			return errors.New("peer collides with local VTEP")
+		// The outer destination demultiplexes Geneve from NAT return traffic.
+		// An interface may serve both roles when these addresses are distinct.
+		if _, conflict := snat[addr.Addr().String()]; conflict {
+			return errors.New("Geneve gateway address overlaps a SNAT address")
 		}
-		if a.NextHop == "" {
-			a.NextHop = a.Peer
+		for j, source := range a.Peer {
+			p, err := peerPrefix(source)
+			if err != nil {
+				return err
+			}
+			a.Peer[j] = p.String()
 		}
-		hop, err := ipv4(a.NextHop)
-		if err != nil || !addr.Contains(hop) || hop == addr.Addr() {
-			return errors.New("transit next hop must be a different on-link address; routed peers require next_hop")
+		if a.NextHop != "" {
+			hop, err := ipv4(a.NextHop)
+			if err != nil || !addr.Contains(hop) || hop == addr.Addr() {
+				return errors.New("transit next hop must be a different on-link address")
+			}
 		}
 		if a.Locator == "" {
 			a.Locator = "port"
 		}
-		if a.PortBase == 0 {
-			a.PortBase = 50000
-		}
 		switch a.Locator {
-		case "port":
-			if a.PortBase > 65535 {
-				return errors.New("port_base exceeds the UDP port field")
-			}
-		case "vni":
-			if a.Area > 4095 {
-				return errors.New("vni locator requires a 12-bit logical Area")
+		case "port", "vni":
+			if a.TLVClass != 0 || a.TLVType != 0 {
+				return errors.New("TLV decoding fields require locator tlv")
 			}
 		case "tlv":
 			if a.TLVClass > 65535 || a.TLVType > 255 {
@@ -449,33 +384,15 @@ func (c *Config) Validate() error {
 		default:
 			return errors.New("unsupported locator")
 		}
-		if a.Encapsulation != "ip" && a.Encapsulation != "ether" {
-			return errors.New("encapsulation must be ip or ether")
-		}
-		if a.GenerationBits > 20 {
-			return errors.New("generation_bits exceeds existing vSwitch contract")
-		}
 		if a.MTU == 0 {
 			a.MTU = i.MTU
 		}
 		if a.InnerMTU == 0 {
 			a.InnerMTU = 1500
 		}
-		profile := *a
-		profile.Name, profile.Gateway, profile.Area, profile.PortBase = "", "", 0, 0
-		if prior, found := peers[key]; found && prior != profile {
-			return errors.New("Areas on one peer require the same locator and fencing profile")
-		}
-		peers[key] = profile
-		identity := fmt.Sprintf("%s/%d", key, a.Area)
-		if peerAreas[identity] {
-			return errors.New("duplicate peer/Area attachment")
-		}
-		peerAreas[identity] = true
-		overhead := uint32(36)
-		if a.Encapsulation == "ether" {
-			overhead += 14
-		}
+		// Ether/IP is recognized on the wire. Budget for either form; the
+		// native context uses the actual header size for its return MTU.
+		overhead := uint32(50)
 		if a.Locator == "tlv" {
 			overhead += 8
 		}
@@ -485,6 +402,20 @@ func (c *Config) Validate() error {
 		if a.InnerMTU < 68 || a.InnerMTU > 65535-overhead {
 			return errors.New("invalid sandbox inner_mtu")
 		}
+		for _, prior := range c.Attachments[:n] {
+			priorIP := netip.MustParsePrefix(interfaces[prior.Interface].Address).Addr()
+			if priorIP != addr.Addr() || !sourcesOverlap(prior.Peer, a.Peer) {
+				continue
+			}
+			if prior.Interface != a.Interface {
+				return errors.New("the same outer gateway and peer range has ambiguous return interfaces")
+			}
+			x, y := prior, *a
+			x.Name, y.Name, x.Peer, y.Peer = "", "", nil, nil
+			if !reflect.DeepEqual(x, y) {
+				return errors.New("overlapping peer ranges have conflicting ingress or locator settings")
+			}
+		}
 	}
 	return nil
 }
@@ -492,28 +423,40 @@ func (c *Config) ValidateArea(a Area) error {
 	if a.VNI > 0xffffff {
 		return errors.New("Area VNI exceeds its 24-bit wire field")
 	}
-	pools := map[uint32]bool{}
+	pools := map[string]bool{}
 	for _, p := range a.Pools {
-		if pools[p.ID] {
-			return errors.New("Pool IDs must be unique")
+		if !identifier.MatchString(p.Name) || pools[p.Name] {
+			return errors.New("Pool names must be valid and unique within an Area")
 		}
-		pools[p.ID] = true
-		var found *Exit
-		for i := range c.Exits {
-			if c.Exits[i].Name == p.Exit {
-				found = &c.Exits[i]
+		pools[p.Name] = true
+		var iface *Interface
+		for j := range c.Interfaces {
+			if c.Interfaces[j].Name == p.Interface {
+				iface = &c.Interfaces[j]
+				break
 			}
 		}
-		if found == nil {
-			return errors.New("Pool references unknown exit")
+		if iface == nil {
+			return errors.New("Pool references unknown interface")
+		}
+		hop, err := ipv4(p.NextHop)
+		if err != nil {
+			return err
+		}
+		addr := netip.MustParsePrefix(iface.Address)
+		if !addr.Contains(hop) || hop == addr.Addr() {
+			return errors.New("Pool next hop must be a different on-link address")
 		}
 		if len(p.Addresses) == 0 {
-			return errors.New("Pool requires addresses")
+			return errors.New("Pool requires SNAT addresses")
 		}
 		seen := map[string]bool{}
 		for _, ip := range p.Addresses {
-			if !slices.Contains(found.Addresses, ip) || seen[ip] {
-				return errors.New("Pool address must be a distinct configured exit resource")
+			if _, err := ipv4(ip); err != nil {
+				return err
+			}
+			if seen[ip] {
+				return errors.New("duplicate SNAT resource in Pool")
 			}
 			seen[ip] = true
 		}
@@ -563,4 +506,33 @@ func (c *Config) attachment(name string) (Attachment, Interface, error) {
 		}
 	}
 	return Attachment{}, Interface{}, errors.New("unknown attachment")
+}
+
+// Source ranges filter admission; the actual outer source remains part of the
+// access identity. An empty list accepts any valid unicast IPv4 source.
+func peerPrefix(s string) (netip.Prefix, error) {
+	if strings.Contains(s, "/") {
+		return prefix(s)
+	}
+	a, err := ipv4(s)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	return netip.PrefixFrom(a, 32), nil
+}
+
+func sourcesOverlap(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return true
+	}
+	for _, x := range a {
+		px, _ := peerPrefix(x)
+		for _, y := range b {
+			py, _ := peerPrefix(y)
+			if px.Overlaps(py) {
+				return true
+			}
+		}
+	}
+	return false
 }
