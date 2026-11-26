@@ -20,7 +20,7 @@ var identifier = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 type Config struct {
 	Name               string       `json:"name"`
 	RuntimeDir         string       `json:"runtime_dir"`
-	VPP                string       `json:"vpp"`
+	VPP                string       `json:"vpp,omitempty"`
 	Workers            []uint32     `json:"workers,omitempty"`
 	MainCore           *uint32      `json:"main_core,omitempty"`
 	Interfaces         []Interface  `json:"interfaces"`
@@ -253,7 +253,11 @@ func (c *Config) Validate() error {
 	if c.RuntimeDir == "" {
 		c.RuntimeDir = filepath.Join("/run/connector-egress", c.Name)
 	}
-	for _, p := range []string{c.RuntimeDir, c.VPP} {
+	paths := []string{c.RuntimeDir}
+	if c.VPP != "" {
+		paths = append(paths, c.VPP)
+	}
+	for _, p := range paths {
 		if !filepath.IsAbs(p) || strings.ContainsAny(p, "\n\r\t {}\"\\") || filepath.Clean(p) == "/" {
 			return fmt.Errorf("invalid absolute runtime path %q", p)
 		}

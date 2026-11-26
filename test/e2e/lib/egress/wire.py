@@ -359,7 +359,7 @@ def main():
         cpus = sorted(os.sched_getaffinity(0))
         if len(cpus)<2:raise RuntimeError('native acceptance requires at least two CPUs')
         result['workers']=min(2,len(cpus)-1)
-        cfg = dict(name=tag, runtime_dir=str(out/'runtime'), vpp=str(runtime/'connector-vpp'),
+        cfg = dict(name=tag, runtime_dir=str(out/'runtime'),
                    main_core=cpus[0], workers=cpus[1:3],
                    timeouts=dict(udp=900,tcp_transitory=900,tcp_established=900,icmp=900), interfaces=[], attachments=[], areas=[])
         for index in range(len(peer_keys)+1):

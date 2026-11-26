@@ -10,7 +10,7 @@ Operator configuration, ownership, file reload and recovery are defined in [Egre
 
 Build each architecture natively. `TARGET_ARCH` selects `x86_64` or `aarch64` (also accepting `amd64` and `arm64`); the native build checks it against the build host. The CPU baseline is `x86-64-v2` on x86_64 and `armv8-a+crc` on aarch64. Source and downloads are retained separately from the architecture-specific object directory, `native-deps/build/<arch>/vpp`. `KUASAR_BUILD_JOBS` controls build parallelism. The compiler, glibc static libraries and native dependencies belong to the selected build environment.
 
-The following build-dependency example uses Ubuntu 24.04 with CMake/Ninja. Compiler selection follows upstream VPP: honor `CC` when set; otherwise prefer Clang and fall back to GCC.
+The following build-dependency example uses Ubuntu 24.04 with CMake/Ninja. Compiler selection follows upstream VPP: honor `CC` when set; otherwise prefer Clang and fall back to GCC. Before changing the compiler or compiler flags, run `make -C native-deps clean` to clear the CMake build directory; this retains the source and downloaded archives.
 
 ```bash
 sudo apt-get update
@@ -32,7 +32,7 @@ Use the supported Go toolchain from [CONTRIBUTING](../CONTRIBUTING.md). The defa
 
 For control-only Go development or cross-compilation, use `make connector-ctl`; `make connector-vpp` builds only the static dataplane; `make vpp` and `make egress` are aliases. Native license materials are retained in `native-deps/build/<arch>/vpp/licenses` for packaging.
 
-The component release keeps the same runtime layout under `bin/`, alongside the normal `deploy/` and `share/licenses/connector` directories. Extract the component archive once, for example into `/opt/connector`, and retain the entire `bin/` directory. The gateway example selects `/opt/connector/bin/connector-vpp` through its `vpp` field. VPP, the fixed six plugins and glibc are linked into that executable, which requires no shared libraries. Install the control program and dataplane from the same component version. Platform CI and node-infra consume these files directly.
+The component release keeps the same runtime layout under `bin/`, alongside the normal `deploy/` and `share/licenses/connector` directories. Extract the component archive once, for example into `/opt/connector`, and retain the entire `bin/` directory. The gateway example omits `vpp`: `connector-ctl` resolves its own executable path and uses the adjacent `connector-vpp`, including when the control program is invoked through the source build's symlink. Set `vpp` to an absolute path only when overriding this default. VPP, the fixed six plugins and glibc are linked into that executable, which requires no shared libraries. Install the control program and dataplane from the same component version. Platform CI and node-infra consume these files directly.
 
 ### Maintain the upstream patches
 

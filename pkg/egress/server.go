@@ -25,6 +25,36 @@ func runtimeEnv() []string {
 	return append(os.Environ(), "TERM=dumb", "CONNECTOR_EGRESS_PRIVATE_MEMORY=1")
 }
 
+// Resolve only when starting the child. Config retains the user's optional
+// override so reloading the same file does not compare it with a derived path.
+func dataplaneExecutable(configured string) (string, error) {
+	path := configured
+	if path == "" {
+		control, err := os.Executable()
+		if err != nil {
+			return "", fmt.Errorf("locate connector-ctl executable: %w", err)
+		}
+		// Source builds expose bin/connector-ctl as a link to bin/<arch>.
+		// The matching dataplane is beside the actual control executable.
+		control, err = filepath.EvalSymlinks(control)
+		if err != nil {
+			return "", fmt.Errorf("resolve connector-ctl executable: %w", err)
+		}
+		path = filepath.Join(filepath.Dir(control), "connector-vpp")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if configured == "" {
+			return "", fmt.Errorf("default Egress dataplane %q is unavailable: %w; install connector-vpp alongside connector-ctl or set vpp explicitly", path, err)
+		}
+		return "", fmt.Errorf("Egress dataplane %q is unavailable: %w", path, err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+		return "", fmt.Errorf("Egress dataplane %q is not a regular executable file", path)
+	}
+	return path, nil
+}
+
 func privateDirectory(path string) error {
 	if err := os.MkdirAll(path, 0700); err != nil {
 		return err
@@ -127,6 +157,10 @@ func Serve(ctx context.Context, path string, log io.Writer) error {
 	if err != nil {
 		return err
 	}
+	dataplane, err := dataplaneExecutable(c.VPP)
+	if err != nil {
+		return err
+	}
 	if err = checkInterfaces(*c, true); err != nil {
 		return err
 	}
@@ -150,7 +184,7 @@ func Serve(ctx context.Context, path string, log io.Writer) error {
 	if err = writeOutput(conf, []byte(startup(*c))); err != nil {
 		return err
 	}
-	process := exec.Command(c.VPP, "-c", conf)
+	process := exec.Command(dataplane, "-c", conf)
 	process.Env = runtimeEnv()
 	process.Stderr = log
 	process.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}

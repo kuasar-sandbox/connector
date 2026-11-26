@@ -221,7 +221,7 @@ def main():
               'routes':[{'destination':'0.0.0.0/0','pool':'primary'},{'destination':'203.0.113.12/32','pool':'secondary'}],
               'dnat':[{'destination':'198.18.1.1/32','protocol':'udp','pool':'secondary','target':'203.0.113.11','target_port':18080}]}
         bits=4 if args.encap=='ether' and not args.legacy else 0
-        cfg={'name':tag,'runtime_dir':str(runtime_dir),'vpp':str(runtime/'connector-vpp'),
+        cfg={'name':tag,'runtime_dir':str(runtime_dir),
              'interfaces':[{'name':gateway,'address':'198.18.0.1/24','mtu':9000},
                            {'name':tag+'x0','address':'192.0.2.1/24','mtu':1500},
                            {'name':tag+'x1','address':'198.19.0.1/24','mtu':1500}],

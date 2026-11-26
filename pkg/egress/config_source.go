@@ -79,6 +79,20 @@ func checkSourceNode(n *yaml.Node, depth int) error {
 	return nil
 }
 
+func (c *Config) UnmarshalJSON(raw []byte) error {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &members); err != nil {
+		return err
+	}
+	for key, value := range members {
+		if strings.EqualFold(key, "vpp") && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return errors.New("vpp must be omitted or a string, not null")
+		}
+	}
+	type sourceConfig Config
+	return decodeJSON(raw, (*sourceConfig)(c))
+}
+
 // StringSet is written as one string or a list, without parallel field names.
 type StringSet []string
 

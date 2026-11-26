@@ -10,7 +10,7 @@
 
 两种架构分别原生构建。`TARGET_ARCH` 选择 `x86_64` 或 `aarch64`，也接受 `amd64`、`arm64` 别名；原生构建会核对目标与宿主架构。CPU 基线在 x86_64 上为 `x86-64-v2`，aarch64 上为 `armv8-a+crc`。源码、下载缓存与架构独立的对象目录 `native-deps/build/<arch>/vpp` 分开保留。`KUASAR_BUILD_JOBS` 控制并发度；编译器、glibc 静态库和原生依赖属于所选构建环境的一部分。
 
-以下构建依赖示例以 Ubuntu 24.04 和 CMake/Ninja 为基础。编译器沿用上游 VPP 的选择规则：设置 `CC` 时使用指定编译器，否则优先选择 Clang，再回退到 GCC。
+以下构建依赖示例以 Ubuntu 24.04 和 CMake/Ninja 为基础。编译器沿用上游 VPP 的选择规则：设置 `CC` 时使用指定编译器，否则优先选择 Clang，再回退到 GCC。切换编译器或编译参数前，先运行 `make -C native-deps clean` 清理 CMake 构建目录；源码和已下载的归档会保留。
 
 ```bash
 sudo apt-get update
@@ -32,7 +32,7 @@ Go 工具链遵循 [CONTRIBUTING](../CONTRIBUTING_zh.md)。默认 `make build` �
 
 仅开发或交叉编译 Go 控制程序时使用 `make connector-ctl`；`make connector-vpp` 单独构建全静态数据面，`make vpp` 与 `make egress` 为其别名。原生许可证材料保留在 `native-deps/build/<arch>/vpp/licenses`，供打包流程使用。
 
-组件发布包在 `bin/` 下保留相同运行目录结构，并携带既有 `deploy/` 和 `share/licenses/connector` 许可证目录。将组件归档一次解压至例如 `/opt/connector`，保留完整的 `bin/` 目录；网关示例通过 `vpp` 字段选择 `/opt/connector/bin/connector-vpp`。VPP、固定六插件和 glibc 均静态链接到该可执行文件，运行时不需要共享库。控制程序与数据面须来自同一组件版本。平台 CI 与 node-infra 直接使用这些文件。
+组件发布包在 `bin/` 下保留相同运行目录结构，并携带既有 `deploy/` 和 `share/licenses/connector` 许可证目录。将组件归档一次解压至例如 `/opt/connector`，保留完整的 `bin/` 目录；网关示例省略 `vpp`：`connector-ctl` 解析自身可执行文件路径，并使用同目录的 `connector-vpp`；通过源码构建的符号链接启动时也遵循此规则。需要覆盖默认路径时，再设置绝对路径 `vpp`。VPP、固定六插件和 glibc 均静态链接到该可执行文件，运行时不需要共享库。控制程序与数据面须来自同一组件版本。平台 CI 与 node-infra 直接使用这些文件。
 
 ### 维护上游补丁
 

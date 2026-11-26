@@ -10,7 +10,7 @@ Egress 是通过文件配置的 IPv4 Geneve 转发网关，提供有序 ACL、TC
 
 按照[构建与验收](../egress/README_zh.md)构建相互匹配的全静态 `connector-vpp` 数据面和纯 Go `connector-ctl`，安装同一组件版本的两个可执行文件。配置中的网关/SNAT 地址归 VPP 所有，Linux 不得在同一接口重复持有这些地址；无关 Linux IPv4 地址可以保留。数据面在转发前处理 AF_PACKET 携带的校验和和 TCP 分段元数据，不要求修改借用设备或外部对端的 offload 设置；本地专用 veth 仍按既有 vSwitch 报文契约准备。
 
-本地部署参考 [link.json](../dist/egress/link.json)、[switch.json](../dist/egress/switch.json)、[gateway.yaml](../dist/egress/gateway.yaml) 和 [area7.yaml](../dist/egress/area7.yaml)。将选定组件归档解压至 `/opt/connector`，保留完整的 `bin/` 目录；服务模板和网关示例采用此前缀。以下命令使用 `/opt/connector/bin/connector-ctl`，也可先将该目录加入 `PATH`。配置中的 `vpp` 字段指向 `/opt/connector/bin/connector-vpp`。部署前替换示例地址和资源。
+本地部署参考 [link.json](../dist/egress/link.json)、[switch.json](../dist/egress/switch.json)、[gateway.yaml](../dist/egress/gateway.yaml) 和 [area7.yaml](../dist/egress/area7.yaml)。将选定组件归档解压至 `/opt/connector`，保留完整的 `bin/` 目录；服务模板和网关示例采用此前缀。以下命令使用 `/opt/connector/bin/connector-ctl`，也可先将该目录加入 `PATH`。`vpp` 是可选的绝对路径覆盖项；省略时，`connector-ctl` 在自身可执行文件所在目录定位 `connector-vpp`，先解析控制程序的符号链接，查找不受工作目录或 `PATH` 影响。部署前替换示例地址和资源。
 
 1. 运行 `connector-ctl egress link prepare --config link.json`。vSwitch 停止时，其接线端保留在稳定 owner namespace，网关端保留在 Egress namespace，并记录 namespace 与设备归属。
 2. 由外部网络所有者将 uplink 放入网关 namespace，配置 MTU 并启用。SNAT 资源必须具有真实外部可达性；主机默认路由不隐式构成 Pool 出口。
