@@ -82,7 +82,7 @@ for line in sys.stdin:
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument('--ctl',required=True)
-    ap.add_argument('--vpp-build',required=True)
+    ap.add_argument('--runtime',required=True,help='Connector bin directory containing vpp and lib/<triplet>')
     ap.add_argument('--output',required=True)
     ap.add_argument('--locator',choices=['port','vni','tlv'],default='port')
     ap.add_argument('--encap',choices=['ether','ip'],default='ether')
@@ -195,7 +195,7 @@ def main():
         run('ip','-n',names['out'],'addr','add','203.0.113.11/32','dev','lo')
         run('ip','-n',names['out'],'addr','add','203.0.113.12/32','dev','lo')
         spawn(['ip','netns','exec',names['out'],'python3','-u','-c',SERVER],'backend.log')
-        build=Path(args.vpp_build);lib=next((build/'lib').glob('*-linux-gnu'))
+        runtime=Path(args.runtime).resolve();lib=runtime/'lib'/(os.uname().machine+'-linux-gnu')
         area={'vni':7,'pools':[{'name':'primary','interface':tag+'x0','next_hop':'192.0.2.2','addresses':['192.0.2.1'],'max_connections':2},
                                {'name':'secondary','interface':tag+'x1','next_hop':'198.19.0.2','addresses':['198.19.0.1'],'max_connections':1}],
               'acl':[{'destination':'203.0.113.0/24','protocol':'any','action':'allow'},
@@ -203,7 +203,7 @@ def main():
               'routes':[{'destination':'0.0.0.0/0','pool':'primary'},{'destination':'203.0.113.12/32','pool':'secondary'}],
               'dnat':[{'destination':'198.18.1.1/32','protocol':'udp','pool':'secondary','target':'203.0.113.11','target_port':18080}]}
         bits=4 if args.encap=='ether' and not args.legacy else 0
-        cfg={'name':tag,'runtime_dir':str(runtime_dir),'vpp':str(build/'bin/vpp'),
+        cfg={'name':tag,'runtime_dir':str(runtime_dir),'vpp':str(runtime/'vpp'),
              'plugin_path':str(lib/'vpp_plugins'),'library_path':str(lib),
              'interfaces':[{'name':gateway,'address':'198.18.0.1/24','mtu':9000},
                            {'name':tag+'x0','address':'192.0.2.1/24','mtu':1500},

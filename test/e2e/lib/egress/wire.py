@@ -247,7 +247,7 @@ def backend_process():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--ctl', required=True)
-    parser.add_argument('--vpp-build', required=True)
+    parser.add_argument('--runtime', required=True, help='Connector bin directory containing vpp and lib/<triplet>')
     parser.add_argument('--output', required=True)
     parser.add_argument('--contexts', type=int, default=32)
     parser.add_argument('--flows', type=int, default=16)
@@ -337,11 +337,11 @@ def main():
         run('ip', '-n', namespaces['out'], 'addr', 'add', '203.0.113.11/32', 'dev', 'lo')
         run('ip','-n',namespaces['out'],'addr','add','198.18.1.1/32','dev','lo')
         run('ip', 'netns', 'exec', namespaces['out'], 'sysctl', '-qw', 'net.ipv4.conf.all.arp_announce=2')
-        build = Path(args.vpp_build); lib = next((build/'lib').glob('*-linux-gnu'))
+        runtime = Path(args.runtime).resolve(); lib = runtime/'lib'/(os.uname().machine+'-linux-gnu')
         cpus = sorted(os.sched_getaffinity(0))
         if len(cpus)<2:raise RuntimeError('native acceptance requires at least two CPUs')
         result['workers']=min(2,len(cpus)-1)
-        cfg = dict(name=tag, runtime_dir=str(out/'runtime'), vpp=str(build/'bin/vpp'),
+        cfg = dict(name=tag, runtime_dir=str(out/'runtime'), vpp=str(runtime/'vpp'),
                    plugin_path=str(lib/'vpp_plugins'), library_path=str(lib), main_core=cpus[0], workers=cpus[1:3],
                    timeouts=dict(udp=900,tcp_transitory=900,tcp_established=900,icmp=900), interfaces=[], attachments=[], areas=[])
         for index in range(len(peer_keys)+1):

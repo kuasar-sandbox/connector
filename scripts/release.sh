@@ -98,7 +98,7 @@ check_go_binary() {
 }
 
 validate_archive_paths() {
-  local archive="$1" listing="$WORK/listing"
+  local archive="$1" arch="$2" listing="$WORK/listing"
   tar -tzf "$archive" > "$listing"
   awk '
     /^\// { exit 1 }
@@ -116,9 +116,11 @@ deploy/connector-vswitch.service
 test/connector/perf_bench.sh
 test/connector/start_perf_bench.sh
 EOF
-  if grep -qE '^(\./)?bin/connector-egress[.]bundle$' "$listing"; then
+  local native_files="$WORK/native-archive-files"
+  python3 "$TOOL_ROOT/scripts/vpp-runtime.py" archive-files --arch "$arch" --archive "$archive" > "$native_files"
+  if [ -s "$native_files" ]; then
+    cat "$native_files" >> "$expected_files"
     cat >> "$expected_files" <<'EOF'
-bin/connector-egress.bundle
 deploy/connector-egress@.service
 deploy/egress/area7.yaml
 deploy/egress/gateway.yaml
@@ -143,7 +145,7 @@ EOF
     $1 !~ /^-/ { exit 1 }
     {
       path=$6; sub(/^\.\//, "", path)
-      expected=(path ~ /^(bin\/|test\/connector\/)/ && path !~ /\.bundle$/ ? "-rwxr-xr-x" : "-rw-r--r--")
+      expected=(path ~ /^bin\/(connector-ctl|vpp)$/ || path ~ /^test\/connector\// ? "-rwxr-xr-x" : "-rw-r--r--")
       if ($1 != expected) exit 1
     }
   ' || fail "$archive contains an unsafe type, mode or ownership"
@@ -170,14 +172,17 @@ validate_bundle() {
     || fail "release archive must be a nonempty regular file"
 
 
-  validate_archive_paths "$bundle/assets/$archive"
+  validate_archive_paths "$bundle/assets/$archive" "$arch"
   local extract="$WORK/extract"
   rm -rf "$extract"
   mkdir -p "$extract"
   tar -xzf "$bundle/assets/$archive" -C "$extract"
   check_go_binary "$extract/bin/connector-ctl" "$arch"
-  if [ -f "$extract/bin/connector-egress.bundle" ]; then
-    python3 "$TOOL_ROOT/scripts/egress-bundle.py" validate --arch "$arch" --bundle "$extract/bin/connector-egress.bundle"
+  if [ -f "$extract/bin/vpp-runtime.json" ]; then
+    python3 "$TOOL_ROOT/scripts/vpp-runtime.py" validate --arch "$arch" --runtime "$extract/bin"
+    [ -s "$extract/share/licenses/connector/native/VPP-LICENSE" ] \
+      && [ -s "$extract/share/licenses/connector/native/VPP-EMBEDDED-NOTICES" ] \
+      || fail "native VPP license materials are required"
   fi
   release_materials_validate "$extract" "$NAME"
   [ -s "$extract/share/licenses/connector/project/LICENSE" ] \
@@ -213,10 +218,10 @@ package_release() {
   project_sha="$(release_materials_resolve_git_source "$ROOT" "" connector)"
   copy_executable "$bin_dir/connector-ctl" bin/connector-ctl
   check_go_binary "$STAGE/bin/connector-ctl" "$arch"
-  if [ -f "$ROOT/egress/package.sh" ]; then
-    [ -f "$bin_dir/connector-egress.bundle" ] || fail "missing native Egress runtime; build connector-egress.bundle"
-    install -m 0644 "$bin_dir/connector-egress.bundle" "$STAGE/bin/connector-egress.bundle"
-    python3 "$TOOL_ROOT/scripts/egress-bundle.py" validate --arch "$arch" --bundle "$STAGE/bin/connector-egress.bundle" --source "$ROOT/egress"
+  if [ -f "$ROOT/native-deps/deps/build-vpp.sh" ]; then
+    [ -f "$bin_dir/vpp-runtime.json" ] || fail "missing native VPP runtime; run make vpp"
+    python3 "$TOOL_ROOT/scripts/vpp-runtime.py" copy --arch "$arch" \
+      --runtime "$bin_dir" --output "$STAGE/bin" --source "$ROOT"
     copy_file dist/connector-egress@.service deploy/connector-egress@.service
     for file in area7.yaml gateway.yaml link.json switch.json; do
       copy_file "dist/egress/$file" "deploy/egress/$file"
@@ -239,12 +244,14 @@ package_release() {
   release_materials_record_source bin/connector-ctl embedded-ebpf "$version" \
     "https://github.com/kuasar-sandbox/connector/blob/$project_sha/bpf/switch_kern.c" \
     "git:$project_sha;spdx:GPL-2.0-only" project
-  if [ -f "$STAGE/bin/connector-egress.bundle" ]; then
-    python3 "$TOOL_ROOT/scripts/egress-bundle.py" extract --arch "$arch" --bundle "$STAGE/bin/connector-egress.bundle" --runtime "$WORK/native-runtime"
+  if [ -f "$STAGE/bin/vpp-runtime.json" ]; then
+    local native_licenses="$ROOT/native-deps/build/$arch/vpp/licenses" native_sha
+    [ -s "$native_licenses/VPP-LICENSE" ] && [ -s "$native_licenses/VPP-EMBEDDED-NOTICES" ] \
+      || fail "missing native VPP build license materials; run make vpp"
     mkdir -p "$STAGE/share/licenses/connector/native"
-    cp -a "$WORK/native-runtime/share/licenses/." "$STAGE/share/licenses/connector/native/"
-    native_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["vpp"]["commit"])' "$WORK/native-runtime/runtime.json")"
-    release_materials_record_source bin/connector-egress.bundle vpp "$native_sha" \
+    cp -a "$native_licenses/." "$STAGE/share/licenses/connector/native/"
+    native_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["vpp"]["commit"])' "$STAGE/bin/vpp-runtime.json")"
+    release_materials_record_source 'bin/vpp,bin/lib/*,bin/vpp-runtime.json' vpp "$native_sha" \
       "https://github.com/FDio/vpp/commit/$native_sha" "git:$native_sha" native
   fi
   release_materials_add_go_binary "$STAGE/bin/connector-ctl" bin/connector-ctl

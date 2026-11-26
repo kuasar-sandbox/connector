@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/FDio/vpp.git",
+  "commit": "4acb320269bc4f3533e35c80afedac38853b2f60",
+  "version": "26.10",
+  "tarball": "https://codeload.github.com/FDio/vpp/tar.gz/4acb320269bc4f3533e35c80afedac38853b2f60#vpp-26.10.tar.gz",
+  "tarball_sha256": "771510ff945944acae6ffe4b6cb55e4294e3df6f648fa663b0a7e7bea134ac40"
+}

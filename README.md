@@ -40,7 +40,7 @@ The base vSwitch provides:
 
 The top-level purpose is not a particular Slot, VNI, UDP-port, or TLV encoding. Those mechanisms let a deployment assign each sandbox an independent tunnel-plane identity and carry trusted sandbox metadata to an external policy gateway. The gateway can then apply sandbox-level public-network, private-network, DNS, proxy, audit, and traffic-governance rules without embedding application policy in the base switch.
 
-The [Geneve Egress gateway](docs/egress.md) adds the same Area/Pool policy and native NAT service to local and remote deployments. Local deployment owns a dedicated transit veth and its namespace handoff. Build its pinned native runtime separately from the pure-Go control binary; see [Egress build and acceptance](egress/README.md). This implements [proposal #117](https://github.com/kuasar-sandbox/connector/issues/117), which supersedes #9.
+The [Geneve Egress gateway](docs/egress.md) adds the same Area/Pool policy and native NAT service to local and remote deployments. Local deployment owns a dedicated transit veth and its namespace handoff. Build its pinned native runtime through `native-deps`, alongside the pure-Go control binary in `bin/<arch>`; see [Egress build and acceptance](egress/README.md). This implements [proposal #117](https://github.com/kuasar-sandbox/connector/issues/117), which supersedes #9.
 
 ## Main interfaces
 
@@ -63,7 +63,7 @@ Current attachment traffic reads and reset/error semantics are documented in [vS
 
 ## Distribution
 
-Component releases use `vX.Y.Z`; the platform selects exact component tags in independent `release-vX.Y.Z` releases. Component archives supply the native `connector-ctl`, deployment templates and selected helpers. The aggregate archive supplies selected guides and prepared E2E inputs. Available architectures depend on the selected release assets. See [installation](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/installation.md) and [component packaging](CONTRIBUTING.md#component-packaging-and-releases).
+Component releases use `vX.Y.Z`; the platform selects exact component tags in independent `release-vX.Y.Z` releases. Component archives supply `bin/connector-ctl`, the matching `bin/vpp` and `bin/lib/<triplet>` runtime with `bin/vpp-runtime.json`, deployment templates and selected helpers. The aggregate archive supplies selected guides and prepared E2E inputs. Available architectures depend on the selected release assets. See [installation](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/installation.md) and [component packaging](CONTRIBUTING.md#component-packaging-and-releases).
 
 ## Project boundaries
 

@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=exec
-ExecStart=/usr/sbin/ip netns exec %i /usr/local/bin/connector-ctl egress serve --config /etc/connector-egress/%i.yaml
+ExecStart=/usr/sbin/ip netns exec %i /opt/connector/bin/connector-ctl egress serve --config /etc/connector-egress/%i.yaml
 ExecReload=/bin/kill -HUP $MAINPID
 StateDirectory=connector-egress/%i
 StateDirectoryMode=0700

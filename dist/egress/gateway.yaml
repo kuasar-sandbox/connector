@@ -1,8 +1,8 @@
 name: local
 runtime_dir: /var/lib/connector-egress/egress-local
-vpp: /opt/connector-egress/bin/vpp
-plugin_path: /opt/connector-egress/lib/x86_64-linux-gnu/vpp_plugins
-library_path: /opt/connector-egress/lib/x86_64-linux-gnu
+vpp: /opt/connector/bin/vpp
+plugin_path: /opt/connector/bin/lib/x86_64-linux-gnu/vpp_plugins
+library_path: /opt/connector/bin/lib/x86_64-linux-gnu
 interfaces:
 - name: egress-rx
   address: 198.18.0.1/24

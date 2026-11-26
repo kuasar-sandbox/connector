@@ -10,7 +10,7 @@ Egress 是通过文件配置的 IPv4 Geneve 转发网关，提供有序 ACL、TC
 
 按照[构建与验收](../egress/README_zh.md)构建相互匹配的原生运行时和纯 Go 控制程序。可执行文件、运行库与插件须配套。配置中的网关/SNAT 地址归 VPP 所有，Linux 不得在同一接口重复持有这些地址；无关 Linux IPv4 地址可以保留。数据面在转发前处理 AF_PACKET 携带的校验和和 TCP 分段元数据，不要求修改借用设备或外部对端的 offload 设置；本地专用 veth 仍按既有 vSwitch 报文契约准备。
 
-本地部署参考 [link.json](../dist/egress/link.json)、[switch.json](../dist/egress/switch.json)、[gateway.yaml](../dist/egress/gateway.yaml) 和 [area7.yaml](../dist/egress/area7.yaml)。部署前替换示例地址和资源；ARM64 使用 `aarch64-linux-gnu` 库路径。
+本地部署参考 [link.json](../dist/egress/link.json)、[switch.json](../dist/egress/switch.json)、[gateway.yaml](../dist/egress/gateway.yaml) 和 [area7.yaml](../dist/egress/area7.yaml)。将选定组件归档解压至 `/opt/connector`，保留完整的 `bin/` 目录；服务模板和网关示例采用此前缀。以下命令使用 `/opt/connector/bin/connector-ctl`，也可先将该目录加入 `PATH`。部署前替换示例地址和资源；ARM64 使用 `aarch64-linux-gnu` 库路径。
 
 1. 运行 `connector-ctl egress link prepare --config link.json`。vSwitch 停止时，其接线端保留在稳定 owner namespace，网关端保留在 Egress namespace，并记录 namespace 与设备归属。
 2. 由外部网络所有者将 uplink 放入网关 namespace，配置 MTU 并启用。SNAT 资源必须具有真实外部可达性；主机默认路由不隐式构成 Pool 出口。
@@ -112,6 +112,6 @@ IP 封装和 legacy Ether 不增加新身份字段，既有协议无法区分身
 
 ## 组件交付与 node-infra
 
-同版本 Connector 发行包包含 `bin/connector-egress.bundle`、控制程序、`deploy/connector-egress@.service` 和 `deploy/egress` 示例。平台将原生运行时解压至 `/opt/node-infra/lib/connector-egress`；配置需选用对应架构的库和插件路径。
+同版本 Connector 发行包将 `connector-ctl`、`vpp`、`lib/<triplet>/` 和 `vpp-runtime.json` 直接放在 `bin/` 下，同时包含原生许可证材料、`deploy/connector-egress@.service` 和 `deploy/egress` 示例。安装或复制组件时保留完整目录。node-infra 中这些文件位于 `/opt/node-infra/bin`，网关使用 `/opt/node-infra/bin/vpp`，并选用 `/opt/node-infra/bin/lib/<triplet>` 下对应架构的库和插件。
 
 本地网关将主配置、Area 文件和 `link.json` 挂载到 `/etc/connector-egress`，参考平台 `node-infra/examples/local-egress`。现有节点准备流程管理共享链路；`owner_netns: ""` 表示节点流程保留的主网络命名空间，每次操作均核对其 inode。vSwitch 继续通过原有节点服务启停。Egress 仅运行转发进程，通过 SIGHUP reload，不接收沙箱生命周期通知。普通服务停止保留 pair；最终 owner 卸载在网关与 vSwitch 停止后清理 pair。借用的网关 namespace 和 Pool 接口由外部所有者保留。

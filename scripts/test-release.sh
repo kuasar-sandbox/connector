@@ -23,7 +23,7 @@ fail() {
 # shellcheck source=scripts/release-materials.sh
 source "$ROOT/scripts/release-materials.sh"
 
-python3 -B "$ROOT/scripts/test-egress-bundle.py"
+python3 -B "$ROOT/scripts/test-vpp-runtime.py"
 bash "$ROOT/scripts/test-release-materials.sh"
 PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/scripts/test-selected-go-materials.py"
 PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/scripts/test-release-go-environment.py"
@@ -185,6 +185,7 @@ install -m 0644 "$ROOT/LICENSE_SCOPE_zh.md" "$fixture_root/LICENSE_SCOPE_zh.md"
 cp -a "$ROOT/LICENSES" "$fixture_root/LICENSES"
 printf '/bin/\n/build/\n' > "$fixture_root/.gitignore"
 install -m 0755 "$ROOT/scripts/release.sh" "$fixture_root/scripts/release.sh"
+install -m 0755 "$ROOT/scripts/vpp-runtime.py" "$fixture_root/scripts/vpp-runtime.py"
 install -m 0755 "$ROOT/scripts/release-materials.sh" "$fixture_root/scripts/release-materials.sh"
 install -m 0755 "$ROOT/scripts/publish-release.sh" "$fixture_root/scripts/publish-release.sh"
 install -m 0644 "$ROOT/scripts/release-publisher.py" "$fixture_root/scripts/release-publisher.py"

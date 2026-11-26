@@ -1,0 +1,25 @@
+From 54f8e7cb750b3cc0883b21fe55b4d03c17952c2b Mon Sep 17 00:00:00 2001
+From: Xiaohui Chen <9959614+fullof-work@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 17:48:54 +0800
+Subject: [PATCH 1/5] af-packet: preserve virtio framing with disabled offloads
+
+---
+ src/plugins/af_packet/af_packet.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/plugins/af_packet/af_packet.c b/src/plugins/af_packet/af_packet.c
+index f662082..8962f51 100644
+--- a/src/plugins/af_packet/af_packet.c
++++ b/src/plugins/af_packet/af_packet.c
+@@ -776,6 +776,11 @@ af_packet_create_if (af_packet_create_if_arg_t *arg)
+ 
+   if (arg->flags & AF_PACKET_IF_FLAGS_CKSUM_GSO)
+     {
++      /* PACKET_VNET_HDR changes the socket framing even when the host device
++       * has offloads disabled. RX metadata and every TX frame still need
++       * the virtio header; hardware capabilities only control advertised
++       * output offloads. */
++      apif->is_cksum_gso_enabled = 1;
+       if (apif->host_interface_oflags & AF_PACKET_OFFLOAD_FLAG_TXCKSUM)
+ 	{
+ 	  apif->is_cksum_gso_enabled = 1;

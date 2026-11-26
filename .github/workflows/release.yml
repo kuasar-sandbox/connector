@@ -172,7 +172,8 @@ jobs:
               --root /src --owners connector --bound-release --version '${{ needs.preflight.outputs.version }}')"
             export GOWORK
             if [ "$TARGET_ARCH" = x86_64 ]; then make test; make vet; fi
-            make build connector-egress.bundle
+            make connector-ctl test-native-deps
+            KUASAR_WORKSPACE_ROOT=/src bash /inputs/release/ci/native-cache/native-cache.sh restore-or-build vpp
             VERSION='${{ needs.preflight.outputs.version }}'
             [ "$(git rev-parse HEAD)" = "${{ needs.preflight.outputs.source_sha }}" ]
             export SOURCE_DATE_EPOCH

@@ -1,0 +1,74 @@
+From e61e35cbc4d347be911bda228ab2d423226de795 Mon Sep 17 00:00:00 2001
+From: Xiaohui Chen <9959614+fullof-work@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 17:48:54 +0800
+Subject: [PATCH 4/5] ip4: allow gateway source admission and ICMP source
+ selection
+
+---
+ src/vnet/ip/icmp4.c       | 12 +++++++++++-
+ src/vnet/ip/ip4_forward.c | 15 +++++++++++++++
+ 2 files changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/src/vnet/ip/icmp4.c b/src/vnet/ip/icmp4.c
+index c8f0109..913c83d 100644
+--- a/src/vnet/ip/icmp4.c
++++ b/src/vnet/ip/icmp4.c
+@@ -11,6 +11,15 @@
+ #include <vnet/ip/ip_sas.h>
+ #include <vnet/util/throttle.h>
+ 
++/* Optional source selection for addressless, isolated Egress return FIBs.
++ * The gateway registers a hook; all other interfaces keep native selection. */
++static int (*ip4_icmp_error_source) (u32, ip4_address_t *);
++__clib_export void
++ip4_icmp_error_source_register (int (*source) (u32, ip4_address_t *))
++{
++  ip4_icmp_error_source = source;
++}
++
+ /** ICMP throttling */
+ static throttle_t icmp_throttle;
+ 
+@@ -307,7 +316,8 @@ ip4_icmp_error (vlib_main_t * vm,
+ 	  out_ip0->protocol = IP_PROTOCOL_ICMP;
+ 	  out_ip0->dst_address = ip0->src_address;
+ 	  /* Prefer a source address from "offending interface" */
+-	  if (!ip4_sas_by_sw_if_index (sw_if_index0, &out_ip0->dst_address,
++	  if (!(ip4_icmp_error_source && ip4_icmp_error_source (sw_if_index0, &out_ip0->src_address))
++              && !ip4_sas_by_sw_if_index (sw_if_index0, &out_ip0->dst_address,
+ 				       &out_ip0->src_address))
+ 	    { /* interface has no IP4 address - should not happen */
+ 	      next0 = IP4_ICMP_ERROR_NEXT_DROP;
+diff --git a/src/vnet/ip/ip4_forward.c b/src/vnet/ip/ip4_forward.c
+index da99989..0328c67 100644
+--- a/src/vnet/ip/ip4_forward.c
++++ b/src/vnet/ip/ip4_forward.c
+@@ -1444,6 +1444,17 @@ ip4_local_check_l4_csum_x2 (vlib_main_t *vm, vlib_buffer_t **b, ip4_header_t **i
+ 	      IP4_ERROR_TCP_CHECKSUM + is_udp[1] : error[1]);
+ }
+ 
++/* A tunnel ingress can authorize its first routed peer before a learned
++ * return route exists. Only a source-route miss is eligible; checksum and
++ * spoofed-local errors remain intact. Admission is evaluated per packet,
++ * after the ordinary source-lookup cache, so it cannot leak across peers. */
++static int (*ip4_local_source_admit) (vlib_buffer_t *, ip4_header_t *);
++__clib_export void
++ip4_local_source_admit_register (int (*fn) (vlib_buffer_t *, ip4_header_t *))
++{
++  ip4_local_source_admit = fn;
++}
++
+ always_inline void
+ ip4_local_set_next_and_error (vlib_node_runtime_t *error_node, vlib_buffer_t *b, u16 *next,
+ 			      u8 error, u8 head_of_feature_arc)
+@@ -1451,6 +1462,10 @@ ip4_local_set_next_and_error (vlib_node_runtime_t *error_node, vlib_buffer_t *b,
+   u8 arc_index = vnet_feat_arc_ip4_local.feature_arc_index;
+   u32 next_index;
+ 
++  if (error == IP4_ERROR_SRC_LOOKUP_MISS && ip4_local_source_admit &&
++      ip4_local_source_admit (b, vlib_buffer_get_current (b)))
++    error = IP4_ERROR_UNKNOWN_PROTOCOL;
++
+   *next = error != IP4_ERROR_UNKNOWN_PROTOCOL ? IP_LOCAL_NEXT_DROP : *next;
+   b->error = error ? error_node->errors[error] : 0;
+   if (head_of_feature_arc)
