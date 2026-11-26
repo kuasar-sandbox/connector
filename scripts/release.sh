@@ -116,10 +116,21 @@ deploy/connector-vswitch.service
 test/connector/perf_bench.sh
 test/connector/start_perf_bench.sh
 EOF
+  if grep -qE '^(\./)?bin/connector-egress[.]bundle$' "$listing"; then
+    cat >> "$expected_files" <<'EOF'
+bin/connector-egress.bundle
+deploy/connector-egress@.service
+deploy/egress/area7.yaml
+deploy/egress/gateway.yaml
+deploy/egress/link.json
+deploy/egress/switch.json
+EOF
+  fi
   awk '
     { path=$0; sub(/^\.\//, "", path) }
     path != "" && path !~ /\/$/ && path !~ /^share\/licenses\/connector\// { print path }
   ' "$listing" | LC_ALL=C sort > "$actual_files"
+  LC_ALL=C sort -o "$expected_files" "$expected_files"
   cmp -s "$expected_files" "$actual_files" \
     || { diff -u "$expected_files" "$actual_files" >&2 || true; fail "$archive does not match the exact connector release file set"; }
 
@@ -132,7 +143,7 @@ EOF
     $1 !~ /^-/ { exit 1 }
     {
       path=$6; sub(/^\.\//, "", path)
-      expected=(path ~ /^(bin\/|test\/connector\/)/ ? "-rwxr-xr-x" : "-rw-r--r--")
+      expected=(path ~ /^(bin\/|test\/connector\/)/ && path !~ /\.bundle$/ ? "-rwxr-xr-x" : "-rw-r--r--")
       if ($1 != expected) exit 1
     }
   ' || fail "$archive contains an unsafe type, mode or ownership"
@@ -165,6 +176,9 @@ validate_bundle() {
   mkdir -p "$extract"
   tar -xzf "$bundle/assets/$archive" -C "$extract"
   check_go_binary "$extract/bin/connector-ctl" "$arch"
+  if [ -f "$extract/bin/connector-egress.bundle" ]; then
+    python3 "$TOOL_ROOT/scripts/egress-bundle.py" validate --arch "$arch" --bundle "$extract/bin/connector-egress.bundle"
+  fi
   release_materials_validate "$extract" "$NAME"
   [ -s "$extract/share/licenses/connector/project/LICENSE" ] \
     && [ -s "$extract/share/licenses/connector/project/LICENSES/GPL-2.0-only.txt" ] \
@@ -199,6 +213,15 @@ package_release() {
   project_sha="$(release_materials_resolve_git_source "$ROOT" "" connector)"
   copy_executable "$bin_dir/connector-ctl" bin/connector-ctl
   check_go_binary "$STAGE/bin/connector-ctl" "$arch"
+  if [ -f "$ROOT/egress/package.sh" ]; then
+    [ -f "$bin_dir/connector-egress.bundle" ] || fail "missing native Egress runtime; build connector-egress.bundle"
+    install -m 0644 "$bin_dir/connector-egress.bundle" "$STAGE/bin/connector-egress.bundle"
+    python3 "$TOOL_ROOT/scripts/egress-bundle.py" validate --arch "$arch" --bundle "$STAGE/bin/connector-egress.bundle" --source "$ROOT/egress"
+    copy_file dist/connector-egress@.service deploy/connector-egress@.service
+    for file in area7.yaml gateway.yaml link.json switch.json; do
+      copy_file "dist/egress/$file" "deploy/egress/$file"
+    done
+  fi
   copy_root_executable examples/perf_bench.sh test/connector/perf_bench.sh
   copy_root_executable examples/start_perf_bench.sh test/connector/start_perf_bench.sh
   copy_file dist/connector-vswitch.service deploy/connector-vswitch.service
@@ -216,6 +239,14 @@ package_release() {
   release_materials_record_source bin/connector-ctl embedded-ebpf "$version" \
     "https://github.com/kuasar-sandbox/connector/blob/$project_sha/bpf/switch_kern.c" \
     "git:$project_sha;spdx:GPL-2.0-only" project
+  if [ -f "$STAGE/bin/connector-egress.bundle" ]; then
+    python3 "$TOOL_ROOT/scripts/egress-bundle.py" extract --arch "$arch" --bundle "$STAGE/bin/connector-egress.bundle" --runtime "$WORK/native-runtime"
+    mkdir -p "$STAGE/share/licenses/connector/native"
+    cp -a "$WORK/native-runtime/share/licenses/." "$STAGE/share/licenses/connector/native/"
+    native_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["vpp"]["commit"])' "$WORK/native-runtime/runtime.json")"
+    release_materials_record_source bin/connector-egress.bundle vpp "$native_sha" \
+      "https://github.com/FDio/vpp/commit/$native_sha" "git:$native_sha" native
+  fi
   release_materials_add_go_binary "$STAGE/bin/connector-ctl" bin/connector-ctl
   release_materials_finish
 

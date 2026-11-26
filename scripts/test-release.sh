@@ -23,6 +23,7 @@ fail() {
 # shellcheck source=scripts/release-materials.sh
 source "$ROOT/scripts/release-materials.sh"
 
+python3 -B "$ROOT/scripts/test-egress-bundle.py"
 bash "$ROOT/scripts/test-release-materials.sh"
 PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/scripts/test-selected-go-materials.py"
 PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/scripts/test-release-go-environment.py"
@@ -143,6 +144,7 @@ done
 PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/scripts/test-release-publisher.py"
 
 expected_cases=(
+  test/e2e/cases/network.egress.sh
   test/e2e/cases/network.geneve-ethernet.sh
   test/e2e/cases/network.geneve-ip.sh
   test/e2e/cases/network.management.sh
@@ -156,7 +158,7 @@ mapfile -t sorted_expected_cases < <(printf '%s\n' "${expected_cases[@]}" | sort
   || fail "unexpected number of connector network E2E cases"
 for i in "${!sorted_expected_cases[@]}"; do
   [ "${actual_cases[$i]}" = "${sorted_expected_cases[$i]}" ] \
-    || fail "connector network E2E case set differs from the six platform cases"
+    || fail "connector network E2E case set differs from the maintained platform cases"
 done
 for case_path in "${expected_cases[@]}"; do
   [ "$(git -C "$ROOT" ls-files -s -- "$case_path" | awk '{print $1}')" = 100644 ] \

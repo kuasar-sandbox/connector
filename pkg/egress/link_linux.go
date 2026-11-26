@@ -53,10 +53,13 @@ type LinkStatus struct {
 }
 
 func (c *LinkConfig) Validate() error {
-	for _, v := range []string{c.Name, c.OwnerNS, c.GatewayNS, c.SwitchNS, c.Switch, c.Transit, c.Gateway} {
+	for _, v := range []string{c.Name, c.GatewayNS, c.SwitchNS, c.Switch, c.Transit, c.Gateway} {
 		if !identifier.MatchString(v) {
 			return fmt.Errorf("invalid local link identifier %q", v)
 		}
+	}
+	if c.OwnerNS != "" && !identifier.MatchString(c.OwnerNS) {
+		return errors.New("invalid owner namespace")
 	}
 	if c.OwnerNS == c.GatewayNS || c.OwnerNS == c.SwitchNS || c.GatewayNS == c.SwitchNS || c.Transit == c.Gateway {
 		return errors.New("local attachment requires distinct namespaces and endpoints")
@@ -161,8 +164,17 @@ func namespaceIdentity(ns netns.NsHandle) (namespaceRecord, error) {
 	}
 	return namespaceRecord{Dev: uint64(st.Dev), Inode: st.Ino}, nil
 }
+
+// An empty owner uses the deployment manager's current, retained namespace.
+// Its inode is recorded and verified just like a named owner on every operation.
+func linkNamespace(name string) (netns.NsHandle, error) {
+	if name == "" {
+		return netns.Get()
+	}
+	return netns.GetFromName(name)
+}
 func ensureNamespace(name string, record *namespaceRecord) error {
-	ns, err := netns.GetFromName(name)
+	ns, err := linkNamespace(name)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -177,7 +189,7 @@ func ensureNamespace(name string, record *namespaceRecord) error {
 		if createErr != nil {
 			return fmt.Errorf("create network namespace %s: %w: %s", name, createErr, output)
 		}
-		ns, err = netns.GetFromName(name)
+		ns, err = linkNamespace(name)
 		if err != nil {
 			return err
 		}
@@ -196,7 +208,7 @@ func ensureNamespace(name string, record *namespaceRecord) error {
 	return nil
 }
 func verifyNamespace(name string, record namespaceRecord) error {
-	ns, err := netns.GetFromName(name)
+	ns, err := linkNamespace(name)
 	if err != nil {
 		return err
 	}
@@ -211,7 +223,7 @@ func verifyNamespace(name string, record namespaceRecord) error {
 	return nil
 }
 func inNamespace(name string, f func() error) error {
-	ns, err := netns.GetFromName(name)
+	ns, err := linkNamespace(name)
 	if err != nil {
 		return err
 	}
@@ -292,6 +304,9 @@ func inspectLink(s *linkState) (LinkStatus, error) {
 	}
 	if left != nil {
 		status.SwitchEndpoint = c.OwnerNS
+		if c.OwnerNS == "" {
+			status.SwitchEndpoint = "current-owner"
+		}
 	} else if moved != nil {
 		left = moved
 		status.SwitchEndpoint = c.SwitchNS
@@ -302,7 +317,9 @@ func inspectLink(s *linkState) (LinkStatus, error) {
 	}
 	status.GatewayEndpoint = right != nil
 	if left != nil && right != nil {
-		status.PairValid = left.Attrs().ParentIndex == right.Attrs().Index && right.Attrs().ParentIndex == left.Attrs().Index && left.Attrs().MTU == c.MTU && right.Attrs().MTU == c.MTU
+		// vSwitch may lower its endpoint through its existing MTU auto mode.
+		// The gateway endpoint keeps the provisioned ceiling.
+		status.PairValid = left.Attrs().ParentIndex == right.Attrs().Index && right.Attrs().ParentIndex == left.Attrs().Index && left.Attrs().MTU >= 128 && left.Attrs().MTU <= c.MTU && right.Attrs().MTU == c.MTU
 	}
 	sw, err := vswitch.Status(c.Switch)
 	if err == nil {

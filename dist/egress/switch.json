@@ -10,5 +10,6 @@
   "transit_dev_addr": "198.18.0.2/24:198.18.0.1",
   "geneve_locator": "port",
   "geneve_port_base": 50000,
-  "geneve_encap_eth": true
+  "geneve_encap_eth": true,
+  "transit_dev_mtu": "auto"
 }

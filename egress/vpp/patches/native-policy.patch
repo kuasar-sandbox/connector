@@ -1,11 +1,37 @@
+diff --git a/src/plugins/af_packet/af_packet.c b/src/plugins/af_packet/af_packet.c
+index f662082..8962f51 100644
+--- a/src/plugins/af_packet/af_packet.c
++++ b/src/plugins/af_packet/af_packet.c
+@@ -776,6 +776,11 @@ af_packet_create_if (af_packet_create_if_arg_t *arg)
+ 
+   if (arg->flags & AF_PACKET_IF_FLAGS_CKSUM_GSO)
+     {
++      /* PACKET_VNET_HDR changes the socket framing even when the host device
++       * has offloads disabled. RX metadata and every TX frame still need
++       * the virtio header; hardware capabilities only control advertised
++       * output offloads. */
++      apif->is_cksum_gso_enabled = 1;
+       if (apif->host_interface_oflags & AF_PACKET_OFFLOAD_FLAG_TXCKSUM)
+ 	{
+ 	  apif->is_cksum_gso_enabled = 1;
 diff --git a/src/plugins/nat/nat44-ed/nat44_ed.c b/src/plugins/nat/nat44-ed/nat44_ed.c
-index 3c3c51f..cf65cab 100644
+index 3c3c51f..7b449a0 100644
 --- a/src/plugins/nat/nat44-ed/nat44_ed.c
 +++ b/src/plugins/nat/nat44-ed/nat44_ed.c
-@@ -30,6 +30,102 @@
+@@ -30,6 +30,126 @@
  
  snat_main_t snat_main;
  
++/* File reload publishes connection inactivity settings under the worker barrier. */
++__clib_export void
++nat44_ed_policy_timeouts (u32 udp, u32 established, u32 transitory, u32 icmp)
++{
++  snat_main.timeouts.udp = udp;
++  snat_main.timeouts.tcp.established = established;
++  snat_main.timeouts.tcp.transitory = transitory;
++  snat_main.timeouts.icmp = icmp;
++}
++
 +nat44_ed_policy_hooks_t nat44_ed_policy_hooks;
 +
 +__clib_export int
@@ -71,6 +97,20 @@ index 3c3c51f..cf65cab 100644
 +                  nat44_ed_del_interface (sw_if_index, 1);
 +}
 +
++/* Private file-configured Egress resource ownership. The policy plugin
++ * publishes and retires these resources while workers are stopped. */
++__clib_export int
++nat44_ed_policy_outside (u32 sw, u8 enable)
++{
++  return enable ? nat44_ed_add_interface (sw, 0) : nat44_ed_del_interface (sw, 0);
++}
++
++__clib_export int
++nat44_ed_policy_address (ip4_address_t addr, u8 enable)
++{
++  return enable ? nat44_ed_add_address (&addr, ~0, 0) : nat44_ed_del_address (addr, 0);
++}
++
 +/* Caller holds the worker barrier; reuse native LRU/timeouts and deletion. */
 +__clib_export u32
 +nat44_ed_policy_expire (u32 per_worker_budget)
@@ -105,7 +145,7 @@ index 3c3c51f..cf65cab 100644
  static_always_inline void nat_validate_interface_counters (snat_main_t *sm,
  							   u32 sw_if_index);
  
-@@ -3912,26 +4008,52 @@ nat_6t_flow_icmp_translate (vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b,
+@@ -3912,26 +4032,52 @@ nat_6t_flow_icmp_translate (vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b,
  	      icmp->checksum = new_icmp_sum;
  	      break;
  	    case IP_PROTOCOL_TCP:
@@ -201,7 +241,7 @@ index 634599f..f08b24f 100644
  
  typedef struct
 diff --git a/src/plugins/nat/nat44-ed/nat44_ed_in2out.c b/src/plugins/nat/nat44-ed/nat44_ed_in2out.c
-index 700f269..1f153ee 100644
+index 700f269..461ce3a 100644
 --- a/src/plugins/nat/nat44-ed/nat44_ed_in2out.c
 +++ b/src/plugins/nat/nat44-ed/nat44_ed_in2out.c
 @@ -136,6 +136,26 @@ nat_ed_alloc_addr_and_port_with_snat_address (
@@ -345,7 +385,90 @@ index 700f269..1f153ee 100644
    ip4_address_t placeholder_addr;
    u32 placeholder_fib_index;
    u16 placeholder_port;
-@@ -1236,6 +1313,14 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t *vm,
+@@ -897,7 +974,8 @@ nat44_ed_in2out_slowpath_unknown_proto (snat_main_t *sm, vlib_buffer_t *b,
+ 					ip4_header_t *ip, u32 rx_fib_index,
+ 					u32 thread_index, f64 now,
+ 					vlib_main_t *vm,
+-					vlib_node_runtime_t *node)
++					vlib_node_runtime_t *node,
++ const nat44_ed_policy_decision_t *policy_decision)
+ {
+   clib_bihash_kv_16_8_t s_kv, s_value;
+   snat_static_mapping_t *m = NULL;
+@@ -918,12 +996,24 @@ nat44_ed_in2out_slowpath_unknown_proto (snat_main_t *sm, vlib_buffer_t *b,
+       return 0;
+     }
+ 
+-  tx_fib_index = get_tx_fib_index (rx_fib_index, ip->dst_address);
++  tx_fib_index = policy_decision ? policy_decision->tx_fib_index : get_tx_fib_index (rx_fib_index, ip->dst_address);
+ 
+   // Try to find static mapping first
+   m = nat44_ed_sm_i2o_lookup (sm, ip->src_address, 0, rx_fib_index,
+ 			      ip->protocol);
+-  if (m)
++  if (policy_decision)
++    {
++      /* Portless protocols require a distinct outside address for each
++       * remote/protocol tuple. Never select outside the configured Pool. */
++      for (u32 k=0; k<policy_decision->address_count; k++)
++        {
++          init_ed_k (&s_kv, policy_decision->addresses[k].as_u32, 0,
++                     ip->dst_address.as_u32, 0, policy_decision->return_key_fib, ip->protocol);
++          if (clib_bihash_search_16_8 (&sm->flow_hash, &s_kv, &s_value))
++            { new_src_addr=policy_decision->addresses[k]; break; }
++        }
++    }
++  else if (m)
+     {
+       new_src_addr = m->external_addr;
+     }
+@@ -973,6 +1063,16 @@ nat44_ed_in2out_slowpath_unknown_proto (snat_main_t *sm, vlib_buffer_t *b,
+       return 0;
+     }
+ 
++  if (policy_decision)
++    {
++      if (nat44_ed_policy_hooks.reserve && !nat44_ed_policy_hooks.reserve (policy_decision->cookie, thread_index))
++        {
++          b->error=node->errors[NAT_IN2OUT_ED_ERROR_MAX_SESSIONS_EXCEEDED];
++          nat_ed_session_delete (sm,s,thread_index,1); return 0;
++        }
++      s->policy_cookie=policy_decision->cookie;
++      s->policy_path_signature=policy_decision->path_signature;
++    }
+   nat_6t_i2o_flow_init (sm, thread_index, s, ip->src_address, 0,
+ 			ip->dst_address, 0, rx_fib_index, ip->protocol);
+   nat_6t_flow_saddr_rewrite_set (&s->i2o, new_src_addr.as_u32);
+@@ -987,14 +1087,14 @@ nat44_ed_in2out_slowpath_unknown_proto (snat_main_t *sm, vlib_buffer_t *b,
+   nat_6t_flow_txfib_rewrite_set (&s->i2o, tx_fib_index);
+ 
+   nat_6t_o2i_flow_init (sm, thread_index, s, new_dst_addr, 0, new_src_addr, 0,
+-			tx_fib_index, ip->protocol);
++			policy_decision ? policy_decision->return_key_fib : tx_fib_index, ip->protocol);
+   nat_6t_flow_saddr_rewrite_set (&s->o2i, ip->dst_address.as_u32);
+   nat_6t_flow_daddr_rewrite_set (&s->o2i, ip->src_address.as_u32);
+   nat_6t_flow_txfib_rewrite_set (&s->o2i, rx_fib_index);
+ 
+   s->ext_host_addr.as_u32 = ip->dst_address.as_u32;
+   s->out2in.addr.as_u32 = new_src_addr.as_u32;
+-  s->out2in.fib_index = tx_fib_index;
++  s->out2in.fib_index = policy_decision ? policy_decision->return_key_fib : tx_fib_index;
+   s->in2out.addr.as_u32 = ip->src_address.as_u32;
+   s->in2out.fib_index = rx_fib_index;
+   s->in2out.port = s->out2in.port = ip->protocol;
+@@ -1016,6 +1116,11 @@ nat44_ed_in2out_slowpath_unknown_proto (snat_main_t *sm, vlib_buffer_t *b,
+     }
+ 
+   per_vrf_sessions_register_session (s, thread_index);
++  if (policy_decision)
++    {
++      s->policy_committed=1;
++      if (nat44_ed_policy_hooks.commit) nat44_ed_policy_hooks.commit (s->policy_cookie);
++    }
+ 
+   /* Accounting */
+   nat44_session_update_counters (s, now, vlib_buffer_length_in_chain (vm, b),
+@@ -1236,6 +1341,14 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t *vm,
  	  goto trace0;
  	}
  
@@ -360,19 +483,28 @@ index 700f269..1f153ee 100644
        if (NAT_ED_TRNSL_ERR_SUCCESS !=
  	  (translation_error = nat_6t_flow_buf_translate_i2o (
  	     vm, sm, b0, ip0, f, proto0, is_output_feature)))
-@@ -1388,11 +1473,28 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t *vm,
+@@ -1388,11 +1501,36 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t *vm,
  
        if (PREDICT_FALSE (nat44_ed_is_unk_proto (proto0)))
  	{
-+          if (nat44_ed_policy_hooks.managed &&
-+              nat44_ed_policy_hooks.managed (rx_fib_index0))
++          nat44_ed_policy_decision_t decision = { .cookie=NAT44_ED_POLICY_NONE };
++          int managed = nat44_ed_policy_hooks.prepare ? nat44_ed_policy_hooks.prepare (
++             rx_fib_index0,thread_index,proto0,ip0->src_address,0,ip0->dst_address,0,&decision) : 0;
++          if (managed < 0)
 +            {
-+              b0->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
-+              next[0] = NAT_NEXT_DROP;
-+              goto trace0;
++              b0->error=node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
++              next[0]=NAT_NEXT_DROP; goto trace0;
++            }
++          if (managed)
++            {
++              int guard=nat44_ed_policy_guard (b0,ip0,decision.cookie,decision.path_signature,
++                 rx_fib_index0,decision.tx_fib_index,ip0->dst_address,ip0->dst_address,0);
++              if (guard)
++                { next[0]=guard>0 ? NAT_NEXT_ICMP_ERROR : NAT_NEXT_DROP; goto trace0; }
 +            }
  	  s0 = nat44_ed_in2out_slowpath_unknown_proto (
- 	    sm, b0, ip0, rx_fib_index0, thread_index, now, vm, node);
+-	    sm, b0, ip0, rx_fib_index0, thread_index, now, vm, node);
++	    sm, b0, ip0, rx_fib_index0, thread_index, now, vm, node, managed ? &decision : 0);
  	  if (!s0)
  	    next[0] = NAT_NEXT_DROP;
  
@@ -389,7 +521,7 @@ index 700f269..1f153ee 100644
  	  if (NAT_NEXT_DROP != next[0] && s0 &&
  	      NAT_ED_TRNSL_ERR_SUCCESS !=
  		(translation_error = nat_6t_flow_buf_translate_i2o (
-@@ -1417,6 +1519,16 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t *vm,
+@@ -1417,6 +1555,16 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t *vm,
  	    sm, b0, ip0, icmp0, rx_sw_if_index0, tx_sw_if_index0,
  	    rx_fib_index0, node, next[0], now, thread_index, &s0,
  	    is_multi_worker);
@@ -406,7 +538,7 @@ index 700f269..1f153ee 100644
  	  if (NAT_NEXT_DROP != next[0] && s0 &&
  	      NAT_ED_TRNSL_ERR_SUCCESS !=
  		(translation_error = nat_6t_flow_buf_translate_i2o (
-@@ -1497,6 +1609,14 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t *vm,
+@@ -1497,6 +1645,14 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t *vm,
  
        b0->flags |= VNET_BUFFER_F_IS_NATED;
  
@@ -422,7 +554,7 @@ index 700f269..1f153ee 100644
  	  (translation_error = nat_6t_flow_buf_translate_i2o (
  	     vm, sm, b0, ip0, &s0->i2o, proto0, is_output_feature)))
 diff --git a/src/plugins/nat/nat44-ed/nat44_ed_inlines.h b/src/plugins/nat/nat44-ed/nat44_ed_inlines.h
-index 51f2832..16c1edc 100644
+index 51f2832..db35192 100644
 --- a/src/plugins/nat/nat44-ed/nat44_ed_inlines.h
 +++ b/src/plugins/nat/nat44-ed/nat44_ed_inlines.h
 @@ -19,6 +19,42 @@
@@ -461,14 +593,26 @@ index 51f2832..16c1edc 100644
 +{
 +  nat_6t_flow_t *f = out2in ? &s->o2i : &s->i2o;
 +  return nat44_ed_policy_guard (b, ip, s->policy_cookie, s->policy_path_signature,
-+                                s->in2out.fib_index, f->rewrite.fib_index,
++                                s->in2out.fib_index, s->i2o.rewrite.fib_index,
 +                                f->rewrite.daddr, s->i2o.rewrite.daddr, out2in);
 +}
 +
  always_inline void
  init_ed_k (clib_bihash_kv_16_8_t *kv, u32 l_addr, u16 l_port, u32 r_addr,
  	   u16 r_port, u32 fib_index, ip_protocol_t proto)
-@@ -308,6 +344,9 @@ nat_ed_session_delete (snat_main_t *sm, snat_session_t *ses, u32 thread_index,
+@@ -199,6 +235,11 @@ static_always_inline u8
+ nat44_ed_maximum_sessions_exceeded (snat_main_t *sm, u32 fib_index,
+ 				    u32 thread_index)
+ {
++  /* For managed Egress traffic the only business limit is its Pool quota.
++   * Native pools and bihash pages grow with available memory; initial session
++   * sizing is not an admission ceiling. Keep upstream behavior elsewhere. */
++  if (nat44_ed_policy_hooks.managed && nat44_ed_policy_hooks.managed (fib_index))
++    return 0;
+   u32 translations;
+   translations = pool_elts (sm->per_thread_data[thread_index].sessions);
+   if (vec_len (sm->max_translations_per_fib) <= fib_index)
+@@ -308,6 +349,9 @@ nat_ed_session_delete (snat_main_t *sm, snat_session_t *ses, u32 thread_index,
    snat_main_per_thread_data_t *tsm =
      vec_elt_at_index (sm->per_thread_data, thread_index);
  
@@ -478,7 +622,7 @@ index 51f2832..16c1edc 100644
    if (lru_delete)
      {
        clib_dlist_remove (tsm->lru_pool, ses->lru_index);
-@@ -320,6 +359,9 @@ nat_ed_session_delete (snat_main_t *sm, snat_session_t *ses, u32 thread_index,
+@@ -320,6 +364,9 @@ nat_ed_session_delete (snat_main_t *sm, snat_session_t *ses, u32 thread_index,
    pool_put (tsm->sessions, ses);
    vlib_set_simple_counter (&sm->total_sessions, thread_index, 0,
  			   pool_elts (tsm->sessions));
@@ -488,7 +632,7 @@ index 51f2832..16c1edc 100644
  }
  
  static_always_inline int
-@@ -383,6 +425,7 @@ nat_ed_session_alloc (snat_main_t *sm, u32 thread_index, f64 now, u8 proto)
+@@ -383,6 +430,7 @@ nat_ed_session_alloc (snat_main_t *sm, u32 thread_index, f64 now, u8 proto)
  
    pool_get (tsm->sessions, s);
    clib_memset (s, 0, sizeof (*s));
@@ -564,6 +708,130 @@ index 8a86181..63f18be 100644
        if (NAT_ED_TRNSL_ERR_SUCCESS !=
  	  (translation_error = nat_6t_flow_buf_translate_o2i (
  	     vm, sm, b0, ip0, &s0->o2i, proto0, 0 /* is_output_feature */)))
+diff --git a/src/svm/svm.c b/src/svm/svm.c
+index fb5ec5f..acfef52 100644
+--- a/src/svm/svm.c
++++ b/src/svm/svm.c
+@@ -7,6 +7,8 @@
+  * library
+  */
+ 
++#include <sys/syscall.h>
++#include <linux/memfd.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <sys/types.h>
+@@ -558,7 +560,11 @@ svm_map_region (svm_map_region_args_t * a)
+     clib_warning ("[%d] map region %s: shm_open (%s)",
+ 		  getpid (), a->name, shm_name);
+ 
+-  svm_fd = shm_open ((char *) shm_name, O_RDWR | O_CREAT | O_EXCL, 0777);
++  /* Keep native internal message queues, without publishing a shared-memory
++   * API name. Normal VPP deployments retain their existing transport. */
++  svm_fd = getenv ("CONNECTOR_EGRESS_PRIVATE_MEMORY")
++             ? syscall (SYS_memfd_create, "connector-egress-private", MFD_CLOEXEC)
++             : shm_open ((char *) shm_name, O_RDWR | O_CREAT | O_EXCL, 0777);
+ 
+   if (svm_fd >= 0)
+     {
+diff --git a/src/vlib/stats/init.c b/src/vlib/stats/init.c
+index 50f71b3..f6d0412 100644
+--- a/src/vlib/stats/init.c
++++ b/src/vlib/stats/init.c
+@@ -236,7 +236,7 @@ stats_segment_socket_exit (vlib_main_t *vm)
+    * cleanup the listener socket on exit.
+    */
+   vlib_stats_segment_t *sm = vlib_stats_get_segment ();
+-  unlink ((char *) sm->socket_name);
++  if (sm->socket) unlink ((char *) sm->socket_name);
+   return 0;
+ }
+ 
+@@ -247,6 +247,8 @@ statseg_init (vlib_main_t *vm)
+ {
+   vlib_stats_segment_t *sm = vlib_stats_get_segment ();
+ 
++  /* No external statistics endpoint in file-only gateway deployments. */
++  if (sm->socket_name && !strcmp ((char *) sm->socket_name, "none")) return 0;
+   /* set default socket file name when statseg config stanza is empty. */
+   if (!vec_len (sm->socket_name))
+     sm->socket_name = format (0, "%s/%s%c", vlib_unix_get_runtime_dir (),
+diff --git a/src/vlibmemory/socket_api.c b/src/vlibmemory/socket_api.c
+index 65cd137..5839f1d 100644
+--- a/src/vlibmemory/socket_api.c
++++ b/src/vlibmemory/socket_api.c
+@@ -786,6 +786,8 @@ vl_sock_api_init (vlib_main_t * vm)
+   clib_socket_t *sock = &sm->socksvr_listen_socket;
+   clib_error_t *error;
+ 
++  /* The gateway owns an unnamed child control stream, never an API listener. */
++  if (getenv ("CONNECTOR_EGRESS_PRIVATE_MEMORY")) return 0;
+   /* If not explicitly configured, do not bind/enable, etc. */
+   if (sm->socket_name == 0)
+     return 0;
+diff --git a/src/vnet/ip/icmp4.c b/src/vnet/ip/icmp4.c
+index c8f0109..913c83d 100644
+--- a/src/vnet/ip/icmp4.c
++++ b/src/vnet/ip/icmp4.c
+@@ -11,6 +11,15 @@
+ #include <vnet/ip/ip_sas.h>
+ #include <vnet/util/throttle.h>
+ 
++/* Optional source selection for addressless, isolated Egress return FIBs.
++ * The gateway registers a hook; all other interfaces keep native selection. */
++static int (*ip4_icmp_error_source) (u32, ip4_address_t *);
++__clib_export void
++ip4_icmp_error_source_register (int (*source) (u32, ip4_address_t *))
++{
++  ip4_icmp_error_source = source;
++}
++
+ /** ICMP throttling */
+ static throttle_t icmp_throttle;
+ 
+@@ -307,7 +316,8 @@ ip4_icmp_error (vlib_main_t * vm,
+ 	  out_ip0->protocol = IP_PROTOCOL_ICMP;
+ 	  out_ip0->dst_address = ip0->src_address;
+ 	  /* Prefer a source address from "offending interface" */
+-	  if (!ip4_sas_by_sw_if_index (sw_if_index0, &out_ip0->dst_address,
++	  if (!(ip4_icmp_error_source && ip4_icmp_error_source (sw_if_index0, &out_ip0->src_address))
++              && !ip4_sas_by_sw_if_index (sw_if_index0, &out_ip0->dst_address,
+ 				       &out_ip0->src_address))
+ 	    { /* interface has no IP4 address - should not happen */
+ 	      next0 = IP4_ICMP_ERROR_NEXT_DROP;
+diff --git a/src/vnet/ip/ip4_forward.c b/src/vnet/ip/ip4_forward.c
+index da99989..0328c67 100644
+--- a/src/vnet/ip/ip4_forward.c
++++ b/src/vnet/ip/ip4_forward.c
+@@ -1444,6 +1444,17 @@ ip4_local_check_l4_csum_x2 (vlib_main_t *vm, vlib_buffer_t **b, ip4_header_t **i
+ 	      IP4_ERROR_TCP_CHECKSUM + is_udp[1] : error[1]);
+ }
+ 
++/* A tunnel ingress can authorize its first routed peer before a learned
++ * return route exists. Only a source-route miss is eligible; checksum and
++ * spoofed-local errors remain intact. Admission is evaluated per packet,
++ * after the ordinary source-lookup cache, so it cannot leak across peers. */
++static int (*ip4_local_source_admit) (vlib_buffer_t *, ip4_header_t *);
++__clib_export void
++ip4_local_source_admit_register (int (*fn) (vlib_buffer_t *, ip4_header_t *))
++{
++  ip4_local_source_admit = fn;
++}
++
+ always_inline void
+ ip4_local_set_next_and_error (vlib_node_runtime_t *error_node, vlib_buffer_t *b, u16 *next,
+ 			      u8 error, u8 head_of_feature_arc)
+@@ -1451,6 +1462,10 @@ ip4_local_set_next_and_error (vlib_node_runtime_t *error_node, vlib_buffer_t *b,
+   u8 arc_index = vnet_feat_arc_ip4_local.feature_arc_index;
+   u32 next_index;
+ 
++  if (error == IP4_ERROR_SRC_LOOKUP_MISS && ip4_local_source_admit &&
++      ip4_local_source_admit (b, vlib_buffer_get_current (b)))
++    error = IP4_ERROR_UNKNOWN_PROTOCOL;
++
+   *next = error != IP4_ERROR_UNKNOWN_PROTOCOL ? IP_LOCAL_NEXT_DROP : *next;
+   b->error = error ? error_node->errors[error] : 0;
+   if (head_of_feature_arc)
 diff --git a/src/vnet/ip/reass/ip4_full_reass.c b/src/vnet/ip/reass/ip4_full_reass.c
 index ed04022..3b9f1b8 100644
 --- a/src/vnet/ip/reass/ip4_full_reass.c
