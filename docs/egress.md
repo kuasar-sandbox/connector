@@ -51,7 +51,7 @@ A process restart reads the files again and does not restore NAT state. Subseque
 | Exit | Physical interface, on-link `next_hop` and reachable SNAT `addresses`. Multiple Exits may share an interface. Return lookup uses the shared physical FIB; each Exit has its own routing FIB. |
 | Attachment | Transit interface, peer, Area, locator, encapsulation, existing generation width and inner gateway. `inner_mtu` defaults to 1500; optional `mtu` caps the outer path. |
 | Area | Logical `vni`, ordered `acl`, ordered TCP/UDP `dnat`, longest-prefix `routes` and Pools. |
-| Pool | Area-local ID 0–63, Exit and a subset of its addresses. `max_connections` limits live NAT mappings per forwarding context/Pool; zero removes the business quota, not physical resource limits. |
+| Pool | Area-local unsigned 32-bit ID, Exit and a subset of its addresses. `max_connections` limits live NAT mappings per forwarding context/Pool; zero removes the business quota, not physical resource limits. |
 | Match | Canonical IPv4 destination prefix and `any`, `icmp`, `tcp` or `udp`; ports require TCP/UDP. `any` also covers other ordinary IPv4 protocols. |
 
 ACL first-match/default-deny applies to the original destination before DNAT. A DNAT match selects its Pool directly; otherwise routing uses longest-prefix selection. A missing route, exhausted selected Pool or unavailable exit fails without choosing another Pool. Portless IPv4 protocols require distinct public addresses for overlapping remote/protocol tuples because they have no translated port to disambiguate returns.
@@ -59,7 +59,7 @@ ACL first-match/default-deny applies to the original destination before DNAT. A 
 | Resource setting | Default and meaning |
 |---|---|
 | `max_contexts` | 65536 concurrent forwarding contexts, including those awaiting safe reclamation. Configurable above this value; not a 4096 or 10000 gateway hard limit. |
-| `max_connections` | 65536 native mappings **per worker**; configurable up to 1048576. Independent of Pool quotas. Capacity acceptance selects 262144 per worker. |
+| `max_connections` | 65536 native mappings **per worker** by default; configurable according to available resources. Independent of Pool quotas. Capacity acceptance selects 262144 per worker. |
 | `heap_size` | `4G` native main heap reservation, configurable using an integer followed by `M` or `G`. Actual resident memory depends on load. |
 | `stats_size` | `1G` native statistics heap reservation, configurable using `M` or `G`. This is needed for per-context native interface counters even with the statistics listener disabled. |
 | `context_idle_seconds` | 1 second after the context has no live mapping; pending graph/handoff/reassembly references must also be safely drained. |

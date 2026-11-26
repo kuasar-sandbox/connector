@@ -51,7 +51,7 @@ reload 支持 Area 增删、ACL/DNAT/路由/Pool、接入配置及 peer 路由�
 | Exit | 物理接口、同链路 `next_hop` 和可达 SNAT `addresses`。多个 Exit 可以共用接口；回包查找使用该物理接口的 FIB，各 Exit 保持独立路由 FIB。 |
 | Attachment | transit 接口、peer、Area、locator、封装、既有 generation 位宽和内层网关。`inner_mtu` 默认 1500，可选 `mtu` 限定外层路径。 |
 | Area | 逻辑 `vni`、有序 `acl`、有序 TCP/UDP `dnat`、最长前缀 `routes` 和 Pool。 |
-| Pool | Area 内唯一 ID 0–63、Exit 及其地址子集。`max_connections` 限制每个转发上下文/Pool 的存活 NAT 映射，零取消业务额度，不取消物理资源限制。 |
+| Pool | Area 内唯一的无符号 32 位 ID、Exit 及其地址子集。`max_connections` 限制每个转发上下文/Pool 的存活 NAT 映射，零取消业务额度，不取消物理资源限制。 |
 | Match | 规范 IPv4 目的前缀和 `any`、`icmp`、`tcp` 或 `udp`；端口仅适用于 TCP/UDP。`any` 也覆盖其他普通 IPv4 协议。 |
 
 ACL 对 DNAT 前的原始目的地址执行 first-match/default-deny。DNAT 命中直接选择其 Pool，否则使用最长前缀路由。无匹配路由、所选 Pool 耗尽或出口不可用时失败，不选择其他 Pool。没有端口的 IPv4 协议在远端地址/协议元组重叠时需要不同公网地址，因为无法用转换端口区分回包。
@@ -59,7 +59,7 @@ ACL 对 DNAT 前的原始目的地址执行 first-match/default-deny。DNAT 命�
 | 资源配置 | 默认值与含义 |
 |---|---|
 | `max_contexts` | 65536 个并发转发上下文，包括等待安全回收的对象；可配置更大值，不是 4096 或 10000 的网关硬上限。 |
-| `max_connections` | **每个 worker** 默认 65536 条原生映射，最大可配置 1048576；与 Pool 业务额度独立。容量验收使用每 worker 262144。 |
+| `max_connections` | **每个 worker** 默认 65536 条原生映射，可按可用资源调大；与 Pool 业务额度独立。容量验收使用每 worker 262144。 |
 | `heap_size` | 默认 `4G` 原生主堆预留，可使用正整数加 `M` 或 `G` 配置。实际驻留内存随负载变化。 |
 | `stats_size` | 默认 `1G` 原生统计堆预留，可用 `M` 或 `G` 配置。即使禁用统计监听接口，每上下文的原生接口计数仍需要这部分内存。 |
 | `context_idle_seconds` | 无存活映射后等待 1 秒，还须安全排空在途 graph/handoff/reassembly 引用。 |
