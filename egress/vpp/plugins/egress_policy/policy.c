@@ -258,6 +258,8 @@ resources_prepare (void)
 {
   u32 *added_interfaces = 0;
   ip4_address_t *added_addresses = 0;
+  ip4_address_t *addr;
+  u32 *sw;
   area_t *a;
   exit_pool_t *p;
   int rv = 0;
@@ -271,7 +273,6 @@ resources_prepare (void)
         hash_set (outside_interfaces, r->key.sw, 1);
         vec_add1 (added_interfaces, r->key.sw);
       }
-    ip4_address_t *addr;
     vec_foreach (addr, p->addresses) if (!hash_get (public_addresses, addr->as_u32))
     {
       if ((rv = native_address (*addr, 1)))
@@ -284,13 +285,11 @@ resources_prepare (void)
   vec_free (added_addresses);
   return 0;
 fail:
-  ip4_address_t *addr;
   vec_foreach (addr, added_addresses)
   {
     ALWAYS_ASSERT (!native_address (*addr, 0));
     hash_unset (public_addresses, addr->as_u32);
   }
-  u32 *sw;
   vec_foreach (sw, added_interfaces)
   {
     ALWAYS_ASSERT (!native_outside (*sw, 0));
