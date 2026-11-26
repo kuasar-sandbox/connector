@@ -10,12 +10,12 @@ Operator configuration, ownership, file reload and recovery are defined in [Egre
 
 Build each architecture natively. `TARGET_ARCH` selects `x86_64` or `aarch64` (also accepting `amd64` and `arm64`); the native build checks it against the build host. The CPU baseline is `x86-64-v2` on x86_64 and `armv8-a+crc` on aarch64. Source and downloads are retained separately from the architecture-specific object directory, `native-deps/build/<arch>/vpp`. `KUASAR_BUILD_JOBS` controls build parallelism. The compiler, C library and native dependencies belong to the selected build environment.
 
-The acceptance environment is Linux with Ubuntu 24.04 userspace, GCC 13 and CMake/Ninja. Prepare its build dependencies:
+The following build-dependency example uses Ubuntu 24.04 with CMake/Ninja. Compiler selection follows upstream VPP: honor `CC` when set; otherwise prefer Clang and fall back to GCC.
 
 ```bash
 sudo apt-get update
 sudo apt-get install --no-install-recommends \
-  build-essential ninja-build cmake git python3 python3-ply pkg-config \
+  build-essential clang ninja-build cmake git python3 python3-ply pkg-config \
   libunwind-dev libmbedtls-dev libpcap-dev libssl-dev libnl-3-dev \
   libnl-route-3-dev libelf-dev liblz4-dev libzstd-dev libbpf-dev libyaml-dev \
   iproute2 ethtool
@@ -33,7 +33,7 @@ Use the supported Go toolchain from [CONTRIBUTING](../CONTRIBUTING.md). The defa
 
 For control-only Go development or cross-compilation, use `make connector-ctl`; `make -C native-deps vpp` builds only the native runtime. Native license materials are retained in `native-deps/build/<arch>/vpp/licenses` for packaging.
 
-The component release keeps the same runtime layout under `bin/`, alongside the normal `deploy/` and `share/licenses/connector` directories. Extract the component archive once, for example into `/opt/connector`, and retain the entire `bin/` directory. The gateway example then uses `/opt/connector/bin/vpp` and `/opt/connector/bin/lib/<triplet>`. Supply the system libraries listed in `vpp-runtime.json` (glibc and libunwind on the validated Ubuntu build). The control program, VPP and plugins must come from the same component version. Platform CI and node-infra consume these files directly.
+The component release keeps the same runtime layout under `bin/`, alongside the normal `deploy/` and `share/licenses/connector` directories. Extract the component archive once, for example into `/opt/connector`, and retain the entire `bin/` directory. The gateway example then uses `/opt/connector/bin/vpp` and `/opt/connector/bin/lib/<triplet>`. Supply the system libraries recorded by that build's `vpp-runtime.json` (`required_system_libraries`). The control program, VPP and plugins must come from the same component version. Platform CI and node-infra consume these files directly.
 
 ### Maintain the upstream patches
 

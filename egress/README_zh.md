@@ -10,12 +10,12 @@
 
 两种架构分别原生构建。`TARGET_ARCH` 选择 `x86_64` 或 `aarch64`，也接受 `amd64`、`arm64` 别名；原生构建会核对目标与宿主架构。CPU 基线在 x86_64 上为 `x86-64-v2`，aarch64 上为 `armv8-a+crc`。源码、下载缓存与架构独立的对象目录 `native-deps/build/<arch>/vpp` 分开保留。`KUASAR_BUILD_JOBS` 控制并发度；编译器、C 库和原生依赖属于所选构建环境的一部分。
 
-验收环境为 Linux 内核、Ubuntu 24.04 用户态、GCC 13 与 CMake/Ninja。准备构建依赖：
+以下构建依赖示例以 Ubuntu 24.04 和 CMake/Ninja 为基础。编译器沿用上游 VPP 的选择规则：设置 `CC` 时使用指定编译器，否则优先选择 Clang，再回退到 GCC。
 
 ```bash
 sudo apt-get update
 sudo apt-get install --no-install-recommends \
-  build-essential ninja-build cmake git python3 python3-ply pkg-config \
+  build-essential clang ninja-build cmake git python3 python3-ply pkg-config \
   libunwind-dev libmbedtls-dev libpcap-dev libssl-dev libnl-3-dev \
   libnl-route-3-dev libelf-dev liblz4-dev libzstd-dev libbpf-dev libyaml-dev \
   iproute2 ethtool
@@ -33,7 +33,7 @@ Go 工具链遵循 [CONTRIBUTING](../CONTRIBUTING_zh.md)。默认 `make build` �
 
 仅开发或交叉编译 Go 控制程序时使用 `make connector-ctl`；`make -C native-deps vpp` 单独构建原生运行时。原生许可证材料保留在 `native-deps/build/<arch>/vpp/licenses`，供打包流程使用。
 
-组件发布包在 `bin/` 下保留相同运行目录结构，并携带既有 `deploy/` 和 `share/licenses/connector` 许可证目录。将组件归档一次解压至例如 `/opt/connector`，保留完整的 `bin/` 目录；网关示例使用 `/opt/connector/bin/vpp` 和 `/opt/connector/bin/lib/<triplet>`。运行环境提供 `vpp-runtime.json` 列出的系统库，在已验证 Ubuntu 构建中为 glibc 和 libunwind。控制程序、VPP 与插件须来自同一组件版本。平台 CI 与 node-infra 直接使用这些文件。
+组件发布包在 `bin/` 下保留相同运行目录结构，并携带既有 `deploy/` 和 `share/licenses/connector` 许可证目录。将组件归档一次解压至例如 `/opt/connector`，保留完整的 `bin/` 目录；网关示例使用 `/opt/connector/bin/vpp` 和 `/opt/connector/bin/lib/<triplet>`。运行环境提供该次构建生成的 `vpp-runtime.json` 中 `required_system_libraries` 列出的系统库。控制程序、VPP 与插件须来自同一组件版本。平台 CI 与 node-infra 直接使用这些文件。
 
 ### 维护上游补丁
 
