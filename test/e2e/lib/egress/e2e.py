@@ -212,7 +212,8 @@ def main():
              'area_files':['area.json']}
         if args.locator=='tlv':cfg['attachments'][0].update(tlv_class=258,tlv_type=129)
         if args.remote:
-            cfg['attachments'][0]['peer']=['198.18.1.2']
+            if args.locator=='vni':del cfg['attachments'][0]['peer']
+            else:cfg['attachments'][0]['peer']=['198.18.1.0/24']
             cfg['attachments'][0]['next_hop']='198.18.0.2'
         cpus=sorted(os.sched_getaffinity(0))
         if len(cpus)<args.workers+1:raise RuntimeError('not enough CPUs for requested workers')

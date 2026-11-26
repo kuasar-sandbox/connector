@@ -120,6 +120,22 @@ gp_match (u32 rx, u32 local, u32 peer)
   return 0;
 }
 
+extern void ip4_local_source_admit_register (int (*) (vlib_buffer_t *, ip4_header_t *));
+static int
+gp_admit_routed_peer (vlib_buffer_t *b, ip4_header_t *ip)
+{
+  if (ip->ip_version_and_header_length != 0x45 || ip->protocol != IP_PROTOCOL_UDP
+      || b->current_length < sizeof (*ip) + sizeof (udp_header_t))
+    return 0;
+  gp_attachment_t *a = gp_match (vnet_buffer (b)->sw_if_index[VLIB_RX], ip->dst_address.as_u32,
+                                 ip->src_address.as_u32);
+  if (!a)
+    return 0;
+  udp_header_t *udp = (void *)(ip + 1);
+  u16 port = clib_net_to_host_u16 (udp->dst_port);
+  return a->profile.locator ? port == 6081 : port != 0;
+}
+
 /* A shared physical interface still has disjoint Geneve and SNAT addresses.
  * Local VTEP UDP traffic must reach UDP-local instead of an out2in NAT lookup. */
 VLIB_NODE_FN (gp_bypass_node) (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame)
@@ -965,6 +981,7 @@ static clib_error_t *
 gp_init (vlib_main_t *vm)
 {
   ip4_icmp_error_source_register (gp_icmp_source);
+  ip4_local_source_admit_register (gp_admit_routed_peer);
   gm.by_key = hash_create_mem (0, sizeof (gp_key_t), sizeof (uword));
   gm.by_peer = hash_create_mem (0, sizeof (gp_peer_key_t), sizeof (uword));
   gm.by_route = hash_create_mem (0, sizeof (gp_route_key_t), sizeof (uword));
