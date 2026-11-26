@@ -47,7 +47,7 @@ sudo make test-egress \
   EGRESS_TEST_DIR="$PWD/build/egress/acceptance"
 ```
 
-[`tests/run.sh`](tests/run.sh) executes 15 cases and writes `acceptance.json` only after every case succeeds:
+[`tests/run.sh`](tests/run.sh) executes 16 cases and writes `acceptance.json` only after every case succeeds:
 
 | Executor | Evidence |
 |---|---|
@@ -55,6 +55,7 @@ sudo make test-egress \
 | Local lifecycle checks | Repeat prepare, stable-owner Start/Stop twice, automatic entry and idle cleanup, file reload, restart configuration restoration, isolated interface loss, refusal to repair active sandboxes, drained repair and reattachment, Pool resource preservation and safe uninstall. |
 | Policy/exit checks | Independent sandbox and Pool quotas, ACL default deny, LPM, DNAT tuple restoration, TCP/UDP, quota lowering, failed update preservation, selective revocation, and one failed exit while another continues. |
 | `wire.py --locator tlv` | Overlapping outer/inner identities on separate attachments, malformed framing and unknown critical options, opaque metadata behavior, out-of-order inner and outer reassembly, fragmented returns, pre-NAT PMTU, eight-byte TCP-quoted ICMP, ordinary IPv4 protocols, immutable generation returns and automatic accounting cleanup. |
+| `wire.py --locator port` / `--locator tlv` | Full wire-field locator values, sparse Pool IDs through `0xffffffff`, dynamic configuration beyond old object counts, quota isolation and policy shrink. |
 | `wire.py --contexts 12288 --flows 16` | Traffic automatically creates 12288 simultaneously active contexts across three unchanged 4096-slot switch locators and 196608 actual bidirectional NAT connections. Checks distinct public tuples, file reload, selective Area revocation and automatic reclamation; records memory and elapsed time. |
 
 The additional legacy case runs Ether with fencing disabled. The real BPF suite separately verifies generation 0, 1, 15 and the 20-bit maximum, rejection of tagged old returns, and acceptance of untagged legacy returns for every locator. The raw wire executor tests gateway capacity and packet correctness; the TC executor covers the vSwitch boundary. These are functional and capacity checks, not a throughput or latency SLA.

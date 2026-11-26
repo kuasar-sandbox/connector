@@ -131,19 +131,33 @@ func TestLocalLinkFailedPrepareReclaimsOnlyNewNamespace(t *testing.T) {
 // A node manager already owns a stable primary namespace. It must not need a
 // competing owner or a change to the existing vSwitch start/stop contract.
 func TestLocalLinkRetainedCurrentOwner(t *testing.T) {
- c := testLink(t,"p")
- originalOwner:=c.OwnerNS
- var owner namespaceRecord
- if err:=ensureNamespace(originalOwner,&owner);err!=nil{t.Fatal(err)}
- c.OwnerNS=""
- err:=inNamespace(originalOwner,func()error {
-   status,err:=PrepareLink(c)
-   if err!=nil{return err}
-   if !status.PairValid || status.SwitchEndpoint!="current-owner" {return fmt.Errorf("unexpected pair: %+v",status)}
-   return nil
- })
- if err!=nil{t.Fatal(err)}
- if _,err:=CheckLink(c);err==nil {t.Fatal("another current namespace accepted as retained owner")}
- if err:=inNamespace(originalOwner,func()error{return UninstallLink(c)});err!=nil{t.Fatal(err)}
- if err:=verifyNamespace(originalOwner,owner);err!=nil{t.Fatal("borrowed owner was removed",err)}
+	c := testLink(t, "p")
+	originalOwner := c.OwnerNS
+	var owner namespaceRecord
+	if err := ensureNamespace(originalOwner, &owner); err != nil {
+		t.Fatal(err)
+	}
+	c.OwnerNS = ""
+	err := inNamespace(originalOwner, func() error {
+		status, err := PrepareLink(c)
+		if err != nil {
+			return err
+		}
+		if !status.PairValid || status.SwitchEndpoint != "current-owner" {
+			return fmt.Errorf("unexpected pair: %+v", status)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CheckLink(c); err == nil {
+		t.Fatal("another current namespace accepted as retained owner")
+	}
+	if err := inNamespace(originalOwner, func() error { return UninstallLink(c) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyNamespace(originalOwner, owner); err != nil {
+		t.Fatal("borrowed owner was removed", err)
+	}
 }

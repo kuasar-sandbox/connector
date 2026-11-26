@@ -25,7 +25,7 @@ Remote deployments use externally owned transit devices rather than the local pa
 
 ## Files and reload
 
-The main configuration is strict JSON. `areas` may contain inline Area objects; `area_files` lists files containing one Area object each, resolved relative to the main file. Both sources form one validated set. Unknown fields, duplicate JSON members, duplicate Areas, invalid references, trailing values and files over 64 MiB are rejected.
+The main configuration is strict JSON. `areas` may contain inline Area objects; `area_files` lists files containing one Area object each, resolved relative to the main file. Both sources form one validated set. Unknown fields, duplicate JSON members, duplicate Areas, invalid references, and trailing values are rejected.
 
 Complete all file edits, then trigger reload:
 
@@ -68,7 +68,7 @@ ACL first-match/default-deny applies to the original destination before DNAT. A 
 | `timeouts.tcp_established` | 7440 seconds. |
 | `timeouts.icmp` | 60 seconds. |
 
-`main_core` and `workers` select distinct available CPUs; omitting workers uses the native single-thread mode. Other validation guards are 256 interfaces/attachments/Areas, 64 Exits/Pools per Area, 256 addresses per Exit/Pool and 4096 rules of each kind per Area. These resource guards are separate from sandbox capacity. The native statistics segment has no listener; its budget must include per-context interface counters. Size addresses, NAT slots, context budget, memory and CPUs together; an unlimited Pool quota is not unlimited gateway capacity.
+`main_core` and `workers` select distinct available CPUs; omitting workers uses the native single-thread mode. Areas, attachments, Exits, Pools, addresses and rules use dynamically sized storage, with no additional fixed object-count ceiling. Pool IDs are sparse keys, not array indexes; removed state is reclaimed. The native statistics segment has no listener; its budget must include per-context interface counters. Size addresses, NAT slots, context budget, memory and CPUs together; an unlimited Pool quota is not unlimited gateway capacity.
 
 The acceptance target is 12288 simultaneous active contexts and 196608 bidirectional NAT mappings across multiple switch sources, with two native workers. Consult the candidate's acceptance manifest and measured memory rather than inferring a throughput or latency guarantee.
 
@@ -76,11 +76,11 @@ The acceptance target is 12288 simultaneous active contexts and 196608 bidirecti
 
 | Locator | Existing vSwitch contract |
 |---|---|
-| `port` | Destination UDP port is `port_base + slot`; default base 50000. The 4096-port range must fit and exclude 6081. Area VNI is 24 bits. |
+| `port` | The received destination UDP port is an opaque locator and is preserved on return. Egress accepts the full nonzero UDP destination-port field, independently of the sender’s `port_base` or slot allocation. Area VNI is 24 bits. |
 | `vni` | UDP 6081; VNI is `(slot << 12) | area`, with a 12-bit logical Area. |
 | `tlv` | UDP 6081; configured class/type identify the first locator option, with a 24-bit Area. Unknown critical options fail; noncritical metadata is accepted without reflection. |
 
-The 4096 slot limit belongs to one existing vSwitch. Egress aggregates multiple peers/interfaces and does not use it as its total context limit. Ether encapsulation with 1–20 generation bits encodes the existing generation in source MAC `02:fe:<32-bit big-endian generation>`; zero is valid. Egress learns the return marker and inner source from traffic, and keeps them immutable in that context. vSwitch checks tagged destination MACs against its existing generation, restores the Guest MAC, and preserves untagged legacy compatibility. No vSwitch Go configuration, Attach parameter or generation scheme changes.
+Egress imposes no slot range. It preserves locator values within their wire fields, including the complete 32-bit TLV value; context storage is keyed by source and locator rather than sized by the numeric slot. `port_base` remains an accepted compatibility hint and does not restrict ingress. Ether encapsulation with 1–20 generation bits encodes the existing generation in source MAC `02:fe:<32-bit big-endian generation>`; zero is valid. Egress learns the return marker and inner source from traffic, and keeps them immutable in that context. vSwitch checks tagged destination MACs against its existing generation, restores the Guest MAC, and preserves untagged legacy compatibility. No vSwitch Go configuration, Attach parameter or generation scheme changes.
 
 IP encapsulation and legacy Ether add no new wire identity. Their existing inability to distinguish arbitrary late traffic after identity reuse remains; no Egress lease protocol is added to disguise that limitation.
 

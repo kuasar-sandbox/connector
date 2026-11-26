@@ -15,13 +15,9 @@ import (
 	"strings"
 )
 
-// Slot width belongs to the existing vSwitch wire contract, not gateway capacity.
-const slotsPerSwitch = 4096
 const defaultMaxContexts = 65536
 
-const maxJSONBytes = 64 << 20
-
-var identifier = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$`)
+var identifier = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
 type Config struct {
 	Name               string       `json:"name"`
@@ -113,7 +109,11 @@ type NATTimeouts struct {
 }
 
 func Decode(r io.Reader, value any) error {
-	return decodeBounded(r, value, maxJSONBytes)
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	return decodeJSON(raw, value)
 }
 
 func decodeBounded(r io.Reader, value any, limit int64) error {
@@ -124,6 +124,10 @@ func decodeBounded(r io.Reader, value any, limit int64) error {
 	if int64(len(raw)) > limit {
 		return fmt.Errorf("JSON exceeds %d-byte limit", limit)
 	}
+	return decodeJSON(raw, value)
+}
+
+func decodeJSON(raw []byte, value any) error {
 	if trimmed := bytes.TrimSpace(raw); len(trimmed) == 0 || trimmed[0] != '{' {
 		return errors.New("expected a JSON object")
 	}
@@ -304,12 +308,6 @@ func (c *Config) Validate() error {
 	if c.MaxConnections == 0 {
 		c.MaxConnections = 65536
 	}
-	if c.MaxConnections > 1048576 {
-		return errors.New("max_connections exceeds gateway capacity")
-	}
-	if len(c.Workers) > 64 {
-		return errors.New("at most 64 workers")
-	}
 	cpus := map[uint32]bool{}
 	if c.MainCore != nil {
 		cpus[*c.MainCore] = true
@@ -320,8 +318,8 @@ func (c *Config) Validate() error {
 		}
 		cpus[cpu] = true
 	}
-	if len(c.Interfaces) == 0 || len(c.Interfaces) > 256 || len(c.Exits) == 0 || len(c.Exits) > 64 || len(c.Attachments) > 256 || len(c.Areas) > 256 {
-		return errors.New("invalid interface, exit, attachment or Area count")
+	if len(c.Interfaces) == 0 || len(c.Exits) == 0 {
+		return errors.New("at least one interface and exit are required")
 	}
 	interfaces := map[string]Interface{}
 	for _, i := range c.Interfaces {
@@ -366,8 +364,8 @@ func (c *Config) Validate() error {
 		if !ip.Contains(hop) || hop == ip.Addr() {
 			return errors.New("exit next hop must be a different on-link address")
 		}
-		if len(e.Addresses) == 0 || len(e.Addresses) > 256 {
-			return errors.New("exit requires 1..256 SNAT addresses")
+		if len(e.Addresses) == 0 {
+			return errors.New("exit requires SNAT addresses")
 		}
 		seenAddresses := map[string]bool{}
 		for _, a := range e.Addresses {
@@ -437,8 +435,8 @@ func (c *Config) Validate() error {
 		}
 		switch a.Locator {
 		case "port":
-			if a.PortBase < 1024 || a.PortBase > 61440 || (a.PortBase <= 6081 && a.PortBase+4095 >= 6081) {
-				return errors.New("invalid Geneve port range")
+			if a.PortBase > 65535 {
+				return errors.New("port_base exceeds the UDP port field")
 			}
 		case "vni":
 			if a.Area > 4095 {
@@ -464,7 +462,7 @@ func (c *Config) Validate() error {
 			a.InnerMTU = 1500
 		}
 		profile := *a
-		profile.Name, profile.Gateway, profile.Area = "", "", 0
+		profile.Name, profile.Gateway, profile.Area, profile.PortBase = "", "", 0, 0
 		if prior, found := peers[key]; found && prior != profile {
 			return errors.New("Areas on one peer require the same locator and fencing profile")
 		}
@@ -491,13 +489,13 @@ func (c *Config) Validate() error {
 	return nil
 }
 func (c *Config) ValidateArea(a Area) error {
-	if a.VNI > 0xffffff || len(a.Pools) > 64 || len(a.ACL) > 4096 || len(a.DNAT) > 4096 || len(a.Routes) > 4096 {
-		return errors.New("Area capacity exceeded")
+	if a.VNI > 0xffffff {
+		return errors.New("Area VNI exceeds its 24-bit wire field")
 	}
 	pools := map[uint32]bool{}
 	for _, p := range a.Pools {
-		if p.ID >= 64 || pools[p.ID] {
-			return errors.New("Pool IDs must be unique within 0..63")
+		if pools[p.ID] {
+			return errors.New("Pool IDs must be unique")
 		}
 		pools[p.ID] = true
 		var found *Exit
@@ -509,7 +507,7 @@ func (c *Config) ValidateArea(a Area) error {
 		if found == nil {
 			return errors.New("Pool references unknown exit")
 		}
-		if len(p.Addresses) == 0 || len(p.Addresses) > 256 {
+		if len(p.Addresses) == 0 {
 			return errors.New("Pool requires addresses")
 		}
 		seen := map[string]bool{}

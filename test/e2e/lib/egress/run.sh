@@ -24,6 +24,7 @@ if source:
 
 PY
 python3 "$tests/wire.py" --ctl "$ctl" --vpp-build "$runtime" --output "$output/wire-tlv" --locator tlv
+python3 "$tests/wire.py" --ctl "$ctl" --vpp-build "$runtime" --output "$output/wire-port" --locator port
 python3 "$tests/wire.py" --ctl "$ctl" --vpp-build "$runtime" --output "$output/scale-vni" --contexts 12288 --flows 16
 for location in local remote; do
   options=()
@@ -41,7 +42,7 @@ python3 - "$output" "$ctl" "$runtime" <<'PY'
 import hashlib,json,pathlib,platform,sys
 out,ctl,runtime=map(pathlib.Path,sys.argv[1:])
 rows={str(p.relative_to(out)):json.loads(p.read_text()) for p in out.glob('*/result.json')}
-assert len(rows)==15 and all(row['pass'] for row in rows.values())
+assert len(rows)==16 and all(row['pass'] for row in rows.values())
 result={'pass':True,'architecture':platform.machine(),'connector_ctl_sha256':hashlib.sha256(ctl.read_bytes()).hexdigest(),'runtime':json.loads((runtime/'runtime.json').read_text()),'cases':rows}
 (out/'acceptance.json').write_text(json.dumps(result,indent=2)+'\n')
 print(out/'acceptance.json')

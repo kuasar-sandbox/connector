@@ -22,17 +22,17 @@ func validConfig() Config {
 
 func TestConfigurationRejectsAmbiguousOrUnsafeRouting(t *testing.T) {
 	for name, change := range map[string]func(*Config){
-		"command injection in address":       func(c *Config) { c.Areas[0].Routes[0].Destination = "0.0.0.0/0\negress-policy commit" },
-		"unknown Pool":                       func(c *Config) { c.Areas[0].Routes[0].Pool = 5 },
-		"noncanonical prefix":                func(c *Config) { c.Areas[0].Routes[0].Destination = "203.0.113.1/24" },
-		"unknown exit resource":              func(c *Config) { c.Areas[0].Pools[0].Addresses = []string{"192.0.2.9"} },
-		"ambiguous same-prefix routes":       func(c *Config) { c.Areas[0].Routes = append(c.Areas[0].Routes, c.Areas[0].Routes[0]) },
-		"wire VNI used as logical Area":      func(c *Config) { c.Attachments[0].Locator = "vni"; c.Attachments[0].Area = 8199; c.Areas[0].VNI = 8199 },
-		"IP domain overlap":                  func(c *Config) { c.Attachments[0].Interface = "outside"; c.Attachments[0].Peer = "192.0.2.2" },
-		"port locator overlaps standard UDP": func(c *Config) { c.Attachments[0].PortBase = 6000 },
-		"reserved protocol":                  func(c *Config) { c.Areas[0].ACL[0].Protocol = "gre" },
-		"port match on arbitrary protocol":   func(c *Config) { c.Areas[0].ACL[0].PortFirst = 1; c.Areas[0].ACL[0].PortLast = 10 },
-		"duplicate SNAT resource":            func(c *Config) { c.Exits[0].Addresses = append(c.Exits[0].Addresses, c.Exits[0].Addresses[0]) },
+		"command injection in address":      func(c *Config) { c.Areas[0].Routes[0].Destination = "0.0.0.0/0\negress-policy commit" },
+		"unknown Pool":                      func(c *Config) { c.Areas[0].Routes[0].Pool = 5 },
+		"noncanonical prefix":               func(c *Config) { c.Areas[0].Routes[0].Destination = "203.0.113.1/24" },
+		"unknown exit resource":             func(c *Config) { c.Areas[0].Pools[0].Addresses = []string{"192.0.2.9"} },
+		"ambiguous same-prefix routes":      func(c *Config) { c.Areas[0].Routes = append(c.Areas[0].Routes, c.Areas[0].Routes[0]) },
+		"wire VNI used as logical Area":     func(c *Config) { c.Attachments[0].Locator = "vni"; c.Attachments[0].Area = 8199; c.Areas[0].VNI = 8199 },
+		"IP domain overlap":                 func(c *Config) { c.Attachments[0].Interface = "outside"; c.Attachments[0].Peer = "192.0.2.2" },
+		"port value exceeds its wire field": func(c *Config) { c.Attachments[0].PortBase = 65536 },
+		"reserved protocol":                 func(c *Config) { c.Areas[0].ACL[0].Protocol = "gre" },
+		"port match on arbitrary protocol":  func(c *Config) { c.Areas[0].ACL[0].PortFirst = 1; c.Areas[0].ACL[0].PortLast = 10 },
+		"duplicate SNAT resource":           func(c *Config) { c.Exits[0].Addresses = append(c.Exits[0].Addresses, c.Exits[0].Addresses[0]) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := validConfig()
@@ -214,7 +214,7 @@ func TestSharedExitInterfaceUsesOneReturnFIB(t *testing.T) {
 	if strings.Count(text, "set interface nat44 out host-outside") != 1 || strings.Count(text, "nat44 add address 192.0.2.1") != 1 {
 		t.Fatal("shared resources configured twice")
 	}
-	for _, want := range []string{"pool id 0 table 100 return-table 1001", "pool id 1 table 101 return-table 1001"} {
+	for _, want := range []string{"pool id 0 table 3 return-table 2", "pool id 1 table 4 return-table 2"} {
 		if !strings.Contains(text, want) {
 			t.Fatal(want, text)
 		}
@@ -247,5 +247,57 @@ func TestNoGatewayListenerConfiguration(t *testing.T) {
 	}
 	if !strings.Contains(s, "socket-name none") {
 		t.Fatal("native statistics endpoint not disabled")
+	}
+}
+
+// These values cross the removed policy/object ceilings. Sparse public Pool
+// IDs must not cause arrays to be allocated up to the largest numeric ID.
+func TestConfigurationScalesByResourcesInsteadOfFixedObjectCounts(t *testing.T) {
+	c := validConfig()
+	c.MaxConnections = 2 * 1048576
+	for cpu := uint32(0); cpu < 65; cpu++ {
+		c.Workers = append(c.Workers, cpu)
+	}
+	for i := 0; i < 1024; i++ {
+		c.Exits = append(c.Exits, Exit{Name: fmt.Sprintf("exit%d", i), Interface: "outside", NextHop: "192.0.2.2", Addresses: []string{"192.0.2.1"}})
+	}
+	for id := uint32(1); id <= 65; id++ {
+		c.Areas[0].Pools = append(c.Areas[0].Pools, Pool{ID: id * 65537, Exit: "public", Addresses: []string{"192.0.2.1"}})
+	}
+	c.Areas[0].Pools = append(c.Areas[0].Pools, Pool{ID: ^uint32(0), Exit: "public", Addresses: []string{"192.0.2.1"}})
+	for i := 0; i < 4097; i++ {
+		c.Areas[0].ACL = append(c.Areas[0].ACL, ACL{Match: Match{Destination: "198.51.100.0/24", Protocol: "tcp"}, Action: "deny"})
+		c.Areas[0].DNAT = append(c.Areas[0].DNAT, DNAT{Match: Match{Destination: "203.0.113.0/24", Protocol: "tcp"}, Pool: ^uint32(0), Target: "203.0.113.1"})
+		c.Areas[0].Routes = append(c.Areas[0].Routes, Route{Destination: fmt.Sprintf("10.%d.%d.1/32", i/256, i%256), Pool: ^uint32(0)})
+	}
+	for i := 1; i <= 257; i++ {
+		address := fmt.Sprintf("198.51.%d.%d", i/256, i%256)
+		c.Exits[0].Addresses = append(c.Exits[0].Addresses, address)
+		c.Areas[0].Pools[0].Addresses = append(c.Areas[0].Pools[0].Addresses, address)
+		c.Interfaces = append(c.Interfaces, Interface{Name: fmt.Sprintf("transit%d", i), Address: "198.18.0.1/24", MTU: 1500})
+		area := Area{VNI: uint32(1000 + i)}
+		c.Areas = append(c.Areas, area)
+		attachment := c.Attachments[0]
+		attachment.Name = fmt.Sprintf("peer%d", i)
+		attachment.Area = area.VNI
+		c.Attachments = append(c.Attachments, attachment)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	e, err := NewEngine(c, &recordingRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	used := map[int]bool{}
+	for _, iface := range c.Interfaces {
+		used[e.interfaceTable(iface.Name)] = true
+	}
+	for i := range c.Exits {
+		table := len(c.Interfaces) + 1 + i
+		if used[table] {
+			t.Fatal("interface and exit FIB IDs collide", table)
+		}
+		used[table] = true
 	}
 }

@@ -12,9 +12,7 @@
 #include <vnet/plugin/plugin.h>
 #include <vpp/app/version.h>
 
-#define EG_POOLS 64
-#define EG_AREAS 256
-#define EG_RULES 4096
+#include <vppinfra/hash.h>
 typedef struct
 {
   ip4_address_t network, target;
@@ -25,7 +23,7 @@ typedef struct
 typedef struct
 {
   u8 present;
-  u32 fib, return_fib;
+  u32 id, fib, return_fib;
   u64 limit;
   ip4_address_t *addresses;
 } exit_pool_t;
@@ -34,14 +32,21 @@ typedef struct
   u32 id;
   u8 present;
   rule_t *acl, *dnat, *routes;
-  exit_pool_t pools[EG_POOLS];
+  exit_pool_t *pools;
+  uword *pool_by_id;
 } area_t;
+typedef struct
+{
+  u32 id;
+  u64 current, created, released, rollback, denied;
+} eg_pool_counter_t;
 typedef struct
 {
   u8 active, revoked;
   u32 area, table;
-  u64 current[EG_POOLS], created[EG_POOLS], released[EG_POOLS];
-  u64 rollback[EG_POOLS], denied[EG_POOLS], policy_denied;
+  u64 policy_denied;
+  eg_pool_counter_t *counters;
+  uword *counter_by_id;
 } attachment_t;
 static area_t *areas, staged, *pending;
 static u8 staging, batching;
@@ -57,9 +62,51 @@ free_area (area_t *a)
   vec_free (a->acl);
   vec_free (a->dnat);
   vec_free (a->routes);
-  for (u32 i = 0; i < EG_POOLS; i++)
-    vec_free (a->pools[i].addresses);
+  exit_pool_t *p;
+  vec_foreach (p, a->pools) vec_free (p->addresses);
+  vec_free (a->pools);
+  hash_free (a->pool_by_id);
   clib_memset (a, 0, sizeof (*a));
+}
+/* Public Pool IDs are keys, never array sizes. Packet workers read these
+ * hashes under the same publication barrier as their owning configuration. */
+static exit_pool_t *
+pool_for (area_t *a, u32 id)
+{
+  uword *index = hash_get (a->pool_by_id, id);
+  return a->present && index ? &a->pools[index[0]] : 0;
+}
+static eg_pool_counter_t *
+counter_for (attachment_t *c, u32 id)
+{
+  uword *index = hash_get (c->counter_by_id, id);
+  return index ? &c->counters[index[0]] : 0;
+}
+/* Main thread, workers stopped. Retain counts while old mappings exist and
+ * reclaim removed Pool counters after their mappings have been revoked. */
+static void
+sync_counters (attachment_t *c)
+{
+  area_t *a = &areas[c->area];
+  exit_pool_t *p;
+  vec_foreach (p, a->pools)
+    if (!counter_for (c, p->id))
+      {
+        eg_pool_counter_t count = { .id = p->id };
+        hash_set (c->counter_by_id, p->id, vec_len (c->counters));
+        vec_add1 (c->counters, count);
+      }
+  u32 kept = 0;
+  for (u32 i = 0; i < vec_len (c->counters); i++)
+    if (pool_for (a, c->counters[i].id) || c->counters[i].current)
+      c->counters[kept++] = c->counters[i];
+  if (kept != vec_len (c->counters))
+    {
+      vec_set_len (c->counters, kept);
+      hash_free (c->counter_by_id);
+      for (u32 i = 0; i < kept; i++)
+        hash_set (c->counter_by_id, c->counters[i].id, i);
+    }
 }
 static int
 prefix_matches (const rule_t *r, ip4_address_t dst)
@@ -121,8 +168,8 @@ select_policy (u32 fib, u8 proto, ip4_address_t dst, u16 port, nat44_ed_policy_d
   attachment_t *c = &attachments[fib];
   area_t *a = &areas[c->area];
   rule_t *r;
-  u8 allowed = 0;
-  u32 pool = ~0, best = 0;
+  u8 allowed = 0, selected = 0;
+  u32 pool = 0, best = 0;
   vec_foreach (r, a->acl) if (matches (r, dst, clib_net_to_host_u16 (port), proto))
   {
     allowed = r->allow;
@@ -135,23 +182,25 @@ select_policy (u32 fib, u8 proto, ip4_address_t dst, u16 port, nat44_ed_policy_d
   vec_foreach (r, a->dnat) if (matches (r, dst, clib_net_to_host_u16 (port), proto))
   {
     pool = r->pool;
+    selected = 1;
     d->backend_addr = r->target;
     if (r->target_port)
       d->backend_port = clib_host_to_net_u16 (r->target_port);
     break;
   }
-  if (pool == ~0)
+  if (!selected)
     vec_foreach (r, a->routes)
     {
-      if (prefix_matches (r, dst) && (pool == ~0 || r->prefix > best))
+      if (prefix_matches (r, dst) && (!selected || r->prefix > best))
         {
           pool = r->pool;
+          selected = 1;
           best = r->prefix;
         }
     }
-  if (pool >= EG_POOLS || !a->pools[pool].present)
+  exit_pool_t *p = selected ? pool_for (a, pool) : 0;
+  if (!p)
     return -1;
-  exit_pool_t *p = &a->pools[pool];
   d->cookie = ((u64)fib << 32) | pool;
   d->addresses = p->addresses;
   d->address_count = vec_len (p->addresses);
@@ -180,16 +229,20 @@ reserve (u64 cookie, u32 thread)
 {
   attachment_t *c = &attachments[cookie >> 32];
   u32 id = (u32)cookie;
-  u64 limit = areas[c->area].pools[id].limit;
-  u64 n = __atomic_load_n (&c->current[id], __ATOMIC_RELAXED);
+  exit_pool_t *p = pool_for (&areas[c->area], id);
+  eg_pool_counter_t *count = counter_for (c, id);
+  if (!p || !count)
+    return 0;
+  u64 limit = p->limit;
+  u64 n = __atomic_load_n (&count->current, __ATOMIC_RELAXED);
   for (;;)
     {
       if (limit && n >= limit)
         {
-          __atomic_fetch_add (&c->denied[id], 1, __ATOMIC_RELAXED);
+          __atomic_fetch_add (&count->denied, 1, __ATOMIC_RELAXED);
           return 0;
         }
-      if (__atomic_compare_exchange_n (&c->current[id], &n, n + 1, 0, __ATOMIC_RELAXED,
+      if (__atomic_compare_exchange_n (&count->current, &n, n + 1, 0, __ATOMIC_RELAXED,
                                        __ATOMIC_RELAXED))
         return 1;
     }
@@ -197,16 +250,20 @@ reserve (u64 cookie, u32 thread)
 static void
 commit (u64 cookie)
 {
-  __atomic_fetch_add (&attachments[cookie >> 32].created[(u32)cookie], 1, __ATOMIC_RELAXED);
+  eg_pool_counter_t *count = counter_for (&attachments[cookie >> 32], (u32)cookie);
+  ALWAYS_ASSERT (count);
+  __atomic_fetch_add (&count->created, 1, __ATOMIC_RELAXED);
 }
 static void
 release (u64 cookie, u8 committed)
 {
   attachment_t *c = &attachments[cookie >> 32];
   u32 id = (u32)cookie;
-  u64 old = __atomic_fetch_sub (&c->current[id], 1, __ATOMIC_RELAXED);
+  eg_pool_counter_t *count = counter_for (c, id);
+  ALWAYS_ASSERT (count);
+  u64 old = __atomic_fetch_sub (&count->current, 1, __ATOMIC_RELAXED);
   ALWAYS_ASSERT (old > 0);
-  __atomic_fetch_add (committed ? &c->released[id] : &c->rollback[id], 1, __ATOMIC_RELAXED);
+  __atomic_fetch_add (committed ? &count->released : &count->rollback, 1, __ATOMIC_RELAXED);
 }
 static int
 path_mtu (u64 cookie, u64 expected, u32 inside, u32 route, ip4_address_t dst, ip4_address_t forward,
@@ -215,7 +272,7 @@ path_mtu (u64 cookie, u64 expected, u32 inside, u32 route, ip4_address_t dst, ip
   if (cookie != NAT44_ED_POLICY_NONE)
     {
       u32 fib = cookie >> 32, id = (u32)cookie;
-      if (!managed (fib) || attachments[fib].revoked || id >= EG_POOLS)
+      if (!managed (fib) || attachments[fib].revoked || !counter_for (&attachments[fib], id))
         return -1;
       /* A mapping keeps its original route, including after a Pool or route
        * rule selects a different exit for new connections. */
@@ -243,6 +300,7 @@ egress_policy_context_bind (u32 fib, u32 table, u32 area)
   c->table = table;
   c->area = index[0];
   c->active = 1;
+  sync_counters (c);
   return 0;
 }
 /* Counters are updated by the native NAT create/free hooks. This is O(Pools),
@@ -253,8 +311,8 @@ egress_policy_context_live (u32 fib)
   if (!managed (fib))
     return 0;
   u64 total = 0;
-  for (u32 i = 0; i < EG_POOLS; i++)
-    total += attachments[fib].current[i];
+  eg_pool_counter_t *count;
+  vec_foreach (count, attachments[fib].counters) total += count->current;
   return total > ~0U ? ~0U : total;
 }
 __clib_export int
@@ -263,9 +321,10 @@ egress_policy_context_retire (u32 fib)
   if (!managed (fib))
     return 0;
   attachment_t *c = &attachments[fib];
-  for (u32 i = 0; i < EG_POOLS; i++)
-    if (c->current[i])
-      return -1;
+  eg_pool_counter_t *count;
+  vec_foreach (count, c->counters) if (count->current) return -1;
+  vec_free (c->counters);
+  hash_free (c->counter_by_id);
   clib_memset (c, 0, sizeof (*c));
   return 0;
 }
@@ -297,7 +356,7 @@ visit (const nat44_ed_policy_flow_t *f, void *opaque)
   attachment_t *c = &attachments[f->inside_fib];
   area_t *a = &areas[c->area];
   u32 pool = (u32)f->cookie;
-  if (c->revoked || pool >= EG_POOLS || !a->pools[pool].present
+  if (c->revoked || !pool_for (a, pool)
       || !acl_allows (a, f->proto, f->original_remote, f->original_remote_port))
     return 1;
   u64 actual = 0;
@@ -351,14 +410,27 @@ egress_policy_batch_publish (void)
         a->id = id;
       }
   }
+  u8 *referenced = 0;
+  if (vec_len (areas))
+    vec_validate (referenced, vec_len (areas) - 1);
+  attachment_t *context;
+  vec_foreach (context, attachments) if (context->active) referenced[context->area] = 1;
   vec_foreach (n, pending)
   {
     uword *found = hash_get (area_by_id, n->id);
     u32 index = found ? found[0] : vec_len (areas);
     if (!found)
       {
-        area_t empty = { 0 };
-        vec_add1 (areas, empty);
+        for (index = 0; index < vec_len (areas); index++)
+          if (!areas[index].present && (index >= vec_len (referenced) || !referenced[index]))
+            break;
+        if (index == vec_len (areas))
+          {
+            area_t empty = { 0 };
+            vec_add1 (areas, empty);
+          }
+        else
+          hash_unset (area_by_id, areas[index].id);
         hash_set (area_by_id, n->id, index);
       }
     free_area (&areas[index]);
@@ -366,9 +438,13 @@ egress_policy_batch_publish (void)
     clib_memset (n, 0, sizeof (*n));
   }
   vec_free (pending);
+  vec_free (referenced);
   batching = 0;
+  vec_foreach (context, attachments) if (context->active) sync_counters (context);
   walk_t w = { .fib = ~0, .area = ~0 };
-  return native_walk (visit, &w);
+  u32 terminated = native_walk (visit, &w);
+  vec_foreach (context, attachments) if (context->active) sync_counters (context);
+  return terminated;
 }
 static clib_error_t *
 config_cmd (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
@@ -408,13 +484,13 @@ config_cmd (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
       if (unformat_check_input (in) != UNFORMAT_END_OF_INPUT)
         return clib_error_return (0, "unexpected argument");
       rule_t *r;
-      vec_foreach (r, staged.routes) if (!staged.pools[r->pool].present) return clib_error_return (
+      vec_foreach (r, staged.routes) if (!pool_for (&staged, r->pool)) return clib_error_return (
           0, "unknown route Pool");
-      vec_foreach (r, staged.dnat) if (!staged.pools[r->pool].present) return clib_error_return (
+      vec_foreach (r, staged.dnat) if (!pool_for (&staged, r->pool)) return clib_error_return (
           0, "unknown DNAT Pool");
-      for (u32 i = 0; i < EG_POOLS; i++)
-        if (staged.pools[i].present && !vec_len (staged.pools[i].addresses))
-          return clib_error_return (0, "Pool requires SNAT addresses");
+      exit_pool_t *p;
+      vec_foreach (p, staged.pools) if (!vec_len (p->addresses))
+        return clib_error_return (0, "Pool requires SNAT addresses");
       u32 id = staged.id;
       vec_add1 (pending, staged);
       clib_memset (&staged, 0, sizeof (staged));
@@ -427,27 +503,28 @@ config_cmd (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
       u32 id = ~0, table = ~0, return_table = ~0, limit = 0;
       if (!unformat (in, "id %u table %u return-table %u limit %u", &id, &table, &return_table,
                      &limit)
-          || id >= EG_POOLS || unformat_check_input (in) != UNFORMAT_END_OF_INPUT
-          || staged.pools[id].present)
+          || unformat_check_input (in) != UNFORMAT_END_OF_INPUT || pool_for (&staged, id))
         return clib_error_return (0, "invalid or duplicate Pool");
       u32 fib = fib_table_find (FIB_PROTOCOL_IP4, table);
       u32 rfi = fib_table_find (FIB_PROTOCOL_IP4, return_table);
       if (fib == ~0 || rfi == ~0)
         return clib_error_return (0, "unknown exit table");
-      staged.pools[id]
-          = (exit_pool_t){ .present = 1, .fib = fib, .return_fib = rfi, .limit = limit };
+      exit_pool_t p = { .id = id, .present = 1, .fib = fib, .return_fib = rfi, .limit = limit };
+      hash_set (staged.pool_by_id, id, vec_len (staged.pools));
+      vec_add1 (staged.pools, p);
       return 0;
     }
   if (!strcmp (op, "address"))
     {
       u32 id = ~0;
       ip4_address_t addr;
-      if (!unformat (in, "pool %u %U", &id, unformat_ip4_address, &addr) || id >= EG_POOLS
-          || !staged.pools[id].present || !addr.as_u32
-          || vec_len (staged.pools[id].addresses) >= 256
+      if (!unformat (in, "pool %u %U", &id, unformat_ip4_address, &addr) || !addr.as_u32
           || unformat_check_input (in) != UNFORMAT_END_OF_INPUT)
         return clib_error_return (0, "invalid Pool address");
-      vec_add1 (staged.pools[id].addresses, addr);
+      exit_pool_t *p = pool_for (&staged, id);
+      if (!p)
+        return clib_error_return (0, "unknown Pool");
+      vec_add1 (p->addresses, addr);
       return 0;
     }
   rule_t r = { 0 };
@@ -456,7 +533,7 @@ config_cmd (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
     return clib_error_return (0, "invalid destination prefix");
   if (!strcmp (op, "route"))
     {
-      if (!unformat (in, "pool %u", &r.pool) || r.pool >= EG_POOLS)
+      if (!unformat (in, "pool %u", &r.pool))
         return clib_error_return (0, "invalid Pool");
     }
   else
@@ -480,7 +557,7 @@ config_cmd (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
           if ((proto != 6 && proto != 17)
               || !unformat (in, "pool %u target %U port %u", &r.pool, unformat_ip4_address,
                             &r.target, &target_port)
-              || r.pool >= EG_POOLS || target_port > 65535 || !r.target.as_u32)
+              || target_port > 65535 || !r.target.as_u32)
             return clib_error_return (0, "invalid DNAT");
           r.target_port = target_port;
         }
@@ -494,8 +571,6 @@ config_cmd (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
   rule_t **rules = !strcmp (op, "acl")    ? &staged.acl
                    : !strcmp (op, "dnat") ? &staged.dnat
                                           : &staged.routes;
-  if (vec_len (*rules) >= EG_RULES)
-    return clib_error_return (0, "rule capacity");
   if (rules == &staged.routes)
     {
       rule_t *old;
@@ -531,14 +606,14 @@ stats_cmd (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
       attachment_t *c = &attachments[f];
       if (!c->active)
         continue;
-      for (u32 p = 0; p < EG_POOLS; p++)
-        if (areas[c->area].pools[p].present || c->created[p])
+      eg_pool_counter_t *p;
+      vec_foreach (p, c->counters)
           vlib_cli_output (
               vm,
               "{\"table\":%u,\"area\":%u,\"pool\":%u,\"current\":%llu,\"created\":%llu,"
               "\"released\":%llu,\"rollback\":%llu,\"denied\":%llu,\"policy_denied\":%llu}",
-              c->table, areas[c->area].id, p, c->current[p], c->created[p], c->released[p],
-              c->rollback[p], c->denied[p], c->policy_denied);
+              c->table, areas[c->area].id, p->id, p->current, p->created, p->released,
+              p->rollback, p->denied, c->policy_denied);
     }
   vlib_worker_thread_barrier_release (vm);
   return 0;
@@ -554,35 +629,44 @@ summary_cmd (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
   {
     u64 current, created, released, denied;
   } total_t;
-  total_t *totals = 0;
+  total_t **totals = 0;
   if (!vec_len (areas))
     return 0;
-  vec_validate (totals, vec_len (areas) * EG_POOLS - 1);
+  vec_validate (totals, vec_len (areas) - 1);
   vlib_worker_thread_barrier_sync (vm);
+  for (u32 a = 0; a < vec_len (areas); a++)
+    if (vec_len (areas[a].pools))
+      vec_validate (totals[a], vec_len (areas[a].pools) - 1);
   for (u32 f = 0; f < vec_len (attachments); f++)
     {
       attachment_t *c = &attachments[f];
       if (!c->active)
         continue;
-      for (u32 p = 0; p < EG_POOLS; p++)
+      eg_pool_counter_t *p;
+      vec_foreach (p, c->counters)
         {
-          total_t *t = &totals[c->area * EG_POOLS + p];
-          t->current += c->current[p];
-          t->created += c->created[p];
-          t->released += c->released[p];
-          t->denied += c->denied[p];
+          uword *index = hash_get (areas[c->area].pool_by_id, p->id);
+          if (!index)
+            continue;
+          total_t *t = &totals[c->area][index[0]];
+          t->current += p->current;
+          t->created += p->created;
+          t->released += p->released;
+          t->denied += p->denied;
         }
     }
   for (u32 a = 0; a < vec_len (areas); a++)
-    for (u32 p = 0; p < EG_POOLS; p++)
-      if (areas[a].pools[p].present || totals[a * EG_POOLS + p].created)
+    {
+      for (u32 p = 0; p < vec_len (areas[a].pools); p++)
         {
-          total_t *t = &totals[a * EG_POOLS + p];
+          total_t *t = &totals[a][p];
           vlib_cli_output (vm,
                            "{\"area\":%u,\"pool\":%u,\"current\":%llu,\"created\":%llu,"
                            "\"released\":%llu,\"denied\":%llu}",
-                           areas[a].id, p, t->current, t->created, t->released, t->denied);
+                           areas[a].id, areas[a].pools[p].id, t->current, t->created, t->released, t->denied);
         }
+      vec_free (totals[a]);
+    }
   vlib_worker_thread_barrier_release (vm);
   vec_free (totals);
   return 0;
@@ -597,7 +681,7 @@ paths_cmd (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
   vlib_worker_thread_barrier_sync (vm);
   area_t *area;
   ip4_address_t destination = { 0 };
-  vec_foreach (area, areas) for (u32 p = 0; p < EG_POOLS; p++) if (area->pools[p].present)
+  vec_foreach (area, areas) for (u32 p = 0; p < vec_len (area->pools); p++)
   {
     u64 path = 0;
     u8 neighbor = 0;
@@ -606,7 +690,7 @@ paths_cmd (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
     vlib_cli_output (vm,
                      "{\"area\":%u,\"pool\":%u,\"route_available\":%s,\"neighbor_resolved\":%s,"
                      "\"interface_index\":%u,\"next_hop\":\"%U\",\"mtu\":%d}",
-                     area->id, p, mtu > 0 ? "true" : "false", neighbor ? "true" : "false",
+                     area->id, area->pools[p].id, mtu > 0 ? "true" : "false", neighbor ? "true" : "false",
                      (u32)(path >> 32), format_ip4_address, &hop, mtu);
   }
   vlib_worker_thread_barrier_release (vm);

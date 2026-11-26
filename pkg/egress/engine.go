@@ -116,7 +116,7 @@ func (e *Engine) Setup(ctx context.Context) error {
 	configuredOut := map[string]bool{}
 	configuredAddress := map[string]bool{}
 	for index, x := range e.config.Exits {
-		table := 100 + index
+		table := len(e.config.Interfaces) + 1 + index
 		if err := e.empty(ctx, fmt.Sprintf("ip table add %d", table)); err != nil {
 			return err
 		}
@@ -161,7 +161,7 @@ func (e *Engine) Setup(ctx context.Context) error {
 func (e *Engine) interfaceTable(name string) int {
 	for n, i := range e.config.Interfaces {
 		if i.Name == name {
-			return 1000 + n
+			return 1 + n
 		}
 	}
 	panic("validated interface disappeared")
@@ -188,7 +188,7 @@ func (e *Engine) stageArea(ctx context.Context, a Area) (err error) {
 		table := 0
 		for i, x := range e.config.Exits {
 			if x.Name == p.Exit {
-				table = 100 + i
+				table = len(e.config.Interfaces) + 1 + i
 			}
 		}
 		if err = e.empty(ctx, fmt.Sprintf("egress-policy pool id %d table %d return-table %d limit %d", p.ID, table, e.exitReturnTable(p.Exit), p.MaxConnections)); err != nil {

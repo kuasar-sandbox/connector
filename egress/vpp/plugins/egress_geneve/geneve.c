@@ -52,7 +52,7 @@ typedef struct
 typedef struct
 {
   gp_peer_key_t key;
-  u16 port_base, tlv_class;
+  u16 tlv_class;
   u8 locator, tlv_type, ether, bits;
 } gp_profile_t;
 typedef struct
@@ -72,7 +72,7 @@ typedef struct
   gp_profile_t *profiles;
   uword *by_key, *by_peer, *vtep_by_rxlocal;
   u32 *by_sw_if, *by_fib;
-  u8 registered[65536];
+  u8 registered[65536], port_dispatch_registered;
   u32 max_contexts, idle_seconds, next_table, discover_queue;
   u32 *free_tables;
   gp_attachment_t *attachments, *pending;
@@ -217,9 +217,10 @@ gp_input_one (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_buffer_t *b)
   if (!!(g->flags & 0x40) != has_critical)
     goto drop;
   key.locator = profile->locator;
-  if (!key.locator && dport >= profile->port_base && (u32)dport < profile->port_base + 4096U)
+  if (!key.locator && dport)
     {
-      key.slot = dport - profile->port_base;
+      /* The received UDP locator is opaque to the gateway. */
+      key.slot = dport;
       if (has_locator)
         goto drop;
     }
@@ -232,8 +233,6 @@ gp_input_one (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_buffer_t *b)
       key.area &= 0xfff;
     }
   else
-    goto drop;
-  if (key.slot >= 4096)
     goto drop;
   u32 advance = 8 + optlen;
   u16 proto = clib_net_to_host_u16 (g->protocol);
@@ -486,7 +485,7 @@ gp_create_context (vlib_main_t *vm, const gp_key_t *key, u32 table, u32 fi, u32 
   c->inner_mtu = mtu - hdrlen;
   gp_peer_key_t pk = { key->rx_if, key->local_ip, key->peer_ip };
   gp_profile_t *profile = &gm.profiles[hash_get_mem (gm.by_peer, &pk)[0]];
-  c->udp_dst = key->locator == 0 ? profile->port_base + key->slot : 6081;
+  c->udp_dst = key->locator == 0 ? key->slot : 6081;
   c->tlv_class = profile->tlv_class;
   c->tlv_type = profile->tlv_type;
   clib_memcpy_fast (c->mac, mac, 6);
@@ -543,7 +542,16 @@ gp_discover (vlib_main_t *vm, const gp_key_t *key, ip4_address_t inner, const u8
   if (inner.as_u32 == a.gateway.as_u32)
     return ~0;
   vlib_worker_thread_barrier_sync (vm);
-  u32 table = vec_len (gm.free_tables) ? vec_pop (gm.free_tables) : gm.next_table++;
+  /* Physical interfaces and exits share VPP's table-ID namespace. Allocate a
+   * free ID instead of reserving fixed numeric ranges for object classes. */
+  u32 table;
+  do
+    {
+      table = vec_len (gm.free_tables) ? vec_pop (gm.free_tables) : gm.next_table++;
+      if (gm.next_table == ~0U)
+        gm.next_table = 1;
+    }
+  while (!table || table == ~0U || fib_table_find (FIB_PROTOCOL_IP4, table) != ~0U);
   ip_table_create (FIB_PROTOCOL_IP4, table, 0, 1, 0);
   u32 fi = fib_table_find (FIB_PROTOCOL_IP4, table);
   if (fi == ~0)
@@ -660,8 +668,12 @@ gp_configuration (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd
                                          FIB_ROUTE_PATH_FLAG_NONE);
         gp_area_key_t ak = { a->profile.key, a->area };
         hash_set_mem_alloc (&gm.by_attachment, &ak, a - gm.attachments);
-        u32 start = a->profile.locator ? 6081 : a->profile.port_base;
-        u32 end = a->profile.locator ? start + 1 : start + 4096;
+        if (!a->profile.locator && gm.port_dispatch_registered)
+          continue;
+        u32 start = a->profile.locator ? 6081 : 1;
+        u32 end = a->profile.locator ? start + 1 : 65536;
+        if (!a->profile.locator)
+          gm.port_dispatch_registered = 1;
         for (u32 port = start; port < end; port++)
           if (!gm.registered[port])
             {
@@ -683,7 +695,6 @@ gp_configuration (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd
         a = &gm.attachments[f[0]];
         if (a->profile.locator != c->key.locator || a->profile.ether != c->key.ether
             || a->gateway.as_u32 != c->gateway.as_u32
-            || (!c->key.locator && a->profile.port_base + c->key.slot != c->udp_dst)
             || (c->key.locator == 2
                 && (a->profile.tlv_class != c->tlv_class || a->profile.tlv_type != c->tlv_type))
             || (a->profile.ether && a->profile.bits > 0) != c->key.fenced
@@ -696,7 +707,6 @@ gp_configuration (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd
           {
             c->inner_mtu = a->mtu - 36 - (c->key.ether ? 14 : 0) - (c->key.locator == 2 ? 8 : 0);
             vnet_sw_interface_set_mtu (vnet_get_main (), c->sw_if_index, c->inner_mtu);
-            c->udp_dst = c->key.locator ? 6081 : a->profile.port_base + c->key.slot;
             c->tlv_class = a->profile.tlv_class;
             c->tlv_type = a->profile.tlv_type;
           }
@@ -755,11 +765,9 @@ gp_configuration (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd
   if (a.profile.key.rx == ~0 || a.underlay_fib == ~0 || !a.profile.key.local || !a.profile.key.peer
       || !a.gateway.as_u32 || !a.next_hop.as_u32 || a.area > 0xffffff
       || (a.profile.locator == 1 && a.area > 4095) || bits > 20 || a.mtu < overhead + 68
-      || a.mtu > 65535 || base < 1024 || base > 61440 || tclass > 65535 || ttype > 255
-      || (!a.profile.locator && base <= 6081 && base + 4095 >= 6081))
+      || a.mtu > 65535 || base > 65535 || tclass > 65535 || ttype > 255)
     return clib_error_return (0, "invalid attachment bounds");
   a.profile.bits = bits;
-  a.profile.port_base = base;
   a.profile.tlv_class = tclass;
   a.profile.tlv_type = ttype;
   gp_attachment_t *prior;
@@ -866,7 +874,7 @@ gp_init (vlib_main_t *vm)
   gm.by_attachment = hash_create_mem (0, sizeof (gp_area_key_t), sizeof (uword));
   gm.max_contexts = 65536;
   gm.idle_seconds = 1;
-  gm.next_table = 100000;
+  gm.next_table = 1;
   gm.discover_queue = vlib_handoff_alloc_queues (
       &(vlib_handoff_alloc_queues_args_t){ .node_index = gp_input_node.index, .queue_size = 4096 });
   policy_live = vlib_get_plugin_symbol ("egress_policy_plugin.so", "egress_policy_context_live");

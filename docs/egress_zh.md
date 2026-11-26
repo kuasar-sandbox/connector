@@ -25,7 +25,7 @@ Egress 是通过文件配置的 IPv4 Geneve 转发网关，提供有序 ACL、TC
 
 ## 文件与 reload
 
-主配置采用严格 JSON。`areas` 可包含内联 Area 对象，`area_files` 列出每个包含一个 Area 对象的文件，其相对路径以主配置所在目录解析。两者组成一个完整校验集合。未知字段、重复 JSON 成员、重复 Area、无效引用、尾随值，以及超过 64 MiB 的单个文件均被拒绝。
+主配置采用严格 JSON。`areas` 可包含内联 Area 对象，`area_files` 列出每个包含一个 Area 对象的文件，其相对路径以主配置所在目录解析。两者组成一个完整校验集合。未知字段、重复 JSON 成员、重复 Area、无效引用、尾随值均被拒绝。
 
 完成所有文件修改后触发 reload：
 
@@ -68,7 +68,7 @@ ACL 对 DNAT 前的原始目的地址执行 first-match/default-deny。DNAT 命�
 | `timeouts.tcp_established` | 7440 秒。 |
 | `timeouts.icmp` | 60 秒。 |
 
-`main_core` 和 `workers` 选择互不重复且可用的 CPU；不指定 worker 时使用原生单线程模式。其他校验保护上限为 256 个接口/接入/Area、64 个 Exit/每 Area Pool、每 Exit/Pool 256 个地址、每 Area 每类 4096 条规则。这些资源保护与沙箱规模独立。原生统计段没有监听接口，但预算必须包含每上下文接口计数。应一起配置地址、NAT 槽位、上下文、内存及 CPU；Pool 不限额不等于网关容量无限。
+`main_core` 和 `workers` 选择互不重复且可用的 CPU；不指定 worker 时使用原生单线程模式。Area、attachment、Exit、Pool、地址与规则使用动态存储，不再设置额外固定数量上限。Pool ID 是稀疏键，不作为数组长度；移除的状态自动回收。原生统计段没有监听接口，但预算必须包含每上下文接口计数。应一起配置地址、NAT 槽位、上下文、内存及 CPU；Pool 不限额不等于网关容量无限。
 
 验收目标为跨多个 vSwitch 来源的 12288 个同时活跃上下文和 196608 条双向 NAT 映射，使用两个原生 worker。应查看具体候选版本的验收清单和内存实测，不据此推导吞吐或时延承诺。
 
@@ -76,11 +76,11 @@ ACL 对 DNAT 前的原始目的地址执行 first-match/default-deny。DNAT 命�
 
 | Locator | 既有 vSwitch 合同 |
 |---|---|
-| `port` | 目的 UDP 端口为 `port_base + slot`，默认 base 50000；4096 端口范围须合法且排除 6081。Area VNI 为 24 位。 |
+| `port` | 收到的目的 UDP 端口作为不透明 locator 原样用于回程。接受非零 UDP 目的端口字段的完整范围，不依赖发送方的 `port_base` 或 slot 分配。Area VNI 为 24 位。 |
 | `vni` | UDP 6081，VNI 为 `(slot << 12) | area`，逻辑 Area 为 12 位。 |
 | `tlv` | UDP 6081，配置的 class/type 标识第一个 locator option，Area 为 24 位。未知 critical option 拒绝，非 critical 元数据接收但不反射。 |
 
-4096 槽位限制属于单个既有 vSwitch。Egress 聚合多个 peer/接口，不将其作为总上下文限制。Ether 封装且 generation 位宽为 1–20 时，源 MAC `02:fe:<32-bit big-endian generation>` 携带既有 generation，零也是有效值。Egress 从流量学习回程标记及内层源地址，并在该上下文内保持不变。vSwitch 按既有 generation 校验带标记目的 MAC，恢复 Guest MAC，并保留未标记 legacy 兼容。没有 vSwitch Go 配置、Attach 参数或代次方案变化。
+Egress 不限制 slot 范围，按报文字段保留 locator，包括完整 32-bit TLV 值。上下文按来源及 locator 建立索引，不按 slot 数值分配数组。`port_base` 作为兼容配置继续接受，但不限制接入范围。Ether 封装且 generation 位宽为 1–20 时，源 MAC `02:fe:<32-bit big-endian generation>` 携带既有 generation，零也是有效值。Egress 从流量学习回程标记及内层源地址，并在该上下文内保持不变。vSwitch 按既有 generation 校验带标记目的 MAC，恢复 Guest MAC，并保留未标记 legacy 兼容。没有 vSwitch Go 配置、Attach 参数或代次方案变化。
 
 IP 封装和 legacy Ether 不增加新身份字段，既有协议无法区分身份复用后的任意迟到流量这一限制仍存在，不增加 Egress 租约协议掩盖它。
 
