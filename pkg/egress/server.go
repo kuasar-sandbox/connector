@@ -21,12 +21,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func runtimeEnv(libraries string) []string {
-	env := os.Environ()
-	if libraries != "" {
-		env = append(env, "LD_LIBRARY_PATH="+libraries)
-	}
-	return append(env, "TERM=dumb", "CONNECTOR_EGRESS_PRIVATE_MEMORY=1")
+func runtimeEnv() []string {
+	return append(os.Environ(), "TERM=dumb", "CONNECTOR_EGRESS_PRIVATE_MEMORY=1")
 }
 
 func privateDirectory(path string) error {
@@ -64,11 +60,6 @@ func startup(c Config) string {
 		}
 		b.WriteString(" }\n")
 	}
-	fmt.Fprintf(&b, "plugins { path %s\nplugin default { disable }\n", c.PluginPath)
-	for _, p := range []string{"nat", "af_packet", "ping", "egress_policy", "egress_geneve", "egress_packet"} {
-		fmt.Fprintf(&b, "plugin %s_plugin.so { enable }\n", p)
-	}
-	b.WriteString("}\n")
 	return b.String()
 }
 func checkInterfaces(c Config, requireUp bool) error {
@@ -160,7 +151,7 @@ func Serve(ctx context.Context, path string, log io.Writer) error {
 		return err
 	}
 	process := exec.Command(c.VPP, "-c", conf)
-	process.Env = runtimeEnv(c.LibraryPath)
+	process.Env = runtimeEnv()
 	process.Stderr = log
 	process.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	// VPP's stdin CLI reads and writes the same descriptor. An unnamed

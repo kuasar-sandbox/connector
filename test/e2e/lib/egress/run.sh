@@ -4,7 +4,7 @@ set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'Native acceptance requires an isolated root executor' >&2; exit 1; }
 ctl=$(realpath "$1")
 runtime=$(realpath "$2")
-[[ -x $ctl && -x $runtime/vpp && -f $runtime/vpp-runtime.json ]] || { echo 'Build the selected Connector native runtime first' >&2; exit 1; }
+[[ -x $ctl && -x $runtime/connector-vpp && -f $runtime/vpp-runtime.json ]] || { echo 'Build the selected Connector static dataplane first' >&2; exit 1; }
 mkdir -p "$3"
 output=$(mktemp -d "$3/run-XXXXXXXX")
 tests=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)

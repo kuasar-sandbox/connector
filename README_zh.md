@@ -37,7 +37,7 @@
 
 组件目的不是某一种 Slot、VNI、UDP port 或 TLV 编码。这些机制让部署为各沙箱分配独立隧道面身份,并向外部策略网关携带可信的沙箱元数据。网关可据此实施沙箱级公网、私网、DNS、代理、审计和流量治理规则,不必将应用策略嵌入基础交换机。
 
-[Geneve Egress 网关](docs/egress_zh.md) 为本地和远端部署提供同一套 Area/Pool 策略与原生 NAT 服务。本地部署管理专用 transit veth 及其 namespace 交接。固定版本的原生运行时通过 `native-deps` 构建，与纯 Go 控制程序统一输出到 `bin/<arch>`，参见 [Egress 构建与验收](egress/README_zh.md)。该功能实现了取代 #9 的[提案 #117](https://github.com/kuasar-sandbox/connector/issues/117)。
+[Geneve Egress 网关](docs/egress_zh.md) 为本地和远端部署提供同一套 Area/Pool 策略与原生 NAT 服务。本地部署管理专用 transit veth 及其 namespace 交接。固定版本的全静态 `connector-vpp` 数据面通过 `native-deps` 构建，与纯 Go 控制程序统一输出到 `bin/<arch>`，参见 [Egress 构建与验收](egress/README_zh.md)。该功能实现了取代 #9 的[提案 #117](https://github.com/kuasar-sandbox/connector/issues/117)。
 
 ## 主要接口
 
@@ -60,7 +60,7 @@ TAP 交接的规范协议见 [`docs/tapfd_zh.md`](docs/tapfd_zh.md)。
 
 ## 获取发行物
 
-组件使用 `vX.Y.Z`，平台以独立的 `release-vX.Y.Z` 聚合版本选择精确组件 Tag。组件包提供 `bin/connector-ctl`、配套的 `bin/vpp` 与 `bin/lib/<triplet>` 运行库、`bin/vpp-runtime.json`、部署模板及选定 helper；聚合包提供选定指南和已准备 E2E 输入。可用架构以所选发行资产为准。参见[安装指南](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/installation_zh.md)与[组件打包](CONTRIBUTING_zh.md#组件打包与发行)。
+组件使用 `vX.Y.Z`，平台以独立的 `release-vX.Y.Z` 聚合版本选择精确组件 Tag。组件包提供 `bin/connector-ctl`、配套的全静态 `bin/connector-vpp`、`bin/vpp-runtime.json`、部署模板及选定 helper；聚合包提供选定指南和已准备 E2E 输入。可用架构以所选发行资产为准。参见[安装指南](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/installation_zh.md)与[组件打包](CONTRIBUTING_zh.md#组件打包与发行)。
 
 ## 项目边界
 

@@ -247,7 +247,7 @@ def backend_process():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--ctl', required=True)
-    parser.add_argument('--runtime', required=True, help='Connector bin directory containing vpp and lib/<triplet>')
+    parser.add_argument('--runtime', required=True, help='Connector bin directory containing connector-vpp and vpp-runtime.json')
     parser.add_argument('--output', required=True)
     parser.add_argument('--contexts', type=int, default=32)
     parser.add_argument('--flows', type=int, default=16)
@@ -275,6 +275,22 @@ def main():
 
     def status():
         return json.loads((out/'runtime/status.json').read_text())
+    def check_static_native(phase):
+        pid = status()['native_pid']
+        executable = Path('/proc', str(pid), 'exe').resolve()
+        check('selected static dataplane executable ('+phase+')',
+              executable == runtime/'connector-vpp', str(executable))
+        mappings = Path('/proc', str(pid), 'maps').read_text()
+        (out/('native-maps-'+phase+'.txt')).write_text(mappings)
+        foreign = []
+        for line in mappings.splitlines():
+            fields = line.split(None, 5)
+            if len(fields) != 6 or not fields[5].startswith('/'):
+                continue
+            path = fields[5].removesuffix(' (deleted)')
+            if path != str(executable) and ('x' in fields[1] or '.so' in Path(path).name):
+                foreign.append(line)
+        check('no shared libraries mapped ('+phase+')', not foreign, foreign)
     def wait_status(predicate, timeout=20):
         until=time.monotonic()+timeout; st={}
         while time.monotonic()<until:
@@ -323,6 +339,8 @@ def main():
         return answer
 
     try:
+        run(sys.executable, Path(__file__).with_name('runtime.py'), 'validate',
+            '--arch', os.uname().machine, '--runtime', args.runtime)
         for name in namespaces.values():
             run('ip', 'netns', 'add', name); run('ip', '-n', name, 'link', 'set', 'lo', 'up')
         for index, key in enumerate([*peer_keys, 'out']):
@@ -337,12 +355,12 @@ def main():
         run('ip', '-n', namespaces['out'], 'addr', 'add', '203.0.113.11/32', 'dev', 'lo')
         run('ip','-n',namespaces['out'],'addr','add','198.18.1.1/32','dev','lo')
         run('ip', 'netns', 'exec', namespaces['out'], 'sysctl', '-qw', 'net.ipv4.conf.all.arp_announce=2')
-        runtime = Path(args.runtime).resolve(); lib = runtime/'lib'/(os.uname().machine+'-linux-gnu')
+        runtime = Path(args.runtime).resolve()
         cpus = sorted(os.sched_getaffinity(0))
         if len(cpus)<2:raise RuntimeError('native acceptance requires at least two CPUs')
         result['workers']=min(2,len(cpus)-1)
-        cfg = dict(name=tag, runtime_dir=str(out/'runtime'), vpp=str(runtime/'vpp'),
-                   plugin_path=str(lib/'vpp_plugins'), library_path=str(lib), main_core=cpus[0], workers=cpus[1:3],
+        cfg = dict(name=tag, runtime_dir=str(out/'runtime'), vpp=str(runtime/'connector-vpp'),
+                   main_core=cpus[0], workers=cpus[1:3],
                    timeouts=dict(udp=900,tcp_transitory=900,tcp_established=900,icmp=900), interfaces=[], attachments=[], areas=[])
         for index in range(len(peer_keys)+1):
             cfg['interfaces'].append(dict(name=tag+'i'+str(index), address='192.0.2.1/24' if index == len(peer_keys) else '198.18.0.%d/24'%(1+index*2), mtu=1500 if index == len(peer_keys) else 9000))
@@ -361,6 +379,7 @@ def main():
         config = out/'gateway.json'; config.write_text(json.dumps(cfg))
         gateway = spawn(['ip', 'netns', 'exec', namespaces['eg'], args.ctl, 'egress', 'serve', '--config', str(config)], 'gateway.log')
         wait_status(lambda st: st['configuration_generation']==1,timeout=120)
+        check_static_native('startup')
         spawn(['ip', 'netns', 'exec', namespaces['out'], sys.executable, __file__, 'backend'], 'backend.log')
         peers = [spawn(['ip', 'netns', 'exec', namespaces[key], sys.executable, __file__, 'peer', json.dumps({'locator': args.locator,'index':index,'gateway':'198.18.0.%d'%(1+index*2)})]) for index,key in enumerate(peer_keys)]
         a = query(peers[0]); b = query(peers[1])
@@ -604,6 +623,7 @@ def main():
             query(peers[0],slot=5000)
             expire_all()
             check('dynamic policy shrink reclaims forwarding state',status()['connections']==0)
+        check_static_native('traffic')
         result['pass_'] = True
     except Exception:
         result['error'] = traceback.format_exc(); raise

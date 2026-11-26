@@ -14,8 +14,7 @@ func TestOriginalYAMLAreaContract(t *testing.T) {
 	dir := t.TempDir()
 	main := `# Main file remains independent of Area policy.
 name: test
-vpp: /opt/egress/bin/vpp
-plugin_path: /opt/egress/plugins
+vpp: /opt/egress/bin/connector-vpp
 interfaces:
   - {name: transit, address: 198.18.0.1/24, mtu: 1500}
   - {name: outside, address: 192.0.2.1/24, mtu: 1500}
@@ -124,6 +123,8 @@ func TestOmittedAndEmptyRoutesRemainDistinct(t *testing.T) {
 func TestSourceCollectionsAndAmbiguities(t *testing.T) {
 	for _, input := range []string{
 		"name: test\nName: other\n", "name: test\nunknown: 1\n", "name: test\n---\nname: second\n",
+		"plugin_path: /opt/egress/plugins\n", "library_path: /opt/egress/lib\n",
+		`{"plugin_path":"/opt/egress/plugins"}`, `{"library_path":"/opt/egress/lib"}`,
 		"areas: [{vni: 7, routes: null}]", "areas: [{vni: 7, routes: [] , routes: []}]",
 		"name: test\ninterfaces: [*unknown]\n", "name: &loop [*loop]",
 	} {

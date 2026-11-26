@@ -165,12 +165,12 @@ credentials remain outside
 the Workbench source environment.
 
 ```bash
-make build                      # bin/<arch>/{connector-ctl,vpp,lib/<triplet>,vpp-runtime.json}
+make build                      # bin/<arch>/{connector-ctl,connector-vpp,vpp-runtime.json}
 make connector-ctl TARGET_ARCH=aarch64  # Pure-Go cross-build; amd64/arm64 aliases accepted
 make release VERSION=vX.Y.Z     # Package and validate build/release-bundle
 make generate                   # Regenerate changed BPF source; clang 12+ (prebuilt .o files are tracked)
 make test-source-checks          # race, real pinned-BPF stats and vet; requires sudo
-make -C native-deps vpp         # Build only VPP into bin/<arch>; requires the native architecture
+make connector-vpp             # Build only the static dataplane; requires the native architecture
 sudo make test-egress           # Isolated native gateway acceptance; see egress/README.md
 make test                       # Unit tests
 sudo make test-integration      # Integration: root and a BPF-capable kernel
@@ -294,7 +294,7 @@ and license identity, including the project license scope and GPL text.
 Validation rejects unexpected payloads, unsafe paths, links, ownership or modes,
 and materials outside the component namespace. License directories include the Connector project, its embedded eBPF, and the Go toolchain and versioned third-party Go dependencies used by `connector-ctl`.
 
-`connector` publishes independent component versions named `vX.Y.Z`. Each published native-architecture component archive contains `bin/connector-ctl`, the matching `bin/vpp` and `bin/lib/<triplet>` runtime, its `bin/vpp-runtime.json` manifest, deployment files, and the operational helpers selected by the component release contract. The aggregate platform archive carries selected user guides and canonical E2E runtime inputs from its explicit documentation/test selections. The selected guide includes the operations, network and TAPFD contracts; contributor instructions and source-only tests remain linked to the selected source revision.
+`connector` publishes independent component versions named `vX.Y.Z`. Each published native-architecture component archive contains `bin/connector-ctl`, the matching fully static `bin/connector-vpp`, its `bin/vpp-runtime.json` manifest, deployment files, and the operational helpers selected by the component release contract. The aggregate platform archive carries selected user guides and canonical E2E runtime inputs from its explicit documentation/test selections. The selected guide includes the operations, network and TAPFD contracts; contributor instructions and source-only tests remain linked to the selected source revision.
 Use `make release VERSION=vX.Y.Z` to build and validate the local release directory. Native files retain the same relative layout as `bin/<arch>` in a source build; the release's `bin/` directory is ready to install as a whole.
 
 The project repository publishes aggregate versions named `release-vX.Y.Z`, selecting an exact `connector` tag together with the other release units and validating the combined platform. Component and aggregate version numbers are independent.

@@ -407,6 +407,86 @@ if "$fixture_root/scripts/release.sh" validate v1.2.3 x86_64 "$TMP/nonroot-owner
   fail "validator accepted non-root numeric ownership with regenerated checksums"
 fi
 
+# Exercise the current native packaging path, including its executable mode.
+# The static payload is a real target ELF from the synthetic Go module above;
+# packaging inspects it but never executes it as a dataplane.
+native_fixture="$TMP/native-project"
+git clone --quiet --no-local "$fixture_root" "$native_fixture"
+python3 -B - "$ROOT" "$native_fixture" <<'PY'
+import importlib.util
+from pathlib import Path
+import shutil
+import sys
+
+source, target = map(Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location('runtime', source/'scripts/vpp-runtime.py')
+runtime = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runtime)
+for relative in runtime.native_inputs(source):
+    path = target/relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source/relative, path)
+with (target/'.gitignore').open('a') as output:
+    output.write('/native-deps/build/\n')
+PY
+native_project_sha="$(init_fixture_repo "$native_fixture" .gitignore scripts native-deps egress LICENSE)"
+mkdir -p "$native_fixture/bin/x86_64" "$native_fixture/native-deps/build/x86_64/vpp/licenses/system/libc"
+(cd "$native_fixture" && GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+  go build -buildvcs=true -o bin/x86_64/connector-ctl ./cmd/connector-ctl)
+cp "$native_fixture/bin/x86_64/connector-ctl" "$native_fixture/bin/x86_64/connector-vpp"
+printf 'native fixture license\n' > "$native_fixture/native-deps/build/x86_64/vpp/licenses/VPP-LICENSE"
+printf 'native fixture notices\n' > "$native_fixture/native-deps/build/x86_64/vpp/licenses/VPP-EMBEDDED-NOTICES"
+printf 'Synthetic system library copyright for packaging tests; not production license material.\n' \
+  > "$native_fixture/native-deps/build/x86_64/vpp/licenses/system/libc/copyright"
+python3 -B - "$native_fixture" <<'PY'
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location('runtime', source/'scripts/vpp-runtime.py')
+runtime = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runtime)
+binary = source/'bin/x86_64/connector-vpp'
+manifest = {
+    'schema': 1, 'product': 'connector-egress-native-runtime',
+    'architecture': 'x86_64', 'cpu_baseline': 'x86-64-v2',
+    'vpp': runtime.source_metadata(source),
+    'native_build_inputs': runtime.native_inputs(source),
+    'files': {'connector-vpp': hashlib.sha256(binary.read_bytes()).hexdigest()},
+    'required_system_libraries': [],
+}
+(binary.parent/'vpp-runtime.json').write_text(json.dumps(manifest)+'\n')
+PY
+RELEASE_SOURCE_ROOT="$native_fixture" "$ROOT/scripts/release.sh" package v1.2.3 x86_64 "$TMP/native-bundle"
+native_archive="$TMP/native-bundle/assets/$(basename "$archive")"
+for path in ./bin/connector-vpp ./bin/vpp-runtime.json ./deploy/egress/gateway.yaml \
+  ./share/licenses/connector/native/system/libc/copyright; do
+  tar -tzf "$native_archive" | grep -Fx "$path" >/dev/null || fail "native archive is missing $path"
+done
+if tar -tzf "$native_archive" | grep -E '^\./bin/(vpp$|lib/)|[.]so([./]|$)|[.]bundle$' >/dev/null; then
+  fail "static native archive includes a dynamic runtime payload"
+fi
+for mutation in extra-library missing-system-license; do
+  candidate="$TMP/native-$mutation"
+  mkdir -p "$candidate/assets" "$candidate/root"
+  cp "$TMP/native-bundle/release-notes.md" "$candidate/release-notes.md"
+  tar -xzf "$native_archive" -C "$candidate/root"
+  case "$mutation" in
+    extra-library)
+      mkdir -p "$candidate/root/bin/lib"
+      printf 'unexpected shared library\n' > "$candidate/root/bin/lib/extra.so" ;;
+    missing-system-license) rm -rf "$candidate/root/share/licenses/connector/native/system" ;;
+  esac
+  tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1700000000 \
+    -czf "$candidate/assets/$(basename "$archive")" -C "$candidate/root" .
+  if "$ROOT/scripts/release.sh" validate v1.2.3 x86_64 "$candidate" >/dev/null 2>&1; then
+    fail "static native archive accepted $mutation"
+  fi
+done
+
 # Standalone validation must not need source checkouts, module downloads or a build.
 mkdir -p "$TMP/standalone-tools" "$TMP/standalone-bin"
 cp -a "$fixture_root/scripts" "$TMP/standalone-tools/scripts"
@@ -417,6 +497,9 @@ done
 env PATH="$TMP/standalone-bin:$PATH" GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local \
   SOURCE_SHA="$fixture_project_sha" "$TMP/standalone-tools/scripts/release.sh" validate \
   v1.2.3 x86_64 "$TMP/bundle"
+env PATH="$TMP/standalone-bin:$PATH" GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local \
+  SOURCE_SHA="$native_project_sha" "$TMP/standalone-tools/scripts/release.sh" validate \
+  v1.2.3 x86_64 "$TMP/native-bundle"
 echo "test-release: standalone validation without checkouts/downloads/build PASS"
 
 echo "test-release: PASS"

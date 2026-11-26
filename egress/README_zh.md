@@ -2,13 +2,13 @@
 
 # 原生 Egress 构建与验收
 
-配置、资源归属、文件 reload 和恢复约定见 [Egress 运维](../docs/egress_zh.md)。本目录包含 Connector 插件和源码验收执行器；上游 VPP 构建与补丁采用 `native-deps` 工作流。`connector-ctl` 保持纯 Go 程序。
+配置、资源归属、文件 reload 和恢复约定见 [Egress 运维](../docs/egress_zh.md)。本目录包含 Connector 插件和源码验收执行器；上游 VPP 构建与补丁采用 `native-deps` 工作流。`connector-vpp` 为全静态 Egress 可执行文件，`connector-ctl` 保持纯 Go 程序。
 
 ## 构建输入与输出
 
 [`../native-deps/deps/vpp-source.json`](../native-deps/deps/vpp-source.json) 固定 FD.io VPP 26.10 源码归档及其 SHA256。获取阶段校验归档，解包到 `native-deps/build/src/vpp`，并创建 `vpp-patches-base` Git 基线；随后通过 `git am` 应用 [`../native-deps/deps/vpp-patches`](../native-deps/deps/vpp-patches) 中的编号补丁。补丁适配原生 NAT44-ED 的分配、计数、连接回收、路径 MTU、短 TCP 引用 ICMP 转换，以及原生重组状态的安全回收接口。NAT hash、端口、TCP 状态、计时器、校验和及分片继续由 VPP 负责；三个 Connector 插件分别负责 Area 策略、由流量创建的 Geneve 转发上下文和报文规范化。
 
-两种架构分别原生构建。`TARGET_ARCH` 选择 `x86_64` 或 `aarch64`，也接受 `amd64`、`arm64` 别名；原生构建会核对目标与宿主架构。CPU 基线在 x86_64 上为 `x86-64-v2`，aarch64 上为 `armv8-a+crc`。源码、下载缓存与架构独立的对象目录 `native-deps/build/<arch>/vpp` 分开保留。`KUASAR_BUILD_JOBS` 控制并发度；编译器、C 库和原生依赖属于所选构建环境的一部分。
+两种架构分别原生构建。`TARGET_ARCH` 选择 `x86_64` 或 `aarch64`，也接受 `amd64`、`arm64` 别名；原生构建会核对目标与宿主架构。CPU 基线在 x86_64 上为 `x86-64-v2`，aarch64 上为 `armv8-a+crc`。源码、下载缓存与架构独立的对象目录 `native-deps/build/<arch>/vpp` 分开保留。`KUASAR_BUILD_JOBS` 控制并发度；编译器、glibc 静态库和原生依赖属于所选构建环境的一部分。
 
 以下构建依赖示例以 Ubuntu 24.04 和 CMake/Ninja 为基础。编译器沿用上游 VPP 的选择规则：设置 `CC` 时使用指定编译器，否则优先选择 Clang，再回退到 GCC。
 
@@ -27,13 +27,12 @@ Go 工具链遵循 [CONTRIBUTING](../CONTRIBUTING_zh.md)。默认 `make build` �
 | 路径 | 内容 |
 |---|---|
 | `connector-ctl` | Go 控制程序 |
-| `vpp` | 原生转发程序 |
-| `lib/<triplet>/` | 配套核心库，以及 `vpp_plugins/` 中启用的六个插件 |
-| `vpp-runtime.json` | 源码输入、架构、CPU 基线、文件摘要和所需系统库 |
+| `connector-vpp` | 全静态 VPP 转发程序，内含 libc、NAT、af_packet、ping 及三个 Egress 插件 |
+| `vpp-runtime.json` | 源码输入、架构、CPU 基线和可执行文件摘要；`required_system_libraries` 为空 |
 
-仅开发或交叉编译 Go 控制程序时使用 `make connector-ctl`；`make -C native-deps vpp` 单独构建原生运行时。原生许可证材料保留在 `native-deps/build/<arch>/vpp/licenses`，供打包流程使用。
+仅开发或交叉编译 Go 控制程序时使用 `make connector-ctl`；`make connector-vpp` 单独构建全静态数据面，`make vpp` 与 `make egress` 为其别名。原生许可证材料保留在 `native-deps/build/<arch>/vpp/licenses`，供打包流程使用。
 
-组件发布包在 `bin/` 下保留相同运行目录结构，并携带既有 `deploy/` 和 `share/licenses/connector` 许可证目录。将组件归档一次解压至例如 `/opt/connector`，保留完整的 `bin/` 目录；网关示例使用 `/opt/connector/bin/vpp` 和 `/opt/connector/bin/lib/<triplet>`。运行环境提供该次构建生成的 `vpp-runtime.json` 中 `required_system_libraries` 列出的系统库。控制程序、VPP 与插件须来自同一组件版本。平台 CI 与 node-infra 直接使用这些文件。
+组件发布包在 `bin/` 下保留相同运行目录结构，并携带既有 `deploy/` 和 `share/licenses/connector` 许可证目录。将组件归档一次解压至例如 `/opt/connector`，保留完整的 `bin/` 目录；网关示例通过 `vpp` 字段选择 `/opt/connector/bin/connector-vpp`。VPP、固定六插件和 glibc 均静态链接到该可执行文件，运行时不需要共享库。控制程序与数据面须来自同一组件版本。平台 CI 与 node-infra 直接使用这些文件。
 
 ### 维护上游补丁
 
@@ -47,7 +46,7 @@ make -C native-deps vpp-patches-format
 make -C native-deps vpp-build
 ```
 
-`vpp-patches` 是 `vpp-patches-apply` 的别名。普通 `vpp` 目标依次获取源码、应用补丁并构建。生成候选产物前，先将上游源码改动导出到编号补丁目录。项目插件仍作为 `egress/vpp/plugins` 中的正常源码维护，并使用 `egress/vpp/.clang-format` 格式化。`VPP_TARBALL`、`VPP_TARBALL_SHA256` 按其他原生依赖的下载约定支持已校验的源码镜像或本地归档。运行目录校验会核对记录的原生输入是否匹配选定 Connector 源码。
+`vpp-patches` 是 `vpp-patches-apply` 的别名。普通 `vpp` 目标依次获取源码、应用补丁并构建。生成候选产物前，先将上游源码改动导出到编号补丁目录。项目插件仍作为 `egress/vpp/plugins` 中的正常源码维护，并使用 `egress/vpp/.clang-format` 格式化。`VPP_TARBALL`、`VPP_TARBALL_SHA256` 按其他原生依赖的下载约定支持已校验的源码镜像或本地归档。运行目录校验会核对记录的原生输入是否匹配选定 Connector 源码，并拒绝含 ELF 解释器或动态库依赖的产物。
 
 ## 必需源码检查
 
@@ -80,7 +79,7 @@ sudo make test-egress
 
 另有 legacy 用例，在关闭 fencing 时运行 Ether。真实 BPF 套件分别对所有 locator 验证 generation 0、1、15、20 位最大值，拒绝带旧标记回包，并接收未标记 legacy 回包。raw wire 执行器验证网关容量和报文正确性，TC 执行器覆盖 vSwitch 边界。这些是功能与容量检查，不构成吞吐或时延 SLA。
 
-定向迭代可直接调用 Python 执行器，指定 `--ctl`、`--runtime`（`bin/<arch>` 目录）和新的 `--output` 目录。`e2e.py` 支持 `--locator`、`--encap`、`--remote`、`--legacy` 和 `--workers`；`wire.py` 支持 `--locator vni|tlv`、`--contexts`、`--flows`。执行器保留命令、断言、网关日志、原生诊断和结果；套件先核验全部运行时文件 hash 与原生源码收据，再将控制程序 hash 与该清单关联，后者还记录原生源码、补丁和构建输入的 hash。运行目录校验拒绝构建完成后发生变化的输入。这些记录应与已审查源码及 CI 证据一起保存，不进入产品包。
+定向迭代可直接调用 Python 执行器，指定 `--ctl`、`--runtime`（`bin/<arch>` 目录）和新的 `--output` 目录。`e2e.py` 支持 `--locator`、`--encap`、`--remote`、`--legacy` 和 `--workers`；`wire.py` 支持 `--locator vni|tlv`、`--contexts`、`--flows`。执行器保留命令、断言、网关日志、原生诊断、结果和进程 maps，并在启动后与流量检查结束时核对数据面可执行文件身份及未映射共享库；套件先核验全部运行时文件 hash 与原生源码收据，再将控制程序 hash 与该清单关联，后者还记录原生源码、补丁和构建输入的 hash。运行目录校验拒绝构建完成后发生变化的输入。这些记录应与已审查源码及 CI 证据一起保存，不进入产品包。
 
 正常受保护集成流程及当前 base/head 的合入要求仍遵循 [CONTRIBUTING](../CONTRIBUTING_zh.md)。原生验收是 gate 的补充证据，须明确对应候选版本，不能替代或伪造受保护状态。
 

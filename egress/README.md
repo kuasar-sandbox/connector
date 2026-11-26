@@ -2,13 +2,13 @@
 
 # Native Egress build and acceptance
 
-Operator configuration, ownership, file reload and recovery are defined in [Egress operations](../docs/egress.md). This directory contains the Connector plugins and source acceptance executors. The upstream VPP build and patches follow the repository's `native-deps` workflow. `connector-ctl` remains a pure-Go binary.
+Operator configuration, ownership, file reload and recovery are defined in [Egress operations](../docs/egress.md). This directory contains the Connector plugins and source acceptance executors. The upstream VPP build and patches follow the repository's `native-deps` workflow. `connector-vpp` is the fully static Egress executable; `connector-ctl` remains a pure-Go binary.
 
 ## Build inputs and outputs
 
 [`../native-deps/deps/vpp-source.json`](../native-deps/deps/vpp-source.json) pins the FD.io VPP 26.10 source archive and its SHA256. Source acquisition verifies the archive, extracts it into `native-deps/build/src/vpp`, and creates the `vpp-patches-base` Git baseline. The numbered patches in [`../native-deps/deps/vpp-patches`](../native-deps/deps/vpp-patches) are applied with `git am`. They adapt native NAT44-ED allocation, accounting, flow retirement, path MTU and short TCP-quoted ICMP translation, and provide safe native reassembly retirement hooks. Native VPP continues to own NAT hashes, ports, TCP state, timers, checksums and packet fragmentation. The three Connector plugins own Area policy, traffic-created Geneve forwarding contexts and packet normalization.
 
-Build each architecture natively. `TARGET_ARCH` selects `x86_64` or `aarch64` (also accepting `amd64` and `arm64`); the native build checks it against the build host. The CPU baseline is `x86-64-v2` on x86_64 and `armv8-a+crc` on aarch64. Source and downloads are retained separately from the architecture-specific object directory, `native-deps/build/<arch>/vpp`. `KUASAR_BUILD_JOBS` controls build parallelism. The compiler, C library and native dependencies belong to the selected build environment.
+Build each architecture natively. `TARGET_ARCH` selects `x86_64` or `aarch64` (also accepting `amd64` and `arm64`); the native build checks it against the build host. The CPU baseline is `x86-64-v2` on x86_64 and `armv8-a+crc` on aarch64. Source and downloads are retained separately from the architecture-specific object directory, `native-deps/build/<arch>/vpp`. `KUASAR_BUILD_JOBS` controls build parallelism. The compiler, glibc static libraries and native dependencies belong to the selected build environment.
 
 The following build-dependency example uses Ubuntu 24.04 with CMake/Ninja. Compiler selection follows upstream VPP: honor `CC` when set; otherwise prefer Clang and fall back to GCC.
 
@@ -27,13 +27,12 @@ Use the supported Go toolchain from [CONTRIBUTING](../CONTRIBUTING.md). The defa
 | Path | Contents |
 |---|---|
 | `connector-ctl` | Go control program |
-| `vpp` | Native forwarding executable |
-| `lib/<triplet>/` | Matching core libraries and the six enabled plugins under `vpp_plugins/` |
-| `vpp-runtime.json` | Source inputs, architecture, CPU baseline, file hashes and required system libraries |
+| `connector-vpp` | Fully static VPP forwarding executable, including libc, NAT, af_packet, ping and the three Egress plugins |
+| `vpp-runtime.json` | Source inputs, architecture, CPU baseline and executable hash; `required_system_libraries` is empty |
 
-For control-only Go development or cross-compilation, use `make connector-ctl`; `make -C native-deps vpp` builds only the native runtime. Native license materials are retained in `native-deps/build/<arch>/vpp/licenses` for packaging.
+For control-only Go development or cross-compilation, use `make connector-ctl`; `make connector-vpp` builds only the static dataplane; `make vpp` and `make egress` are aliases. Native license materials are retained in `native-deps/build/<arch>/vpp/licenses` for packaging.
 
-The component release keeps the same runtime layout under `bin/`, alongside the normal `deploy/` and `share/licenses/connector` directories. Extract the component archive once, for example into `/opt/connector`, and retain the entire `bin/` directory. The gateway example then uses `/opt/connector/bin/vpp` and `/opt/connector/bin/lib/<triplet>`. Supply the system libraries recorded by that build's `vpp-runtime.json` (`required_system_libraries`). The control program, VPP and plugins must come from the same component version. Platform CI and node-infra consume these files directly.
+The component release keeps the same runtime layout under `bin/`, alongside the normal `deploy/` and `share/licenses/connector` directories. Extract the component archive once, for example into `/opt/connector`, and retain the entire `bin/` directory. The gateway example selects `/opt/connector/bin/connector-vpp` through its `vpp` field. VPP, the fixed six plugins and glibc are linked into that executable, which requires no shared libraries. Install the control program and dataplane from the same component version. Platform CI and node-infra consume these files directly.
 
 ### Maintain the upstream patches
 
@@ -47,7 +46,7 @@ make -C native-deps vpp-patches-format
 make -C native-deps vpp-build
 ```
 
-`vpp-patches` is an alias for `vpp-patches-apply`. The ordinary `vpp` target performs source acquisition, patch application and build. Export upstream changes to the numbered patch directory before producing a candidate. Project plugins remain normal sources in `egress/vpp/plugins`; format them using `egress/vpp/.clang-format`. `VPP_TARBALL` and `VPP_TARBALL_SHA256` support a verified source mirror or local archive using the same download conventions as other native dependencies. Runtime validation checks that its recorded native inputs match the selected Connector source.
+`vpp-patches` is an alias for `vpp-patches-apply`. The ordinary `vpp` target performs source acquisition, patch application and build. Export upstream changes to the numbered patch directory before producing a candidate. Project plugins remain normal sources in `egress/vpp/plugins`; format them using `egress/vpp/.clang-format`. `VPP_TARBALL` and `VPP_TARBALL_SHA256` support a verified source mirror or local archive using the same download conventions as other native dependencies. Runtime validation checks that its recorded native inputs match the selected Connector source and rejects an ELF interpreter or dynamic library dependency.
 
 ## Required source checks
 
@@ -80,7 +79,7 @@ sudo make test-egress
 
 The additional legacy case runs Ether with fencing disabled. The real BPF suite separately verifies generation 0, 1, 15 and the 20-bit maximum, rejection of tagged old returns, and acceptance of untagged legacy returns for every locator. The raw wire executor tests gateway capacity and packet correctness; the TC executor covers the vSwitch boundary. These are functional and capacity checks, not a throughput or latency SLA.
 
-For focused iteration, invoke a Python executor with `--ctl`, `--runtime` (the `bin/<arch>` directory) and a fresh `--output` directory. `e2e.py` accepts `--locator`, `--encap`, `--remote`, `--legacy` and `--workers`. `wire.py` accepts `--locator vni|tlv`, `--contexts` and `--flows`. The executors retain commands, assertions, gateway logs, native diagnostics and results. The suite verifies every runtime payload hash; the source-tree entry also verifies the current native source receipt, then binds the control binary hash to that manifest, which also records native source/patch/build-input hashes. Runtime validation rejects inputs changed since the completed build. Keep these records with the reviewed source and CI evidence, outside product packages.
+For focused iteration, invoke a Python executor with `--ctl`, `--runtime` (the `bin/<arch>` directory) and a fresh `--output` directory. `e2e.py` accepts `--locator`, `--encap`, `--remote`, `--legacy` and `--workers`. `wire.py` accepts `--locator vni|tlv`, `--contexts` and `--flows`. The executors retain commands, assertions, gateway logs, native diagnostics, results and process maps. They check the dataplane executable identity and absence of mapped shared libraries after startup and after traffic. The suite verifies every runtime payload hash; the source-tree entry also verifies the current native source receipt, then binds the control binary hash to that manifest, which also records native source/patch/build-input hashes. Runtime validation rejects inputs changed since the completed build. Keep these records with the reviewed source and CI evidence, outside product packages.
 
 The normal protected integration flow and current-base/current-head merge requirements remain those of [CONTRIBUTING](../CONTRIBUTING.md). Native acceptance evidence supplements that gate and must identify the exact candidate; it does not replace or manufacture the protected status.
 

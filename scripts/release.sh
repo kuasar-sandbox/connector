@@ -97,6 +97,17 @@ check_go_binary() {
   check_target_binary "$file" "$target_arch"
 }
 
+check_native_licenses() {
+  local directory="$1"
+  [ -s "$directory/VPP-LICENSE" ] && [ -s "$directory/VPP-EMBEDDED-NOTICES" ] \
+    || fail "native VPP license materials are required"
+  [ -d "$directory/system" ] \
+    && [ -n "$(find "$directory/system" -type f \
+      \( -iname '*copyright*' -o -iname '*license*' -o -iname 'copying*' \) \
+      -size +0c -print -quit)" ] \
+    || fail "statically linked system library license materials are required"
+}
+
 validate_archive_paths() {
   local archive="$1" arch="$2" listing="$WORK/listing"
   tar -tzf "$archive" > "$listing"
@@ -145,7 +156,7 @@ EOF
     $1 !~ /^-/ { exit 1 }
     {
       path=$6; sub(/^\.\//, "", path)
-      expected=(path ~ /^bin\/(connector-ctl|vpp)$/ || path ~ /^test\/connector\// ? "-rwxr-xr-x" : "-rw-r--r--")
+      expected=(path ~ /^bin\/(connector-ctl|connector-vpp)$/ || path ~ /^test\/connector\// ? "-rwxr-xr-x" : "-rw-r--r--")
       if ($1 != expected) exit 1
     }
   ' || fail "$archive contains an unsafe type, mode or ownership"
@@ -180,9 +191,7 @@ validate_bundle() {
   check_go_binary "$extract/bin/connector-ctl" "$arch"
   if [ -f "$extract/bin/vpp-runtime.json" ]; then
     python3 "$TOOL_ROOT/scripts/vpp-runtime.py" validate --arch "$arch" --runtime "$extract/bin"
-    [ -s "$extract/share/licenses/connector/native/VPP-LICENSE" ] \
-      && [ -s "$extract/share/licenses/connector/native/VPP-EMBEDDED-NOTICES" ] \
-      || fail "native VPP license materials are required"
+    check_native_licenses "$extract/share/licenses/connector/native"
   fi
   release_materials_validate "$extract" "$NAME"
   [ -s "$extract/share/licenses/connector/project/LICENSE" ] \
@@ -219,7 +228,7 @@ package_release() {
   copy_executable "$bin_dir/connector-ctl" bin/connector-ctl
   check_go_binary "$STAGE/bin/connector-ctl" "$arch"
   if [ -f "$ROOT/native-deps/deps/build-vpp.sh" ]; then
-    [ -f "$bin_dir/vpp-runtime.json" ] || fail "missing native VPP runtime; run make vpp"
+    [ -f "$bin_dir/vpp-runtime.json" ] || fail "missing static Egress dataplane; run make connector-vpp"
     python3 "$TOOL_ROOT/scripts/vpp-runtime.py" copy --arch "$arch" \
       --runtime "$bin_dir" --output "$STAGE/bin" --source "$ROOT"
     copy_file dist/connector-egress@.service deploy/connector-egress@.service
@@ -246,12 +255,11 @@ package_release() {
     "git:$project_sha;spdx:GPL-2.0-only" project
   if [ -f "$STAGE/bin/vpp-runtime.json" ]; then
     local native_licenses="$ROOT/native-deps/build/$arch/vpp/licenses" native_sha
-    [ -s "$native_licenses/VPP-LICENSE" ] && [ -s "$native_licenses/VPP-EMBEDDED-NOTICES" ] \
-      || fail "missing native VPP build license materials; run make vpp"
+    check_native_licenses "$native_licenses"
     mkdir -p "$STAGE/share/licenses/connector/native"
     cp -a "$native_licenses/." "$STAGE/share/licenses/connector/native/"
     native_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["vpp"]["commit"])' "$STAGE/bin/vpp-runtime.json")"
-    release_materials_record_source 'bin/vpp,bin/lib/*,bin/vpp-runtime.json' vpp "$native_sha" \
+    release_materials_record_source 'bin/connector-vpp,bin/vpp-runtime.json' vpp "$native_sha" \
       "https://github.com/FDio/vpp/commit/$native_sha" "git:$native_sha" native
   fi
   release_materials_add_go_binary "$STAGE/bin/connector-ctl" bin/connector-ctl

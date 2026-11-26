@@ -68,9 +68,9 @@ class EnvironmentTools(unittest.TestCase):
             recipe = original.split('\nrelease:\n', 1)[1].split('\ntest-release:', 1)[0]
             (root/'Makefile').write_text(
                 "SHELL := /bin/bash\nGO := go\nBUILD_DIR := build\nTARGET_ARCH := x86_64\n"
-                + recursive + "\nrelease:\n" + recipe + "\n.PHONY: build\nbuild: vpp\n"
+                + recursive + "\nrelease:\n" + recipe + "\n.PHONY: build\nbuild: connector-vpp\n"
                 "\t@go env GOWORK > build-env\n\t@go build -o checked .\n"
-                ".PHONY: vpp\nvpp:\n"
+                ".PHONY: connector-vpp\nconnector-vpp:\n"
                 "\t@go env GOWORK > native-build-env\n")
             (root/'go.mod').write_text('module example.com/release-fixture\n\ngo 1.20\n')
             (root/'main.go').write_text('package main\nfunc main() {}\n')

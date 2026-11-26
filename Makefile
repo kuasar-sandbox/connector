@@ -3,7 +3,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := all
 
 .PHONY: all generate build connector-ctl clean test test-integration test-all test-source-checks bench release test-release release-clean deps fmt lint vet vmlinux help
-.PHONY: egress vpp test-native-deps test-egress
+.PHONY: connector-vpp egress vpp test-native-deps test-egress
 
 # ---------------------------------------------------------------------------
 # Architecture selection
@@ -58,7 +58,7 @@ GO_BUILD_FLAGS := -trimpath
 
 # NOTE: builds use `-trimpath` so absolute build paths are not embedded in the
 # binary. The eBPF object files committed under pkg/internal/bpf/ are the
-# canonical pre-generated artifacts, so a normal build does NOT require clang —
+# canonical pre-generated artifacts, so connector-ctl does NOT require clang —
 # run `make generate` only when you change bpf/*.c (needs clang 12+).
 
 # Native-only symlink helper: bin/<name> -> $(TARGET_ARCH)/<name>. Cross builds
@@ -70,7 +70,7 @@ define link_bin
  fi
 endef
 
-# Default target: build the control binary and matching native VPP files.
+# Default target: build the control binary and matching static dataplane.
 all: build
 
 # Regenerate eBPF bytecode and Go bindings (all architectures). Requires clang.
@@ -80,12 +80,12 @@ generate:
 
 # All runtime files share bin/<arch>; the control-only target remains available
 # for Go development and cross-compilation.
-build: connector-ctl vpp
+build: connector-ctl connector-vpp
 
-vpp:
+connector-vpp:
 	$(MAKE) -C native-deps TARGET_ARCH="$(TARGET_ARCH)" vpp
 
-egress: vpp
+vpp egress: connector-vpp
 
 test-native-deps:
 	$(MAKE) -C native-deps test
@@ -140,7 +140,7 @@ bench: connector-ctl
 # Release packaging
 # ---------------------------------------------------------------------------
 # The release contains one target archive and release notes. Its bin directory
-# carries connector-ctl alongside VPP, its private libraries and plugins.
+# carries connector-ctl alongside the fully static connector-vpp dataplane.
 # Mixed release recipes run sub-makes with the jobserver on real builds. GNU
 # Make executes recipes that directly reference $(MAKE) even under --dry-run.
 release_make = $(MAKE)
@@ -200,16 +200,16 @@ vmlinux:
 
 help:
 	@echo "connector make targets:"
-	@echo "  all / build      - Build $(BINARY_NAME) and native VPP into bin/<arch> (default)"
+	@echo "  all / build      - Build $(BINARY_NAME) and connector-vpp into bin/<arch> (default)"
 	@echo "  connector-ctl    - Build only the Go control binary (supports cross-compilation)"
+	@echo "  connector-vpp    - Build the fully static Egress dataplane using native-deps"
 	@echo "  generate         - Regenerate eBPF bytecode + Go bindings (requires clang 12+)"
 	@echo "  clean            - Remove build-generated binaries + coverage (not release tarballs)"
 	@echo "  test             - Run unit tests (coverage -> $(COVERAGE))"
 	@echo "  test-integration - Run all tests incl. integration (requires root + BPF)"
 	@echo "  test-all         - Alias for test-integration"
 	@echo "  test-source-checks - Required race, real pinned-BPF stats and vet checks"
-	@echo "  egress           - Build the pinned native Geneve Egress runtime"
-	@echo "  vpp              - Build native VPP, libraries and plugins using native-deps"
+	@echo "  egress / vpp     - Aliases for connector-vpp"
 	@echo "  test-native-deps - Check native source, patch and build workflow"
 	@echo "  test-egress      - Isolated privileged local/remote, wire and 12288/196608 acceptance"
 	@echo "  bench            - Run performance benchmark (requires root + iperf3)"
@@ -223,4 +223,4 @@ help:
 	@echo ""
 	@echo "Cross-compile Go:  make connector-ctl TARGET_ARCH=aarch64 (aliases: amd64, arm64)"
 	@echo "Native VPP:        build on the matching x86_64 or aarch64 host"
-	@echo "Output layout:     bin/<arch>/{connector-ctl,vpp,lib/<triplet>,vpp-runtime.json}"
+	@echo "Output layout:     bin/<arch>/{connector-ctl,connector-vpp,vpp-runtime.json}"

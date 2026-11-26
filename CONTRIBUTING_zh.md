@@ -105,12 +105,12 @@ ordinary UID 及任务私有可写路径. 完整的 `bash scripts/ci-source-chec
 Workbench 源码执行环境.
 
 ```bash
-make build                      # 产物: bin/<arch>/{connector-ctl,vpp,lib/<triplet>,vpp-runtime.json}
+make build                      # 产物: bin/<arch>/{connector-ctl,connector-vpp,vpp-runtime.json}
 make connector-ctl TARGET_ARCH=aarch64  # 纯 Go 交叉编译；接受 amd64 / arm64 别名
 make release VERSION=vX.Y.Z     # 打包并校验 build/release-bundle
 make generate                   # 仅修改 bpf/*.c 时需要(clang 12+);仓库自带预生成 .o
 make test-source-checks          # race、真实 pinned-BPF 统计与 vet；需要 sudo
-make -C native-deps vpp         # 单独构建 VPP 到 bin/<arch>；要求目标原生架构
+make connector-vpp             # 单独构建全静态数据面；要求目标原生架构
 sudo make test-egress           # 隔离原生网关验收；见 egress/README_zh.md
 make test                       # 单元测试
 sudo make test-integration      # 集成测试(root + BPF 内核)
@@ -236,7 +236,7 @@ Connector module。部署文件和运维辅助脚本取自所选源码树。归�
 路径、链接、错误属主或权限,以及组件命名空间以外的材料。
 许可目录包含 Connector 项目、其内嵌 eBPF，以及 `connector-ctl` 使用的 Go 工具链和版本化第三方 Go 依赖。
 
-`connector` 独立发布 `vX.Y.Z` 组件版本。原生架构组件归档包含 `bin/connector-ctl`、配套的 `bin/vpp` 与 `bin/lib/<triplet>` 运行库、`bin/vpp-runtime.json` 清单、部署文件和组件发行合同选定的运维辅助脚本。聚合 platform 包按显式文档/测试选择携带用户指南与规范 E2E 运行输入，选定 guide 包含操作、网络与 TAPFD 契约；贡献说明与源码专用测试链接到所选源码版本。用 `make release VERSION=vX.Y.Z` 构建并验证本地发布目录。原生文件保留源码构建中 `bin/<arch>` 的相对布局，发行包的 `bin/` 可作为完整目录直接安装。
+`connector` 独立发布 `vX.Y.Z` 组件版本。原生架构组件归档包含 `bin/connector-ctl`、配套的全静态 `bin/connector-vpp`、`bin/vpp-runtime.json` 清单、部署文件和组件发行合同选定的运维辅助脚本。聚合 platform 包按显式文档/测试选择携带用户指南与规范 E2E 运行输入，选定 guide 包含操作、网络与 TAPFD 契约；贡献说明与源码专用测试链接到所选源码版本。用 `make release VERSION=vX.Y.Z` 构建并验证本地发布目录。原生文件保留源码构建中 `bin/<arch>` 的相对布局，发行包的 `bin/` 可作为完整目录直接安装。
 
 项目主仓独立发布 `release-vX.Y.Z` 聚合版本,选择精确的 Connector Tag 与其他发行单元,并验证组合后的平台。组件与聚合版本号相互独立。
 

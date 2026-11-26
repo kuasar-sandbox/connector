@@ -21,8 +21,6 @@ type Config struct {
 	Name               string       `json:"name"`
 	RuntimeDir         string       `json:"runtime_dir"`
 	VPP                string       `json:"vpp"`
-	PluginPath         string       `json:"plugin_path"`
-	LibraryPath        string       `json:"library_path,omitempty"`
 	Workers            []uint32     `json:"workers,omitempty"`
 	MainCore           *uint32      `json:"main_core,omitempty"`
 	Interfaces         []Interface  `json:"interfaces"`
@@ -255,13 +253,10 @@ func (c *Config) Validate() error {
 	if c.RuntimeDir == "" {
 		c.RuntimeDir = filepath.Join("/run/connector-egress", c.Name)
 	}
-	for _, p := range []string{c.RuntimeDir, c.VPP, c.PluginPath} {
+	for _, p := range []string{c.RuntimeDir, c.VPP} {
 		if !filepath.IsAbs(p) || strings.ContainsAny(p, "\n\r\t {}\"\\") || filepath.Clean(p) == "/" {
 			return fmt.Errorf("invalid absolute runtime path %q", p)
 		}
-	}
-	if strings.ContainsAny(c.LibraryPath, "\n\r") {
-		return errors.New("invalid library path")
 	}
 	if c.ContextIdleSeconds == 0 {
 		c.ContextIdleSeconds = 1
