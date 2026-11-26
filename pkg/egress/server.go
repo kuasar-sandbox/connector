@@ -217,6 +217,7 @@ func Serve(ctx context.Context, path string, log io.Writer) error {
 	_ = writeOutput(filepath.Join(c.RuntimeDir, "pid"), []byte(strconv.Itoa(os.Getpid())+"\n"))
 	generation := uint64(1)
 	lastError := ""
+	failedInterfaces := map[string]bool{}
 	publish := func() {
 		snapshot, e := engine.Snapshot(ctx)
 		if e != nil {
@@ -228,6 +229,7 @@ func Serve(ctx context.Context, path string, log io.Writer) error {
 		snapshot["configuration_generation"] = generation
 		snapshot["reload_error"] = lastError
 		snapshot["interfaces"] = InterfaceStatus(*c)
+		snapshot["disabled_interfaces"] = failedInterfaces
 		raw, e := json.Marshal(snapshot)
 		if e == nil {
 			e = writeOutput(filepath.Join(c.RuntimeDir, "status.json"), append(raw, '\n'))
@@ -240,7 +242,6 @@ func Serve(ctx context.Context, path string, log io.Writer) error {
 	fmt.Fprintln(log, "Egress configured from files; traffic creates forwarding state automatically")
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
-	failedInterfaces := map[string]bool{}
 	for {
 		select {
 		case <-ctx.Done():
