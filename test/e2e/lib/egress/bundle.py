@@ -66,6 +66,16 @@ def inspect(bundle, arch):
         return manifest
 
 
+def verify_source(manifest, source):
+    paths = [source/'build.sh', *sorted((source/'vpp').rglob('*'))]
+    expected = {path.relative_to(source).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in paths if path.is_file()}
+    require(manifest.get('native_build_inputs') == expected,
+            'native runtime inputs differ from the selected Connector source')
+    require(manifest.get('vpp') == json.loads((source/'vpp/source.json').read_text()),
+            'native VPP source identity differs from selected source')
+
+
 def extract(bundle, output, arch):
     inspect(bundle, arch)
     require(not output.exists(), 'runtime extraction output already exists')
@@ -112,9 +122,13 @@ def main():
     parser.add_argument('--arch', required=True, choices=ARCHES)
     parser.add_argument('--bundle', required=True, type=Path)
     parser.add_argument('--runtime', type=Path)
+    parser.add_argument('--source', type=Path, help='selected egress source directory for release input binding')
     args = parser.parse_args()
+    require(args.source is None or args.command == 'validate', '--source requires validate')
     if args.command == 'validate':
-        inspect(args.bundle, args.arch)
+        manifest = inspect(args.bundle, args.arch)
+        if args.source is not None:
+            verify_source(manifest, args.source)
     else:
         require(args.runtime is not None, '--runtime is required')
         if args.command == 'pack':

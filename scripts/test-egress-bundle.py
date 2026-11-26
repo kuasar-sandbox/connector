@@ -59,6 +59,19 @@ class BundleAdmission(unittest.TestCase):
                 if m.name=='runtime.json':
                     value=json.loads(data);del value['files'][plugin];data=json.dumps(value).encode();m.size=len(data);rows[i]=(m,data)
         with self.assertRaises(ValueError):bundle.inspect(self.altered(omit),'x86_64')
+    def test_release_rejects_stale_native_source_receipt(self):
+        source=self.root/'source';(source/'vpp').mkdir(parents=True)
+        (source/'build.sh').write_text('pinned build')
+        (source/'vpp/source.json').write_text('{"commit":"selected"}')
+        paths=[source/'build.sh',source/'vpp/source.json']
+        manifest={'vpp':{'commit':'selected'},'native_build_inputs':{
+            path.relative_to(source).as_posix():hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}}
+        bundle.verify_source(manifest,source)
+        (source/'vpp/fix.patch').write_text('new native input')
+        with self.assertRaisesRegex(ValueError,'inputs differ'):bundle.verify_source(manifest,source)
+        (source/'vpp/fix.patch').unlink()
+        (source/'build.sh').write_text('changed build')
+        with self.assertRaisesRegex(ValueError,'inputs differ'):bundle.verify_source(manifest,source)
     def test_prepared_test_reader_matches_packaging_reader(self):
         self.assertEqual((HERE/'egress-bundle.py').read_bytes(),(HERE.parent/'test/e2e/lib/egress/bundle.py').read_bytes())
 

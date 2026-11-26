@@ -216,7 +216,7 @@ package_release() {
   if [ -f "$ROOT/egress/package.sh" ]; then
     [ -f "$bin_dir/connector-egress.bundle" ] || fail "missing native Egress runtime; build connector-egress.bundle"
     install -m 0644 "$bin_dir/connector-egress.bundle" "$STAGE/bin/connector-egress.bundle"
-    python3 "$TOOL_ROOT/scripts/egress-bundle.py" validate --arch "$arch" --bundle "$STAGE/bin/connector-egress.bundle"
+    python3 "$TOOL_ROOT/scripts/egress-bundle.py" validate --arch "$arch" --bundle "$STAGE/bin/connector-egress.bundle" --source "$ROOT/egress"
     copy_file dist/connector-egress@.service deploy/connector-egress@.service
     for file in area7.json gateway.json link.json switch.json; do
       copy_file "dist/egress/$file" "deploy/egress/$file"
