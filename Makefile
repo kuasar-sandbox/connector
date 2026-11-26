@@ -71,6 +71,12 @@ VERSION     ?= v0.1.0
 GO          := go
 CLANG       := clang
 GO_BUILD_FLAGS := -trimpath
+# Version is explicitly supplied by release builds; ordinary builds are dev.
+BUILD_VERSION ?= dev
+VERSION_TAG := $(shell git tag --points-at HEAD --list 'v[0-9]*' --sort=refname 2>/dev/null | \
+	grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-preview\.[0-9]{8}(\.[1-9][0-9]*)?)?$$' | \
+	awk -v preferred="$(BUILD_VERSION)" 'NR == 1 { first = $$0 } $$0 == preferred { exact = $$0 } END { print (exact != "" ? exact : first) }')
+VERSION_LDFLAGS := -X github.com/kuasar-sandbox/connector/internal/version.releaseVersion=$(BUILD_VERSION) -X github.com/kuasar-sandbox/connector/internal/version.gitTag=$(VERSION_TAG)
 
 # NOTE: builds use `-trimpath` so absolute build paths are not embedded in the
 # binary. The eBPF object files committed under pkg/internal/bpf/ are the
@@ -100,7 +106,7 @@ build: connector-ctl
 connector-ctl:
 	@echo "==> Building $(BINARY_NAME) ($(TARGET_ARCH))..."
 	@mkdir -p $(BINDIR)
-	GOOS=linux GOARCH=$(GO_ARCH) CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BINARY) ./cmd/connector-ctl
+	GOOS=linux GOARCH=$(GO_ARCH) CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -ldflags '$(VERSION_LDFLAGS)' -o $(BINARY) ./cmd/connector-ctl
 	$(call link_bin,$(BINARY_NAME))
 	@echo "==> Built $(BINARY)"
 
@@ -157,7 +163,7 @@ release:
 	  (cd "$$work" && GOTOOLCHAIN=local "$$selected_go" work init "$(CURDIR)"); \
 	  export GOWORK="$$work/go.work"; \
 	fi; \
-	$(release_make) _release-bundle GOWORK="$$GOWORK"
+	$(release_make) _release-bundle GOWORK="$$GOWORK" BUILD_VERSION="$(VERSION)"
 
 .PHONY: _release-bundle
 _release-bundle: build connector-egress.bundle
@@ -224,3 +230,18 @@ help:
 	@echo ""
 	@echo "Cross-compile:     make build TARGET_ARCH=aarch64   (aliases: amd64, arm64)"
 	@echo "Output layout:     bin/<arch>/$(BINARY_NAME)  (+ bin/$(BINARY_NAME) symlink on native builds)"
+
+.PHONY: check-version
+# Verify the newly built clean release binaries on their native architecture.
+check-version:
+	@test "$(HOST_ARCH)" = "$(TARGET_ARCH)"
+	@set -e; source="$(VERSION_TAG)"; \
+	if [ -z "$$source" ]; then source="$$(git rev-parse HEAD | cut -c1-12)"; fi; \
+	for name in connector-ctl; do \
+	  binary="$(BINDIR)/$$name"; \
+	  actual="$$("$$binary" --version)"; \
+	  rc=0; "$$binary" --version unexpected >/dev/null 2>&1 || rc=$$?; \
+	  if [ "$$rc" -ne 2 ]; then echo "$$name accepted extra version arguments" >&2; exit 1; fi; \
+	  expected="$$name $(BUILD_VERSION) ($$source)"; \
+	  if [ "$$actual" != "$$expected" ]; then printf 'expected %s, got %s\n' "$$expected" "$$actual" >&2; exit 1; fi; \
+	done

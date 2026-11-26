@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/kuasar-sandbox/connector/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -11,6 +12,7 @@ var rootCmd = &cobra.Command{
 	Use:   "connector-ctl",
 	Short: "Sandbox network connector control tool",
 	Long: `connector-ctl manages sandbox network connector components.
+Use connector-ctl --version to identify this build.
 
 Components: the vswitch data path, tapfd handoff provider and Geneve Egress gateway.
 The vSwitch provides:
@@ -56,6 +58,9 @@ func init() {
 }
 
 func main() {
+	if version.PrintIfRequested("connector-ctl") {
+		return
+	}
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
