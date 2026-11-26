@@ -183,9 +183,13 @@ for name in ('egress_policy', 'egress_geneve', 'egress_packet'):
         if not output.is_file() or output.read_bytes() != path.read_bytes():
             shutil.copy2(path, output)
 PY
+    # We publish selected build-tree files directly. Disable unused install
+    # rules and their in-place RPATH editing, which otherwise pads RUNPATH with
+    # empty search entries; keep upstream's automatic $ORIGIN build paths.
     cmake -S "$src_dir/src" -B "$out_obj/obj" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR="lib/$TARGET_ARCH-linux-gnu" \
         -DVPP_RUNTIME_DIR=. \
+        -DCMAKE_SKIP_INSTALL_RULES=ON -DCMAKE_NO_BUILTIN_CHRPATH=ON \
         -DVPP_IP_FIB_MTRIE_16=OFF -DVPP_BUILD_NATIVE_ONLY=ON -DVPP_BUILD_NATIVE_ARCH="$baseline"
     cmake --build "$out_obj/obj" --parallel "$jobs" --target \
         vpp nat_plugin af_packet_plugin ping_plugin \
