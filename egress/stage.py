@@ -42,7 +42,7 @@ def main():
         manifest = dict(product='connector-egress-native-runtime', schema=1,
                         architecture=platform.machine(), cpu_baseline=baseline,
                         vpp=json.loads((root/'vpp/source.json').read_text()), native_build_inputs=built_inputs, files={})
-        inputs = [(build/'obj/bin'/name, Path('bin')/name) for name in ('vpp', 'vppctl')]
+        inputs = [(build/'obj/bin'/name, Path('bin')/name) for name in ('vpp',)]
         lib = build/'obj/lib'/triplet
         inputs += [(path, Path('lib')/triplet/path.name) for path in sorted(lib.glob('lib*.so*'))]
         inputs += [(lib/'vpp_plugins'/(name+'_plugin.so'), Path('lib')/triplet/'vpp_plugins'/(name+'_plugin.so')) for name in PLUGINS]

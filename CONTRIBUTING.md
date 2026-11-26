@@ -76,7 +76,7 @@ for supported names, checks and historical-input compatibility.
 Follow the [project documentation policy](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/CONTRIBUTING.md#documentation-contributions). Maintain full English/Chinese pairs at `name.md` and `name_zh.md` with reciprocal selectors. Preserve requirements, identifiers, examples, diagrams, facts and links; record source-backed corrections. Existing complete English-only material may remain English-only. A summary or language-detector pass is not a complete translation.
 
 
-The maintained topics have explicit ownership: `vswitch-operations.md` owns vSwitch operator workflows, CLI/configuration and failure recovery; `vswitch.md` owns forwarding, identity, isolation, concurrency and ABI; `tapfd.md` owns the independent provider/consumer wire contract; `egress.md` owns native gateway deployment, session authorization and policy/recovery operations. Source/build/test procedures belong here or beside their executor. Add a new page only for a distinct task or independently consumed contract, not for each package or implementation mechanism.
+The maintained topics have explicit ownership: `vswitch-operations.md` owns vSwitch operator workflows, CLI/configuration and failure recovery; `vswitch.md` owns forwarding, identity, isolation, concurrency and ABI; `tapfd.md` owns the independent provider/consumer wire contract; `egress.md` owns native gateway deployment, file configuration/reload and forwarding/recovery operations. Source/build/test procedures belong here or beside their executor. Add a new page only for a distinct task or independently consumed contract, not for each package or implementation mechanism.
 
 ## Licensing of contributions
 
@@ -184,7 +184,7 @@ Go 1.26.1+ is required for source builds. Clang/LLVM 12+ is needed only when reg
 
 ## Tests
 
-Native Egress builds and x86_64/aarch64 acceptance are owned by [egress/README.md](egress/README.md). The source gate additionally requires real BPF generation-fencing tests (`REQUIRE_CONNECTOR_BPF=1`) and local-link lifecycle/ownership tests (`REQUIRE_CONNECTOR_EGRESS=1`). Native gateway acceptance covers local/remote wiring, all locator/encapsulation combinations, packet correctness, policy/lifecycle failure paths and 4096 authorized sessions with 65536 active NAT mappings. Its evidence supplements the protected integration gate.
+Native Egress builds and x86_64/aarch64 acceptance are owned by [egress/README.md](egress/README.md). The source gate additionally requires real BPF generation-fencing tests (`REQUIRE_CONNECTOR_BPF=1`) and local-link lifecycle/ownership tests (`REQUIRE_CONNECTOR_EGRESS=1`). Native gateway acceptance covers local/remote wiring, all locator/encapsulation combinations, packet correctness, policy/lifecycle failure paths and 12288 traffic-created active contexts with 196608 active NAT mappings. Its evidence supplements the protected integration gate.
 
 ### Layers
 

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -16,27 +15,33 @@ import (
 	"strings"
 )
 
-const MaxSessions = 4096
-const MaxLeaseSeconds = 300
+// Slot width belongs to the existing vSwitch wire contract, not gateway capacity.
+const slotsPerSwitch = 4096
+const defaultMaxContexts = 65536
 
-const maxJSONBytes = 4 << 20
+const maxJSONBytes = 64 << 20
 
 var identifier = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$`)
 
 type Config struct {
-	Name           string       `json:"name"`
-	RuntimeDir     string       `json:"runtime_dir"`
-	VPP            string       `json:"vpp"`
-	VPPCTL         string       `json:"vppctl"`
-	PluginPath     string       `json:"plugin_path"`
-	LibraryPath    string       `json:"library_path,omitempty"`
-	Workers        []uint32     `json:"workers,omitempty"`
-	MainCore       *uint32      `json:"main_core,omitempty"`
-	MaxConnections uint32       `json:"max_connections"`
-	Interfaces     []Interface  `json:"interfaces"`
-	Exits          []Exit       `json:"exits"`
-	Attachments    []Attachment `json:"attachments"`
-	Areas          []Area       `json:"areas"`
+	Name               string       `json:"name"`
+	RuntimeDir         string       `json:"runtime_dir"`
+	VPP                string       `json:"vpp"`
+	PluginPath         string       `json:"plugin_path"`
+	LibraryPath        string       `json:"library_path,omitempty"`
+	Workers            []uint32     `json:"workers,omitempty"`
+	MainCore           *uint32      `json:"main_core,omitempty"`
+	MaxConnections     uint32       `json:"max_connections"`
+	Interfaces         []Interface  `json:"interfaces"`
+	Exits              []Exit       `json:"exits"`
+	Attachments        []Attachment `json:"attachments"`
+	Areas              []Area       `json:"areas,omitempty"`
+	AreaFiles          []string     `json:"area_files,omitempty"`
+	MaxContexts        uint32       `json:"max_contexts,omitempty"`
+	ContextIdleSeconds uint32       `json:"context_idle_seconds,omitempty"`
+	Timeouts           NATTimeouts  `json:"timeouts,omitempty"`
+	HeapSize           string       `json:"heap_size,omitempty"`
+	StatsSize          string       `json:"stats_size,omitempty"`
 }
 type Interface struct {
 	Name    string `json:"name"`
@@ -98,14 +103,13 @@ type Area struct {
 	DNAT   []DNAT  `json:"dnat"`
 	Routes []Route `json:"routes"`
 }
-type SessionRequest struct {
-	ID           string `json:"id"`
-	Attachment   string `json:"attachment"`
-	Slot         uint32 `json:"slot"`
-	Generation   uint32 `json:"generation"`
-	InnerIP      string `json:"inner_ip"`
-	ReturnMAC    string `json:"return_mac"`
-	LeaseSeconds uint32 `json:"lease_seconds"`
+
+// NATTimeouts are connection inactivity limits, never sandbox leases.
+type NATTimeouts struct {
+	UDP            uint32 `json:"udp,omitempty"`
+	TCPTransitory  uint32 `json:"tcp_transitory,omitempty"`
+	TCPEstablished uint32 `json:"tcp_established,omitempty"`
+	ICMP           uint32 `json:"icmp,omitempty"`
 }
 
 func Decode(r io.Reader, value any) error {
@@ -187,6 +191,25 @@ func LoadConfig(path string) (*Config, error) {
 	if err = Decode(f, &c); err != nil {
 		return nil, err
 	}
+	for _, name := range c.AreaFiles {
+		if !filepath.IsAbs(name) {
+			name = filepath.Join(filepath.Dir(path), name)
+		}
+		f, err := os.Open(name)
+		if err != nil {
+			return nil, fmt.Errorf("Area file %s: %w", name, err)
+		}
+		var area Area
+		err = Decode(f, &area)
+		closeErr := f.Close()
+		if err != nil {
+			return nil, fmt.Errorf("Area file %s: %w", name, err)
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		c.Areas = append(c.Areas, area)
+	}
 	if err = c.Validate(); err != nil {
 		return nil, err
 	}
@@ -241,13 +264,42 @@ func (c *Config) Validate() error {
 	if c.RuntimeDir == "" {
 		c.RuntimeDir = filepath.Join("/run/connector-egress", c.Name)
 	}
-	for _, p := range []string{c.RuntimeDir, c.VPP, c.VPPCTL, c.PluginPath} {
+	for _, p := range []string{c.RuntimeDir, c.VPP, c.PluginPath} {
 		if !filepath.IsAbs(p) || strings.ContainsAny(p, "\n\r\t {}\"\\") || filepath.Clean(p) == "/" {
 			return fmt.Errorf("invalid absolute runtime path %q", p)
 		}
 	}
 	if strings.ContainsAny(c.LibraryPath, "\n\r") {
 		return errors.New("invalid library path")
+	}
+	if c.MaxContexts == 0 {
+		c.MaxContexts = defaultMaxContexts
+	}
+	if c.ContextIdleSeconds == 0 {
+		c.ContextIdleSeconds = 1
+	}
+	if c.HeapSize == "" {
+		c.HeapSize = "4G"
+	}
+	if c.StatsSize == "" {
+		c.StatsSize = "1G"
+	}
+	for _, size := range []string{c.HeapSize, c.StatsSize} {
+		if !regexp.MustCompile(`^[1-9][0-9]*[MG]$`).MatchString(size) {
+			return errors.New("heap_size and stats_size must be a positive number of M or G")
+		}
+	}
+	if c.Timeouts.UDP == 0 {
+		c.Timeouts.UDP = 300
+	}
+	if c.Timeouts.TCPTransitory == 0 {
+		c.Timeouts.TCPTransitory = 240
+	}
+	if c.Timeouts.TCPEstablished == 0 {
+		c.Timeouts.TCPEstablished = 7440
+	}
+	if c.Timeouts.ICMP == 0 {
+		c.Timeouts.ICMP = 60
 	}
 	if c.MaxConnections == 0 {
 		c.MaxConnections = 65536
@@ -293,7 +345,7 @@ func (c *Config) Validate() error {
 	}
 	exits := map[string]Exit{}
 	exitIf := map[string]bool{}
-	snat := map[string]bool{}
+	snat := map[string]string{}
 	for _, e := range c.Exits {
 		if !identifier.MatchString(e.Name) {
 			return errors.New("invalid exit name")
@@ -302,8 +354,8 @@ func (c *Config) Validate() error {
 			return errors.New("duplicate exit")
 		}
 		i, ok := interfaces[e.Interface]
-		if !ok || exitIf[e.Interface] {
-			return errors.New("exit must own a distinct configured interface")
+		if !ok {
+			return errors.New("exit references unknown interface")
 		}
 		exitIf[e.Interface] = true
 		hop, err := ipv4(e.NextHop)
@@ -317,14 +369,19 @@ func (c *Config) Validate() error {
 		if len(e.Addresses) == 0 || len(e.Addresses) > 256 {
 			return errors.New("exit requires 1..256 SNAT addresses")
 		}
+		seenAddresses := map[string]bool{}
 		for _, a := range e.Addresses {
+			if seenAddresses[a] {
+				return errors.New("duplicate SNAT resource in exit")
+			}
+			seenAddresses[a] = true
 			if _, err := ipv4(a); err != nil {
 				return err
 			}
-			if snat[a] {
-				return errors.New("duplicate SNAT resource")
+			if prior, exists := snat[a]; exists && prior != e.Interface {
+				return errors.New("SNAT address cannot belong to different external interfaces")
 			}
-			snat[a] = true
+			snat[a] = e.Interface
 		}
 		exits[e.Name] = e
 	}
@@ -508,38 +565,4 @@ func (c *Config) attachment(name string) (Attachment, Interface, error) {
 		}
 	}
 	return Attachment{}, Interface{}, errors.New("unknown attachment")
-}
-func (c *Config) ValidateSession(s SessionRequest) error {
-	if !identifier.MatchString(s.ID) {
-		return errors.New("invalid session ID")
-	}
-	a, _, err := c.attachment(s.Attachment)
-	if err != nil {
-		return err
-	}
-	if s.Slot >= MaxSessions || s.LeaseSeconds == 0 || s.LeaseSeconds > MaxLeaseSeconds {
-		return errors.New("invalid slot or lease")
-	}
-	if a.Encapsulation == "ether" && a.GenerationBits > 0 {
-		if s.Generation >= 1<<a.GenerationBits {
-			return errors.New("generation outside configured width")
-		}
-	} else if s.Generation != 0 {
-		return errors.New("this wire profile cannot carry a generation")
-	}
-	ip, err := ipv4(s.InnerIP)
-	if err != nil {
-		return err
-	}
-	if ip.String() == a.Gateway {
-		return errors.New("inner IP collides with gateway")
-	}
-	mac, err := net.ParseMAC(s.ReturnMAC)
-	if err != nil || len(mac) != 6 || mac[0]&1 != 0 {
-		return errors.New("invalid return MAC")
-	}
-	if !(a.Encapsulation == "ether" && a.GenerationBits > 0) && mac[0] == 2 && mac[1] == 0xfe {
-		return errors.New("legacy MAC uses reserved fencing prefix")
-	}
-	return nil
 }

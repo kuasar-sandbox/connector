@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-/* Immutable authorized network attachments.
+/* Traffic-created network forwarding contexts.
  * One immutable network attachment => one RX interface and one inside FIB.
  * NAT's return FIB chooses this interface; no shared current-MAC lookup.
  */
@@ -38,8 +38,8 @@ typedef struct
   u32 sw_if_index, hw_if_index, fib_index, underlay_fib, table_id;
   u16 udp_dst, inner_mtu, tlv_class;
   u8 tlv_type;
-  ip4_address_t inner;
-  f64 deadline;
+  ip4_address_t inner, gateway;
+  f64 idle_since;
   u8 mac[6];
   u8 retired;
   u64 rx, tx;
@@ -53,8 +53,19 @@ typedef struct
 {
   gp_peer_key_t key;
   u16 port_base, tlv_class;
-  u8 locator, tlv_type;
+  u8 locator, tlv_type, ether, bits;
 } gp_profile_t;
+typedef struct
+{
+  gp_peer_key_t peer;
+  u32 area;
+} gp_area_key_t;
+typedef struct
+{
+  gp_profile_t profile;
+  u32 area, underlay_fib, mtu;
+  ip4_address_t gateway, next_hop;
+} gp_attachment_t;
 typedef struct
 {
   gp_context_t *contexts;
@@ -62,70 +73,27 @@ typedef struct
   uword *by_key, *by_peer, *vtep_by_rxlocal;
   u32 *by_sw_if, *by_fib;
   u8 registered[65536];
-  u32 max_contexts;
+  u32 max_contexts, idle_seconds, next_table, discover_queue;
+  u32 *free_tables;
+  gp_attachment_t *attachments, *pending;
+  uword *by_attachment;
+  u8 staging;
+  u64 created, reclaimed;
+  u32 pending_max, pending_idle, timeouts[4];
 } gp_main_t;
 static gp_main_t gm;
 extern vlib_node_registration_t gp_input_node, gp_output_node;
-static u32 (*gp_nat_live) (u32);
+static u32 (*policy_live) (u32);
+static void (*nat_timeouts) (u32, u32, u32, u32);
 static int (*gp_nat_bind) (u32, u8);
 static int (*policy_bind) (u32, u32, u32);
 static int (*policy_retire) (u32);
 static void (*policy_revoke) (u32);
 static u32 (*policy_flush_revoked) (void);
 static int (*packet_bind) (u32, u8);
-
-/* Outer fragments are unsupported in version one. Drop before local IPv4
- * reassembly, including non-first fragments which have no UDP port header.
- * The configured local VTEP address owns this UDP-fragment policy. */
-VLIB_NODE_FN (gp_outer_guard_node) (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame)
-{
-  u32 *from = vlib_frame_vector_args (frame);
-  u16 next[VLIB_FRAME_SIZE];
-  u32 dropped = 0;
-  for (u32 i = 0; i < frame->n_vectors; i++)
-    {
-      vlib_buffer_t *b = vlib_get_buffer (vm, from[i]);
-      u32 ni;
-      vnet_feature_next (&ni, b);
-      ip4_header_t *ip = vlib_buffer_get_current (b);
-      if (ip->protocol == IP_PROTOCOL_UDP
-          && (clib_net_to_host_u16 (ip->flags_and_fragment_offset) & 0x3fff))
-        {
-          u64 key = ((u64)vnet_buffer (b)->sw_if_index[VLIB_RX] << 32) | ip->dst_address.as_u32;
-          if (hash_get (gm.vtep_by_rxlocal, key))
-            {
-              ni = 0;
-              b->error = node->errors[0];
-              dropped++;
-            }
-        }
-      next[i] = ni;
-    }
-  vlib_buffer_enqueue_to_next (vm, node, from, next, frame->n_vectors);
-  return frame->n_vectors;
-}
-static char *gp_guard_errors[] = { "unsupported outer UDP fragments" };
-VLIB_REGISTER_NODE (gp_outer_guard_node) = {
-  .name = "egress-geneve-outer-guard",
-  .vector_size = sizeof (u32),
-  .n_errors = 1,
-  .error_strings = gp_guard_errors,
-  .n_next_nodes = 1,
-  .next_nodes = { [0] = "error-drop" },
-};
-VNET_FEATURE_INIT (gp_outer_guard_feature, static) = {
-  .arc_name = "ip4-unicast",
-  .node_name = "egress-geneve-outer-guard",
-  .runs_before = VNET_FEATURES ("ip4-full-reassembly-feature"),
-};
-
-static void
-gp_bind_vtep (const gp_key_t *key)
-{
-  u64 k = ((u64)key->rx_if << 32) | key->local_ip;
-  hash_set (gm.vtep_by_rxlocal, k, 1);
-  vnet_feature_enable_disable ("ip4-unicast", "egress-geneve-outer-guard", key->rx_if, 1, 0, 0);
-}
+static clib_error_t *(*policy_validate) (void);
+static u32 (*policy_publish) (void);
+static u32 gp_discover (vlib_main_t *, const gp_key_t *, ip4_address_t, const u8 *);
 
 /* Called only after NAT has selected an immutable inside FIB. Zero = not ours.
  * Main-thread configuration publishes under the worker barrier. */
@@ -168,6 +136,7 @@ enum
 {
   GP_DROP,
   GP_IP4,
+  GP_DISCOVER,
   GP_N_NEXT
 };
 enum
@@ -290,21 +259,43 @@ gp_input_one (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_buffer_t *b)
     }
   else if (proto != 0x0800)
     goto drop;
-  if ((p[advance] >> 4) != 4)
+  ip4_header_t *inner = (void *)(p + advance);
+  u32 ihl = (inner->ip_version_and_header_length & 15) * 4;
+  if ((p[advance] >> 4) != 4 || ihl < 20 || len < advance + ihl
+      || clib_net_to_host_u16 (inner->length) < ihl
+      || vlib_buffer_length_in_chain (vm, b) < advance + clib_net_to_host_u16 (inner->length)
+      || !ip4_header_checksum_is_valid (inner) || !inner->src_address.as_u32)
+    goto drop;
+  if (key.ether != profile->ether || key.fenced != (profile->ether && profile->bits)
+      || (key.fenced && key.generation >= (1U << profile->bits))
+      || (key.ether && (return_mac[0] & 1)))
+    goto drop;
+  gp_area_key_t ak = { pk, key.area };
+  if (!hash_get_mem (gm.by_attachment, &ak))
     goto drop;
   uword *entry = hash_get_mem (gm.by_key, &key);
+  u32 ci;
   if (!entry)
     {
-      error = GP_ERR_NO_CONTEXT;
-      goto drop;
+      /* Interface/FIB publication belongs to the main thread. The first
+       * packet is handed off intact, never used as a sandbox lease. */
+      if (vm->thread_index)
+        return GP_DISCOVER;
+      ci = gp_discover (vm, &key, inner->src_address, return_mac);
+      if (ci == ~0)
+        {
+          error = GP_ERR_NO_CONTEXT;
+          goto drop;
+        }
     }
-  gp_context_t *c = pool_elt_at_index (gm.contexts, entry[0]);
-  if (c->retired || vlib_time_now (vm) >= c->deadline)
+  else
+    ci = entry[0];
+  gp_context_t *c = pool_elt_at_index (gm.contexts, ci);
+  if (c->retired)
     {
       error = GP_ERR_RETIRED;
       goto drop;
     }
-  ip4_header_t *inner = (void *)(p + advance);
   if (inner->src_address.as_u32 != c->inner.as_u32
       || (key.ether && clib_memcmp (return_mac, c->mac, 6)))
     goto drop;
@@ -349,7 +340,21 @@ VLIB_REGISTER_NODE (gp_input_node) = {
   .n_errors = GP_N_ERROR,
   .error_strings = gp_errors,
   .n_next_nodes = GP_N_NEXT,
-  .next_nodes = { [GP_DROP] = "error-drop", [GP_IP4] = "ip4-input" },
+  .next_nodes
+  = { [GP_DROP] = "error-drop", [GP_IP4] = "ip4-input", [GP_DISCOVER] = "egress-geneve-discover" },
+};
+
+VLIB_NODE_FN (gp_discover_node) (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame)
+{
+  u16 threads[VLIB_FRAME_SIZE] = { 0 };
+  vlib_buffer_enqueue_to_thread (vm, node, gm.discover_queue, vlib_frame_vector_args (frame),
+                                 threads, frame->n_vectors);
+  return frame->n_vectors;
+}
+VLIB_REGISTER_NODE (gp_discover_node) = {
+  .name = "egress-geneve-discover",
+  .vector_size = sizeof (u32),
+  .type = VLIB_NODE_TYPE_INTERNAL,
 };
 
 static_always_inline u32
@@ -360,7 +365,7 @@ gp_output_one (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_buffer_t *b)
   if (sw >= vec_len (gm.by_sw_if) || gm.by_sw_if[sw] == ~0)
     goto drop;
   gp_context_t *c = pool_elt_at_index (gm.contexts, gm.by_sw_if[sw]);
-  if (c->retired || vlib_time_now (vm) >= c->deadline)
+  if (c->retired)
     {
       error = GP_ERR_RETIRED;
       goto drop;
@@ -461,7 +466,7 @@ VLIB_REGISTER_NODE (gp_output_node) = {
   .type = VLIB_NODE_TYPE_INTERNAL,
   .n_errors = GP_N_ERROR,
   .error_strings = gp_errors,
-  .n_next_nodes = GP_N_NEXT,
+  .n_next_nodes = GP_IP4 + 1,
   .next_nodes = { [GP_DROP] = "error-drop", [GP_IP4] = "ip4-lookup" },
 };
 
@@ -504,12 +509,6 @@ gp_create_context (vlib_main_t *vm, const gp_key_t *key, u32 table, u32 fi, u32 
   ip_table_bind (FIB_PROTOCOL_IP4, c->sw_if_index, table);
   vnet_sw_interface_set_mtu (vnm, c->sw_if_index, c->inner_mtu);
   vnet_sw_interface_set_flags (vnm, c->sw_if_index, VNET_SW_INTERFACE_FLAG_ADMIN_UP);
-  gp_bind_vtep (key);
-  if (!gm.registered[c->udp_dst])
-    {
-      udp_register_dst_port (vm, c->udp_dst, gp_input_node.index, 1);
-      gm.registered[c->udp_dst] = 1;
-    }
   return ci;
 }
 
@@ -527,118 +526,37 @@ gp_destroy (vlib_main_t *vm, gp_context_t *c)
   gm.by_fib[c->fib_index] = ~0;
   if (hash_get_mem (gm.by_key, &c->key))
     hash_unset_mem_free (&gm.by_key, &c->key);
+  vec_add1 (gm.free_tables, c->table_id);
   pool_put (gm.contexts, c);
+  gm.reclaimed++;
 }
-static clib_error_t *
-gp_session_cli (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
+/* Main-thread allocation; the worker barrier protects all vectors and hashes.
+ * Every context holds the return marker learned from its original packet. */
+static u32
+gp_discover (vlib_main_t *vm, const gp_key_t *key, ip4_address_t inner, const u8 *mac)
 {
-  gp_key_t key = { 0 };
-  gp_profile_t profile = { 0 };
-  u32 table = ~0, underlay = 0, bits = 0, mtu = 1500, ttl = 0, base = 50000, tclass = 258,
-      ttype = 129;
-  ip4_address_t local = { 0 }, peer = { 0 }, inner = { 0 }, gateway = { 0 };
-  u8 mac[6] = { 2, 0, 0, 0, 0x80, 1 };
-  key.rx_if = ~0;
-  vnet_main_t *vnm = vnet_get_main ();
-  while (unformat_check_input (in) != UNFORMAT_END_OF_INPUT)
-    {
-      if (unformat (in, "table %u", &table))
-        ;
-      else if (unformat (in, "underlay-table %u", &underlay))
-        ;
-      else if (unformat (in, "underlay %U", unformat_vnet_sw_interface, vnm, &key.rx_if))
-        ;
-      else if (unformat (in, "area %u", &key.area))
-        ;
-      else if (unformat (in, "slot %u", &key.slot))
-        ;
-      else if (unformat (in, "generation %u", &key.generation))
-        ;
-      else if (unformat (in, "bits %u", &bits))
-        ;
-      else if (unformat (in, "mtu %u", &mtu))
-        ;
-      else if (unformat (in, "lease %u", &ttl))
-        ;
-      else if (unformat (in, "port-base %u", &base))
-        ;
-      else if (unformat (in, "tlv-class %u", &tclass))
-        ;
-      else if (unformat (in, "tlv-type %u", &ttype))
-        ;
-      else if (unformat (in, "peer %U", unformat_ip4_address, &peer))
-        ;
-      else if (unformat (in, "local %U", unformat_ip4_address, &local))
-        ;
-      else if (unformat (in, "inner %U", unformat_ip4_address, &inner))
-        ;
-      else if (unformat (in, "gateway %U", unformat_ip4_address, &gateway))
-        ;
-      else if (unformat (in, "mac %U", unformat_ethernet_address, mac))
-        ;
-      else if (unformat (in, "locator port"))
-        key.locator = 0;
-      else if (unformat (in, "locator vni"))
-        key.locator = 1;
-      else if (unformat (in, "locator tlv"))
-        key.locator = 2;
-      else if (unformat (in, "encap ether"))
-        key.ether = 1;
-      else if (unformat (in, "encap ip"))
-        key.ether = 0;
-      else
-        return clib_error_return (0, "invalid session argument");
-    }
-  u32 hdrlen = 36 + (key.ether ? 14 : 0) + (key.locator == 2 ? 8 : 0);
-  if (table == ~0 || key.rx_if == ~0 || !local.as_u32 || !peer.as_u32 || !inner.as_u32
-      || !gateway.as_u32 || key.slot >= 4096 || key.area > 0xffffff
-      || (key.locator == 1 && key.area > 4095) || bits > 20 || !ttl || ttl > 300
-      || mtu < hdrlen + 68 || mtu > 65535 || base < 1024 || base > 61440 || tclass > 65535
-      || ttype > 255 || (!key.locator && base <= 6081 && base + 4095 >= 6081))
-    return clib_error_return (0, "invalid session bounds");
-  key.fenced = key.ether && bits > 0;
-  if ((key.fenced && key.generation >= (1U << bits)) || (!key.fenced && key.generation))
-    return clib_error_return (0, "invalid generation");
-  if (!key.fenced && mac[0] == 2 && mac[1] == 0xfe)
-    return clib_error_return (0, "reserved legacy MAC");
-  key.local_ip = local.as_u32;
-  key.peer_ip = peer.as_u32;
-  profile.key = (gp_peer_key_t){ key.rx_if, key.local_ip, key.peer_ip };
-  profile.locator = key.locator;
-  profile.port_base = base;
-  profile.tlv_class = tclass;
-  profile.tlv_type = ttype;
-  uword *existing = hash_get_mem (gm.by_peer, &profile.key);
-  if (existing && clib_memcmp (&gm.profiles[existing[0]], &profile, sizeof (profile)))
-    return clib_error_return (0, "peer locator configuration conflicts");
-  if (!existing && vec_len (gm.profiles) >= 256)
-    return clib_error_return (0, "peer capacity");
-  if (pool_elts (gm.contexts) >= gm.max_contexts || hash_get_mem (gm.by_key, &key))
-    return clib_error_return (0, "attachment capacity or identity already exists");
-  if (fib_table_find (FIB_PROTOCOL_IP4, table) != ~0)
-    return clib_error_return (0, "table already exists");
-  u32 ufi = fib_table_find (FIB_PROTOCOL_IP4, underlay);
-  if (ufi == ~0)
-    return clib_error_return (0, "underlay table does not exist");
+  gp_area_key_t ak = { { key->rx_if, key->local_ip, key->peer_ip }, key->area };
+  uword *found = hash_get_mem (gm.by_attachment, &ak);
+  if (!found || pool_elts (gm.contexts) >= gm.max_contexts)
+    return ~0;
+  gp_attachment_t a = gm.attachments[found[0]];
+  if (inner.as_u32 == a.gateway.as_u32)
+    return ~0;
   vlib_worker_thread_barrier_sync (vm);
-  if (!existing)
-    {
-      u32 i = vec_len (gm.profiles);
-      vec_add1 (gm.profiles, profile);
-      hash_set_mem_alloc (&gm.by_peer, &profile.key, i);
-    }
+  u32 table = vec_len (gm.free_tables) ? vec_pop (gm.free_tables) : gm.next_table++;
   ip_table_create (FIB_PROTOCOL_IP4, table, 0, 1, 0);
   u32 fi = fib_table_find (FIB_PROTOCOL_IP4, table);
   if (fi == ~0)
     {
       vlib_worker_thread_barrier_release (vm);
-      return clib_error_return (0, "table creation failed");
+      return ~0;
     }
-  u32 ci = gp_create_context (vm, &key, table, fi, ufi, mtu, mac);
+  u32 ci = gp_create_context (vm, key, table, fi, a.underlay_fib, a.mtu, mac);
   gp_context_t *c = pool_elt_at_index (gm.contexts, ci);
   c->inner = inner;
-  c->deadline = vlib_time_now (vm) + ttl;
-  clib_error_t *error = ip4_add_del_interface_address (vm, c->sw_if_index, &gateway, 32, 0);
+  c->gateway = a.gateway;
+  c->idle_since = vlib_time_now (vm);
+  clib_error_t *error = ip4_add_del_interface_address (vm, c->sw_if_index, &a.gateway, 32, 0);
   u8 bound = 0, policy = 0;
   if (error)
     goto fail;
@@ -646,98 +564,225 @@ gp_session_cli (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
   ip46_address_t hop = { 0 };
   fib_table_entry_update_one_path (fi, &prefix, FIB_SOURCE_CLI, FIB_ENTRY_FLAG_NONE, DPO_PROTO_IP4,
                                    &hop, c->sw_if_index, 0, 1, 0, FIB_ROUTE_PATH_FLAG_NONE);
-  if (policy_bind (fi, table, key.area))
-    {
-      error = clib_error_return (0, "Area is not configured");
-      goto fail;
-    }
+  if (policy_bind (fi, table, key->area))
+    goto fail;
   policy = 1;
   if (ip4_full_reass_enable_disable (c->sw_if_index, 1))
-    {
-      error = clib_error_return (0, "reassembly enable failed");
-      goto fail;
-    }
+    goto fail;
   if (gp_nat_bind (c->sw_if_index, 1))
-    {
-      error = clib_error_return (0, "NAT interface bind failed");
-      goto fail;
-    }
+    goto fail;
   bound = 1;
   if (packet_bind (c->sw_if_index, 1))
-    {
-      error = clib_error_return (0, "packet normalization failed");
-      goto fail;
-    }
-  /* No packet can resolve this context before the complete policy, routes,
-   * native reassembly and NAT interface have been installed. */
-  hash_set_mem_alloc (&gm.by_key, &key, ci);
+    goto fail;
+  hash_set_mem_alloc (&gm.by_key, key, ci);
+  gm.created++;
   vlib_worker_thread_barrier_release (vm);
-  vlib_cli_output (vm, "{\"table\":%u,\"interface\":%u,\"lease\":%u}", table, c->sw_if_index, ttl);
-  return 0;
+  return ci;
 fail:
+  if (error)
+    clib_error_free (error);
   if (bound)
     gp_nat_bind (c->sw_if_index, 0);
   if (policy)
     policy_retire (fi);
   gp_destroy (vm, c);
   vlib_worker_thread_barrier_release (vm);
-  return error;
+  return ~0;
 }
-VLIB_CLI_COMMAND (gp_session_command, static)
-    = { .path = "egress-geneve session",
-        .short_help = "egress-geneve session table <id> underlay <if> local <ip> peer <ip> area "
-                      "<vni> slot <n> locator port|vni|tlv encap ip|ether bits <n> generation <g> "
-                      "inner <ip> gateway <ip> lease <seconds>",
-        .function = gp_session_cli,
-        .is_mp_safe = 1 };
 
 static clib_error_t *
-gp_lifecycle_cli (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
+gp_configuration (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
 {
-  u32 table = ~0, ttl = 0;
-  u8 renew = !strcmp (cmd->path, "egress-geneve renew");
-  if (!unformat (in, "table %u", &table)
-      || (renew && (!unformat (in, "lease %u", &ttl) || !ttl || ttl > 300))
-      || unformat_check_input (in) != UNFORMAT_END_OF_INPUT)
-    return clib_error_return (0, "invalid lifecycle request");
-  u32 fi = fib_table_find (FIB_PROTOCOL_IP4, table);
-  if (fi == ~0 || fi >= vec_len (gm.by_fib) || gm.by_fib[fi] == ~0)
+  const char *op = cmd->path + 14;
+  if (!strcmp (op, "abort"))
     {
-      if (renew)
-        return clib_error_return (0, "attachment does not exist");
-      vlib_cli_output (vm, "{\"table\":%u,\"retired\":true}", table);
+      vec_free (gm.pending);
+      gm.staging = 0;
       return 0;
     }
-  vlib_worker_thread_barrier_sync (vm);
-  gp_context_t *c = pool_elt_at_index (gm.contexts, gm.by_fib[fi]);
-  if (renew)
+  if (!strcmp (op, "begin"))
     {
-      if (c->retired || vlib_time_now (vm) >= c->deadline)
-        {
-          vlib_worker_thread_barrier_release (vm);
-          return clib_error_return (0, "lease already expired");
-        }
-      c->deadline = vlib_time_now (vm) + ttl;
+      u32 count, idle;
+      if (!unformat (
+              in, "max-contexts %u idle %u udp %u tcp-established %u tcp-transitory %u icmp %u",
+              &count, &idle, &gm.timeouts[0], &gm.timeouts[1], &gm.timeouts[2], &gm.timeouts[3])
+          || !count || !idle || unformat_check_input (in) != UNFORMAT_END_OF_INPUT)
+        return clib_error_return (0, "invalid context resource budget");
+      vec_free (gm.pending);
+      gm.staging = 1;
+      gm.pending_max = count;
+      gm.pending_idle = idle;
+      return 0;
     }
-  else
+  if (!gm.staging)
+    return clib_error_return (0, "begin configuration first");
+  if (!strcmp (op, "commit"))
     {
-      c->retired = 1;
-      policy_revoke (fi);
-      policy_flush_revoked ();
+      clib_error_t *err = policy_validate ();
+      if (err)
+        return err;
+      vlib_worker_thread_barrier_sync (vm);
+      u32 removed = policy_publish ();
+      nat_timeouts (gm.timeouts[0], gm.timeouts[1], gm.timeouts[2], gm.timeouts[3]);
+      gp_attachment_t *old = gm.attachments;
+      gm.attachments = gm.pending;
+      gm.pending = 0;
+      gm.staging = 0;
+      gm.max_contexts = gm.pending_max;
+      gm.idle_seconds = gm.pending_idle;
+      hash_free (gm.by_peer);
+      hash_free (gm.by_attachment);
+      gm.by_peer = hash_create_mem (0, sizeof (gp_peer_key_t), sizeof (uword));
+      gm.by_attachment = hash_create_mem (0, sizeof (gp_area_key_t), sizeof (uword));
+      vec_reset_length (gm.profiles);
+      gp_attachment_t *a;
+      /* Peer routes and all profiles change under the same publication barrier. */
+      vec_foreach (a, old)
+      {
+        fib_prefix_t p = { .fp_proto = FIB_PROTOCOL_IP4,
+                           .fp_len = 32,
+                           .fp_addr.ip4.as_u32 = a->profile.key.peer };
+        fib_table_entry_delete (a->underlay_fib, &p, FIB_SOURCE_CLI);
+      }
+      vec_foreach (a, gm.attachments)
+      {
+        if (!hash_get_mem (gm.by_peer, &a->profile.key))
+          {
+            hash_set_mem_alloc (&gm.by_peer, &a->profile.key, vec_len (gm.profiles));
+            vec_add1 (gm.profiles, a->profile);
+          }
+        fib_prefix_t p = { .fp_proto = FIB_PROTOCOL_IP4,
+                           .fp_len = 32,
+                           .fp_addr.ip4.as_u32 = a->profile.key.peer };
+        ip46_address_t hop = { .ip4 = a->next_hop };
+        fib_table_entry_update_one_path (a->underlay_fib, &p, FIB_SOURCE_CLI, FIB_ENTRY_FLAG_NONE,
+                                         DPO_PROTO_IP4, &hop, a->profile.key.rx, 0, 1, 0,
+                                         FIB_ROUTE_PATH_FLAG_NONE);
+        gp_area_key_t ak = { a->profile.key, a->area };
+        hash_set_mem_alloc (&gm.by_attachment, &ak, a - gm.attachments);
+        u32 start = a->profile.locator ? 6081 : a->profile.port_base;
+        u32 end = a->profile.locator ? start + 1 : start + 4096;
+        for (u32 port = start; port < end; port++)
+          if (!gm.registered[port])
+            {
+              udp_register_dst_port (vm, port, gp_input_node.index, 1);
+              gm.registered[port] = 1;
+            }
+      }
+      gp_context_t *c;
+      pool_foreach (c, gm.contexts)
+      {
+        gp_area_key_t ak = { { c->key.rx_if, c->key.local_ip, c->key.peer_ip }, c->key.area };
+        uword *f = hash_get_mem (gm.by_attachment, &ak);
+        if (!f)
+          {
+            c->retired = 1;
+            policy_revoke (c->fib_index);
+            continue;
+          }
+        a = &gm.attachments[f[0]];
+        if (a->profile.locator != c->key.locator || a->profile.ether != c->key.ether
+            || a->gateway.as_u32 != c->gateway.as_u32
+            || (!c->key.locator && a->profile.port_base + c->key.slot != c->udp_dst)
+            || (c->key.locator == 2
+                && (a->profile.tlv_class != c->tlv_class || a->profile.tlv_type != c->tlv_type))
+            || (a->profile.ether && a->profile.bits > 0) != c->key.fenced
+            || (c->key.fenced && c->key.generation >= (1U << a->profile.bits)))
+          {
+            c->retired = 1;
+            policy_revoke (c->fib_index);
+          }
+        else
+          {
+            c->inner_mtu = a->mtu - 36 - (c->key.ether ? 14 : 0) - (c->key.locator == 2 ? 8 : 0);
+            vnet_sw_interface_set_mtu (vnet_get_main (), c->sw_if_index, c->inner_mtu);
+            c->udp_dst = c->key.locator ? 6081 : a->profile.port_base + c->key.slot;
+            c->tlv_class = a->profile.tlv_class;
+            c->tlv_type = a->profile.tlv_type;
+          }
+      }
+      removed += policy_flush_revoked ();
+      vec_free (old);
+      vlib_worker_thread_barrier_release (vm);
+      vlib_cli_output (vm, "{\"committed\":true,\"terminated\":%u}", removed);
+      return 0;
     }
-  vlib_worker_thread_barrier_release (vm);
-  vlib_cli_output (vm, "{\"table\":%u,\"retiring\":%s}", table, renew ? "false" : "true");
+  gp_attachment_t a = { 0 };
+  u32 underlay = ~0, bits = 0, base = 50000, tclass = 258, ttype = 129;
+  a.profile.key.rx = ~0;
+  while (unformat_check_input (in) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (in, "underlay %U", unformat_vnet_sw_interface, vnet_get_main (),
+                    &a.profile.key.rx))
+        ;
+      else if (unformat (in, "underlay-table %u", &underlay))
+        ;
+      else if (unformat (in, "local %U", unformat_ip4_address, &a.profile.key.local))
+        ;
+      else if (unformat (in, "peer %U", unformat_ip4_address, &a.profile.key.peer))
+        ;
+      else if (unformat (in, "next-hop %U", unformat_ip4_address, &a.next_hop))
+        ;
+      else if (unformat (in, "area %u", &a.area))
+        ;
+      else if (unformat (in, "gateway %U", unformat_ip4_address, &a.gateway))
+        ;
+      else if (unformat (in, "mtu %u", &a.mtu))
+        ;
+      else if (unformat (in, "bits %u", &bits))
+        ;
+      else if (unformat (in, "port-base %u", &base))
+        ;
+      else if (unformat (in, "tlv-class %u", &tclass))
+        ;
+      else if (unformat (in, "tlv-type %u", &ttype))
+        ;
+      else if (unformat (in, "locator port"))
+        a.profile.locator = 0;
+      else if (unformat (in, "locator vni"))
+        a.profile.locator = 1;
+      else if (unformat (in, "locator tlv"))
+        a.profile.locator = 2;
+      else if (unformat (in, "encap ether"))
+        a.profile.ether = 1;
+      else if (unformat (in, "encap ip"))
+        a.profile.ether = 0;
+      else
+        return clib_error_return (0, "invalid attachment configuration");
+    }
+  a.underlay_fib = fib_table_find (FIB_PROTOCOL_IP4, underlay);
+  u32 overhead = 36 + (a.profile.ether ? 14 : 0) + (a.profile.locator == 2 ? 8 : 0);
+  if (a.profile.key.rx == ~0 || a.underlay_fib == ~0 || !a.profile.key.local || !a.profile.key.peer
+      || !a.gateway.as_u32 || !a.next_hop.as_u32 || a.area > 0xffffff
+      || (a.profile.locator == 1 && a.area > 4095) || bits > 20 || a.mtu < overhead + 68
+      || a.mtu > 65535 || base < 1024 || base > 61440 || tclass > 65535 || ttype > 255
+      || (!a.profile.locator && base <= 6081 && base + 4095 >= 6081))
+    return clib_error_return (0, "invalid attachment bounds");
+  a.profile.bits = bits;
+  a.profile.port_base = base;
+  a.profile.tlv_class = tclass;
+  a.profile.tlv_type = ttype;
+  gp_attachment_t *prior;
+  vec_foreach (prior, gm.pending) if (
+      !clib_memcmp (&prior->profile.key, &a.profile.key, sizeof (gp_peer_key_t))
+      && (prior->area == a.area
+          || clib_memcmp (
+              &prior->profile, &a.profile,
+              sizeof (gp_profile_t)))) return clib_error_return (0, "duplicate or inconsistent "
+                                                                    "attachment");
+  vec_add1 (gm.pending, a);
   return 0;
 }
-VLIB_CLI_COMMAND (gp_renew_command, static)
-    = { .path = "egress-geneve renew",
-        .short_help = "egress-geneve renew table <id> lease <seconds>",
-        .function = gp_lifecycle_cli,
-        .is_mp_safe = 1 };
-VLIB_CLI_COMMAND (gp_retire_command, static) = { .path = "egress-geneve retire",
-                                                 .short_help = "egress-geneve retire table <id>",
-                                                 .function = gp_lifecycle_cli,
-                                                 .is_mp_safe = 1 };
+#define GP_CONFIG(symbol, operation)                                                               \
+  VLIB_CLI_COMMAND (symbol, static) = { .path = "egress-geneve " operation,                        \
+                                        .short_help = "Internal file configuration: " operation,   \
+                                        .function = gp_configuration,                              \
+                                        .is_mp_safe = 1 }
+GP_CONFIG (gp_begin, "begin");
+GP_CONFIG (gp_abort, "abort");
+GP_CONFIG (gp_profile, "profile");
+GP_CONFIG (gp_commit, "commit");
+
 static uword
 gp_reaper (vlib_main_t *vm, vlib_node_runtime_t *rt, vlib_frame_t *f)
 {
@@ -752,17 +797,28 @@ gp_reaper (vlib_main_t *vm, vlib_node_runtime_t *rt, vlib_frame_t *f)
       f64 now = vlib_time_now (vm);
       u8 any = 0;
       vlib_worker_thread_barrier_sync (vm);
-      pool_foreach (c, gm.contexts) if (c->retired || now >= c->deadline)
+      pool_foreach (c, gm.contexts)
       {
-        c->retired = 1;
-        policy_revoke (c->fib_index);
-        any = 1;
+        if (!c->retired)
+          {
+            if (policy_live (c->fib_index))
+              c->idle_since = 0;
+            else if (!c->idle_since)
+              c->idle_since = now;
+            else if (now - c->idle_since >= gm.idle_seconds)
+              c->retired = 1;
+          }
+        if (c->retired)
+          {
+            policy_revoke (c->fib_index);
+            any = 1;
+          }
       }
       if (any)
         policy_flush_revoked ();
       if (any && ip4_reass_fib_retire_ready ())
         {
-          pool_foreach (c, gm.contexts) if (c->retired && !gp_nat_live (c->fib_index))
+          pool_foreach (c, gm.contexts) if (c->retired && !policy_live (c->fib_index))
           {
             ip4_full_reass_purge_fib (c->fib_index);
             ip4_sv_reass_purge_fib (c->fib_index);
@@ -783,16 +839,18 @@ gp_show_cli (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
 {
   gp_context_t *c;
   vlib_worker_thread_barrier_sync (vm);
+  u32 count = 0, retiring = 0;
+  u64 live = 0;
   pool_foreach (c, gm.contexts)
   {
-    u32 remaining = (u32)(clib_max (0.0, c->deadline - vlib_time_now (vm)) * 1000);
-    vlib_cli_output (vm,
-                     "{\"table\":%u,\"area\":%u,\"slot\":%u,\"generation\":%u,\"retiring\":%s,"
-                     "\"remaining\":%u.%03u,\"rx\":%llu,\"tx\":%llu}",
-                     c->table_id, c->key.area, c->key.slot, c->key.generation,
-                     c->retired ? "true" : "false", remaining / 1000, remaining % 1000, c->rx,
-                     c->tx);
+    count++;
+    retiring += !!c->retired;
+    live += policy_live (c->fib_index);
   }
+  vlib_cli_output (vm,
+                   "{\"contexts\":%u,\"retiring\":%u,\"connections\":%llu,\"created\":%llu,"
+                   "\"reclaimed\":%llu,\"capacity\":%u}",
+                   count, retiring, live, gm.created, gm.reclaimed, gm.max_contexts);
   vlib_worker_thread_barrier_release (vm);
   return 0;
 }
@@ -805,8 +863,18 @@ gp_init (vlib_main_t *vm)
 {
   gm.by_key = hash_create_mem (0, sizeof (gp_key_t), sizeof (uword));
   gm.by_peer = hash_create_mem (0, sizeof (gp_peer_key_t), sizeof (uword));
-  gm.max_contexts = 4096;
-  gp_nat_live = vlib_get_plugin_symbol ("nat_plugin.so", "nat44_ed_fib_live_sessions");
+  gm.by_attachment = hash_create_mem (0, sizeof (gp_area_key_t), sizeof (uword));
+  gm.max_contexts = 65536;
+  gm.idle_seconds = 1;
+  gm.next_table = 100000;
+  gm.discover_queue = vlib_handoff_alloc_queues (
+      &(vlib_handoff_alloc_queues_args_t){ .node_index = gp_input_node.index, .queue_size = 4096 });
+  policy_live = vlib_get_plugin_symbol ("egress_policy_plugin.so", "egress_policy_context_live");
+  policy_validate
+      = vlib_get_plugin_symbol ("egress_policy_plugin.so", "egress_policy_batch_validate");
+  policy_publish
+      = vlib_get_plugin_symbol ("egress_policy_plugin.so", "egress_policy_batch_publish");
+  nat_timeouts = vlib_get_plugin_symbol ("nat_plugin.so", "nat44_ed_policy_timeouts");
   gp_nat_bind = vlib_get_plugin_symbol ("nat_plugin.so", "nat44_ed_interface_bind");
   policy_bind = vlib_get_plugin_symbol ("egress_policy_plugin.so", "egress_policy_context_bind");
   policy_retire
@@ -816,11 +884,11 @@ gp_init (vlib_main_t *vm)
   policy_flush_revoked
       = vlib_get_plugin_symbol ("egress_policy_plugin.so", "egress_policy_flush_revoked");
   packet_bind = vlib_get_plugin_symbol ("egress_packet_plugin.so", "egress_packet_bind");
-  if (!gp_nat_live || !gp_nat_bind || !policy_bind || !policy_retire || !policy_revoke
-      || !policy_flush_revoked || !packet_bind)
+  if (!nat_timeouts || !policy_live || !policy_validate || !policy_publish || !gp_nat_bind
+      || !policy_bind || !policy_retire || !policy_revoke || !policy_flush_revoked || !packet_bind)
     return clib_error_return (0, "pinned NAT/policy hooks unavailable");
   return 0;
 }
 VLIB_INIT_FUNCTION (gp_init);
 VLIB_PLUGIN_REGISTER ()
-    = { .version = VPP_BUILD_VER, .description = "Connector Egress authorized Geneve attachments" };
+    = { .version = VPP_BUILD_VER, .description = "Connector Egress automatic Geneve forwarding" };

@@ -39,7 +39,7 @@ cmake -S "$source_dir/src" -B "$build/obj" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DVPP_IP_FIB_MTRIE_16=OFF \
   -DVPP_BUILD_NATIVE_ONLY=ON -DVPP_BUILD_NATIVE_ARCH="$baseline"
 cmake --build "$build/obj" --parallel "${JOBS:-4}" --target \
-  vpp vppctl nat_plugin af_packet_plugin ping_plugin \
+  vpp nat_plugin af_packet_plugin ping_plugin \
   egress_policy_plugin egress_geneve_plugin egress_packet_plugin
 printf '%s\n' "$revision" > "$build/vpp-revision"
 python3 - "$root/egress" "$build/build-inputs.json" <<'PY'

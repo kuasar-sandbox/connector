@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 echo "==> connector source/helper regressions"
 bash scripts/test-notify-helpers.sh
+python3 -B scripts/test-egress-bundle.py
 
 echo "==> connector source unit, race and real BPF stats regressions"
 CGO_ENABLED=1 go test -race -count=1 ./pkg/vswitch ./pkg/internal/bpfmap ./pkg/egress ./cmd/connector-ctl

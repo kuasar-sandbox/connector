@@ -60,7 +60,7 @@ PR 应当：
 遵循[项目文档规范](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/CONTRIBUTING_zh.md#文档贡献)。维护 `name.md` 与 `name_zh.md` 的完整英中版本及互相可达的语言选择链接。保留要求、标识符、示例、图、事实与链接；对修正内容记录源码依据。已有完整的纯英文资料可以维持英文；摘要或语言检测通过不能替代完整翻译。
 
 
-各维护主题有明确职责：`vswitch-operations_zh.md` 负责 vSwitch 操作流程、CLI/配置与故障恢复；`vswitch_zh.md` 负责转发、身份、隔离、并发与 ABI；`tapfd_zh.md` 负责可独立实现的 provider/consumer wire 契约；`egress_zh.md` 负责原生网关部署、会话授权、策略与恢复操作。源码、构建与测试流程放在本指南或相应执行器旁。仅为独立任务或独立消费的契约增页，不按 package 或实现机制逐项建文件。
+各维护主题有明确职责：`vswitch-operations_zh.md` 负责 vSwitch 操作流程、CLI/配置与故障恢复；`vswitch_zh.md` 负责转发、身份、隔离、并发与 ABI；`tapfd_zh.md` 负责可独立实现的 provider/consumer wire 契约；`egress_zh.md` 负责原生网关部署、文件配置和 reload、策略与恢复操作。源码、构建与测试流程放在本指南或相应执行器旁。仅为独立任务或独立消费的契约增页，不按 package 或实现机制逐项建文件。
 
 ## 贡献许可
 
@@ -124,7 +124,7 @@ make vmlinux                    # 重新生成 bpf/vmlinux.h(需 bpftool)
 
 ## 测试
 
-原生 Egress 构建及 x86_64/aarch64 验收由 [egress/README_zh.md](egress/README_zh.md) 维护。源码门禁还要求真实 BPF 代际隔离测试（`REQUIRE_CONNECTOR_BPF=1`）和本地链路生命周期/归属测试（`REQUIRE_CONNECTOR_EGRESS=1`）。原生网关验收覆盖本地/远端布线、全部 locator/封装组合、报文正确性、策略/生命周期故障路径，以及 4096 个授权会话和 65536 条活动 NAT 映射。其证据补充受保护集成门禁。
+原生 Egress 构建及 x86_64/aarch64 验收由 [egress/README_zh.md](egress/README_zh.md) 维护。源码门禁还要求真实 BPF 代际隔离测试（`REQUIRE_CONNECTOR_BPF=1`）和本地链路生命周期/归属测试（`REQUIRE_CONNECTOR_EGRESS=1`）。原生网关验收覆盖本地/远端布线、全部 locator/封装组合、报文正确性、文件 reload/自动回收故障路径，以及 12288 个活跃上下文和 196608 条活动 NAT 映射。其证据补充受保护集成门禁。
 
 ### 分层
 

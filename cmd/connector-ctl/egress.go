@@ -3,8 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"os/signal"
 	"syscall"
 
@@ -21,7 +19,7 @@ func newEgressCommand() *cobra.Command {
 		cmd.Flags().StringVar(&path, "config", "", "Gateway JSON configuration")
 		_ = cmd.MarkFlagRequired("config")
 		cmd.RunE = func(cmd *cobra.Command, _ []string) error {
-			c, err := egress.LoadConfig(path)
+			_, err := egress.LoadConfig(path)
 			if err != nil {
 				return err
 			}
@@ -30,36 +28,10 @@ func newEgressCommand() *cobra.Command {
 			}
 			ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
-			return egress.Serve(ctx, *c, cmd.ErrOrStderr())
+			return egress.Serve(ctx, path, cmd.ErrOrStderr())
 		}
 		root.AddCommand(cmd)
 	}
-	var socket, input, method string
-	api := &cobra.Command{Use: "request <api-path>", Short: "Call the private Egress management API", Args: cobra.ExactArgs(1)}
-	api.Flags().StringVar(&socket, "socket", "", "Gateway control.sock path")
-	api.Flags().StringVar(&method, "method", "GET", "HTTP method")
-	api.Flags().StringVar(&input, "file", "", "Request JSON file, or - for stdin")
-	_ = api.MarkFlagRequired("socket")
-	api.RunE = func(cmd *cobra.Command, args []string) error {
-		var reader io.Reader
-		if input == "-" {
-			reader = cmd.InOrStdin()
-		} else if input != "" {
-			f, err := os.Open(input)
-			if err != nil {
-				return err
-			}
-			defer f.Close()
-			reader = f
-		}
-		data, err := egress.Request(cmd.Context(), socket, method, args[0], reader)
-		if err != nil {
-			return err
-		}
-		_, err = cmd.OutOrStdout().Write(data)
-		return err
-	}
-	root.AddCommand(api)
 	links := &cobra.Command{Use: "link", Short: "Own local veth wiring and stable vSwitch namespace handoff"}
 	for _, operation := range []string{"prepare", "check", "start", "stop", "repair", "uninstall"} {
 		var config, switchConfig, mode string
