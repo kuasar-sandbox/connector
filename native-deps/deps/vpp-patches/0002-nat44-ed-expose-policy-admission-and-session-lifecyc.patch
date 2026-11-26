@@ -1,19 +1,19 @@
-diff --git a/src/plugins/af_packet/af_packet.c b/src/plugins/af_packet/af_packet.c
-index f662082..8962f51 100644
---- a/src/plugins/af_packet/af_packet.c
-+++ b/src/plugins/af_packet/af_packet.c
-@@ -776,6 +776,11 @@ af_packet_create_if (af_packet_create_if_arg_t *arg)
- 
-   if (arg->flags & AF_PACKET_IF_FLAGS_CKSUM_GSO)
-     {
-+      /* PACKET_VNET_HDR changes the socket framing even when the host device
-+       * has offloads disabled. RX metadata and every TX frame still need
-+       * the virtio header; hardware capabilities only control advertised
-+       * output offloads. */
-+      apif->is_cksum_gso_enabled = 1;
-       if (apif->host_interface_oflags & AF_PACKET_OFFLOAD_FLAG_TXCKSUM)
- 	{
- 	  apif->is_cksum_gso_enabled = 1;
+From 4df19d8301720d04c3411c7fa07763071bce8913 Mon Sep 17 00:00:00 2001
+From: Xiaohui Chen <9959614+fullof-work@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 17:48:54 +0800
+Subject: [PATCH 2/6] nat44-ed: expose policy admission and session lifecycle
+ hooks
+
+---
+ src/plugins/nat/nat44-ed/nat44_ed.c         | 186 +++++++++++++++++---
+ src/plugins/nat/nat44-ed/nat44_ed.h         |   4 +
+ src/plugins/nat/nat44-ed/nat44_ed_in2out.c  | 178 +++++++++++++++++--
+ src/plugins/nat/nat44-ed/nat44_ed_inlines.h |  48 +++++
+ src/plugins/nat/nat44-ed/nat44_ed_out2in.c  |  36 ++++
+ src/plugins/nat/nat44-ed/nat44_ed_policy.h  |  43 +++++
+ 6 files changed, 464 insertions(+), 31 deletions(-)
+ create mode 100644 src/plugins/nat/nat44-ed/nat44_ed_policy.h
+
 diff --git a/src/plugins/nat/nat44-ed/nat44_ed.c b/src/plugins/nat/nat44-ed/nat44_ed.c
 index 3c3c51f..7b449a0 100644
 --- a/src/plugins/nat/nat44-ed/nat44_ed.c
@@ -708,361 +708,52 @@ index 8a86181..63f18be 100644
        if (NAT_ED_TRNSL_ERR_SUCCESS !=
  	  (translation_error = nat_6t_flow_buf_translate_o2i (
  	     vm, sm, b0, ip0, &s0->o2i, proto0, 0 /* is_output_feature */)))
-diff --git a/src/svm/svm.c b/src/svm/svm.c
-index fb5ec5f..acfef52 100644
---- a/src/svm/svm.c
-+++ b/src/svm/svm.c
-@@ -7,6 +7,8 @@
-  * library
-  */
- 
-+#include <sys/syscall.h>
-+#include <linux/memfd.h>
- #include <stdio.h>
- #include <stdlib.h>
- #include <sys/types.h>
-@@ -558,7 +560,11 @@ svm_map_region (svm_map_region_args_t * a)
-     clib_warning ("[%d] map region %s: shm_open (%s)",
- 		  getpid (), a->name, shm_name);
- 
--  svm_fd = shm_open ((char *) shm_name, O_RDWR | O_CREAT | O_EXCL, 0777);
-+  /* Keep native internal message queues, without publishing a shared-memory
-+   * API name. Normal VPP deployments retain their existing transport. */
-+  svm_fd = getenv ("CONNECTOR_EGRESS_PRIVATE_MEMORY")
-+             ? syscall (SYS_memfd_create, "connector-egress-private", MFD_CLOEXEC)
-+             : shm_open ((char *) shm_name, O_RDWR | O_CREAT | O_EXCL, 0777);
- 
-   if (svm_fd >= 0)
-     {
-diff --git a/src/vlib/stats/init.c b/src/vlib/stats/init.c
-index 50f71b3..f6d0412 100644
---- a/src/vlib/stats/init.c
-+++ b/src/vlib/stats/init.c
-@@ -236,7 +236,7 @@ stats_segment_socket_exit (vlib_main_t *vm)
-    * cleanup the listener socket on exit.
-    */
-   vlib_stats_segment_t *sm = vlib_stats_get_segment ();
--  unlink ((char *) sm->socket_name);
-+  if (sm->socket) unlink ((char *) sm->socket_name);
-   return 0;
- }
- 
-@@ -247,6 +247,8 @@ statseg_init (vlib_main_t *vm)
- {
-   vlib_stats_segment_t *sm = vlib_stats_get_segment ();
- 
-+  /* No external statistics endpoint in file-only gateway deployments. */
-+  if (sm->socket_name && !strcmp ((char *) sm->socket_name, "none")) return 0;
-   /* set default socket file name when statseg config stanza is empty. */
-   if (!vec_len (sm->socket_name))
-     sm->socket_name = format (0, "%s/%s%c", vlib_unix_get_runtime_dir (),
-diff --git a/src/vlibmemory/socket_api.c b/src/vlibmemory/socket_api.c
-index 65cd137..5839f1d 100644
---- a/src/vlibmemory/socket_api.c
-+++ b/src/vlibmemory/socket_api.c
-@@ -786,6 +786,8 @@ vl_sock_api_init (vlib_main_t * vm)
-   clib_socket_t *sock = &sm->socksvr_listen_socket;
-   clib_error_t *error;
- 
-+  /* The gateway owns an unnamed child control stream, never an API listener. */
-+  if (getenv ("CONNECTOR_EGRESS_PRIVATE_MEMORY")) return 0;
-   /* If not explicitly configured, do not bind/enable, etc. */
-   if (sm->socket_name == 0)
-     return 0;
-diff --git a/src/vnet/ip/icmp4.c b/src/vnet/ip/icmp4.c
-index c8f0109..913c83d 100644
---- a/src/vnet/ip/icmp4.c
-+++ b/src/vnet/ip/icmp4.c
-@@ -11,6 +11,15 @@
- #include <vnet/ip/ip_sas.h>
- #include <vnet/util/throttle.h>
- 
-+/* Optional source selection for addressless, isolated Egress return FIBs.
-+ * The gateway registers a hook; all other interfaces keep native selection. */
-+static int (*ip4_icmp_error_source) (u32, ip4_address_t *);
-+__clib_export void
-+ip4_icmp_error_source_register (int (*source) (u32, ip4_address_t *))
+diff --git a/src/plugins/nat/nat44-ed/nat44_ed_policy.h b/src/plugins/nat/nat44-ed/nat44_ed_policy.h
+new file mode 100644
+index 0000000..62c0a22
+--- /dev/null
++++ b/src/plugins/nat/nat44-ed/nat44_ed_policy.h
+@@ -0,0 +1,43 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++/* Connector's bounded policy adapter for the pinned native NAT44-ED runtime. */
++#ifndef included_nat44_ed_policy_h
++#define included_nat44_ed_policy_h
++#include <vnet/ip/ip.h>
++#define NAT44_ED_POLICY_NONE (~(u64)0)
++typedef struct
 +{
-+  ip4_icmp_error_source = source;
-+}
-+
- /** ICMP throttling */
- static throttle_t icmp_throttle;
- 
-@@ -307,7 +316,8 @@ ip4_icmp_error (vlib_main_t * vm,
- 	  out_ip0->protocol = IP_PROTOCOL_ICMP;
- 	  out_ip0->dst_address = ip0->src_address;
- 	  /* Prefer a source address from "offending interface" */
--	  if (!ip4_sas_by_sw_if_index (sw_if_index0, &out_ip0->dst_address,
-+	  if (!(ip4_icmp_error_source && ip4_icmp_error_source (sw_if_index0, &out_ip0->src_address))
-+              && !ip4_sas_by_sw_if_index (sw_if_index0, &out_ip0->dst_address,
- 				       &out_ip0->src_address))
- 	    { /* interface has no IP4 address - should not happen */
- 	      next0 = IP4_ICMP_ERROR_NEXT_DROP;
-diff --git a/src/vnet/ip/ip4_forward.c b/src/vnet/ip/ip4_forward.c
-index da99989..0328c67 100644
---- a/src/vnet/ip/ip4_forward.c
-+++ b/src/vnet/ip/ip4_forward.c
-@@ -1444,6 +1444,17 @@ ip4_local_check_l4_csum_x2 (vlib_main_t *vm, vlib_buffer_t **b, ip4_header_t **i
- 	      IP4_ERROR_TCP_CHECKSUM + is_udp[1] : error[1]);
- }
- 
-+/* A tunnel ingress can authorize its first routed peer before a learned
-+ * return route exists. Only a source-route miss is eligible; checksum and
-+ * spoofed-local errors remain intact. Admission is evaluated per packet,
-+ * after the ordinary source-lookup cache, so it cannot leak across peers. */
-+static int (*ip4_local_source_admit) (vlib_buffer_t *, ip4_header_t *);
-+__clib_export void
-+ip4_local_source_admit_register (int (*fn) (vlib_buffer_t *, ip4_header_t *))
++  ip4_address_t backend_addr;
++  u16 backend_port;   /* network byte order */
++  u32 tx_fib_index;   /* Actual egress routing FIB. */
++  u32 return_key_fib; /* Actual outside RX FIB used by the native hash. */
++  const ip4_address_t *addresses;
++  u32 address_count;
++  u64 cookie;
++  u64 path_signature;
++} nat44_ed_policy_decision_t;
++typedef struct
 +{
-+  ip4_local_source_admit = fn;
-+}
-+
- always_inline void
- ip4_local_set_next_and_error (vlib_node_runtime_t *error_node, vlib_buffer_t *b, u16 *next,
- 			      u8 error, u8 head_of_feature_arc)
-@@ -1451,6 +1462,10 @@ ip4_local_set_next_and_error (vlib_node_runtime_t *error_node, vlib_buffer_t *b,
-   u8 arc_index = vnet_feat_arc_ip4_local.feature_arc_index;
-   u32 next_index;
- 
-+  if (error == IP4_ERROR_SRC_LOOKUP_MISS && ip4_local_source_admit &&
-+      ip4_local_source_admit (b, vlib_buffer_get_current (b)))
-+    error = IP4_ERROR_UNKNOWN_PROTOCOL;
-+
-   *next = error != IP4_ERROR_UNKNOWN_PROTOCOL ? IP_LOCAL_NEXT_DROP : *next;
-   b->error = error ? error_node->errors[error] : 0;
-   if (head_of_feature_arc)
-diff --git a/src/vnet/ip/reass/ip4_full_reass.c b/src/vnet/ip/reass/ip4_full_reass.c
-index ed04022..3b9f1b8 100644
---- a/src/vnet/ip/reass/ip4_full_reass.c
-+++ b/src/vnet/ip/reass/ip4_full_reass.c
-@@ -18,6 +18,9 @@
- #include <vppinfra/bihash_16_8.h>
- #include <vnet/ip/reass/ip4_full_reass.h>
- #include <stddef.h>
-+#include <vlib/threads.h>
-+#include <vlib/handoff.h>
-+#include <vnet/ip/reass/ip4_sv_reass.h>
- 
- #define MSEC_PER_SEC 1000
- #define IP4_REASS_TIMEOUT_DEFAULT_MS 200
-@@ -2089,3 +2092,145 @@ ip4_local_full_reass_enabled ()
- }
- 
- #endif
-+
-+
-+#ifndef CLIB_MARCH_VARIANT
-+/* Connector retirement experiment: the caller owns the worker barrier.
-+ * A barrier alone does not empty inter-worker handoff queues. Do not recycle
-+ * an RX interface/FIB while any pending graph or handoff buffer can refer to it.
-+ * This deliberately conservative guard may delay retirement under other load.
-+ */
-+int
-+ip4_reass_fib_retire_ready (void)
++  int (*managed) (u32 fib_index);
++  int (*prepare) (u32 fib_index, u32 thread_index, u8 proto, ip4_address_t local, u16 local_port,
++                  ip4_address_t remote, u16 remote_port, nat44_ed_policy_decision_t *decision);
++  int (*reserve) (u64 cookie, u32 thread_index);
++  void (*commit) (u64 cookie);
++  void (*release) (u64 cookie, u8 committed);
++  /* >0: unique selected path MTU, 0: unhandled, -1: no unique usable path. */
++  int (*path_mtu) (u64 cookie, u64 expected_path, u32 inside_fib, u32 route_fib,
++                   ip4_address_t translated_dst, ip4_address_t forward_dst, u8 out2in);
++} nat44_ed_policy_hooks_t;
++typedef struct
 +{
-+  vlib_main_t *vm = vlib_get_main ();
-+  vlib_handoff_queue_main_t *hqm;
-+  vlib_handoff_queue_t **hq;
-+  if (vlib_get_thread_index () != 0 ||
-+      (vlib_get_n_threads () > 1 && !vlib_worker_thread_barrier_held ()))
-+    return 0;
-+  for (u32 ti = 0; ti < vlib_get_n_threads (); ti++)
-+    if (vec_len (vlib_get_main_by_index (ti)->node_main.pending_frames))
-+      return 0;
-+  vec_foreach (hqm, vm->handoff_queue_mains)
-+    vec_foreach (hq, hqm->vlib_handoff_queues)
-+      if (hq[0] && (__atomic_load_n (&hq[0]->head, __ATOMIC_RELAXED) !=
-+                    __atomic_load_n (&hq[0]->tail, __ATOMIC_RELAXED)))
-+        return 0;
-+  return 1;
-+}
-+
-+u32
-+ip4_full_reass_purge_fib (u32 fib_index)
-+{
-+  vlib_main_t *vm = vlib_get_main ();
-+  ip4_full_reass_main_t *rm = &ip4_full_reass_main;
-+  vlib_node_runtime_t *node =
-+    vlib_node_get_runtime (vm, rm->ip4_full_reass_expire_node_idx);
-+  u32 *indices = 0, *index, removed = 0;
-+  ASSERT (ip4_reass_fib_retire_ready ());
-+  for (u32 ti = 0; ti < vec_len (rm->per_thread_data); ti++)
-+    {
-+      ip4_full_reass_per_thread_t *rt = &rm->per_thread_data[ti];
-+      u32 pi;
-+      clib_spinlock_lock (&rt->lock);
-+      vec_reset_length (indices);
-+      pool_foreach_index (pi, rt->pool)
-+        if (pool_elt_at_index (rt->pool, pi)->key.fib_index == fib_index)
-+          vec_add1 (indices, pi);
-+      vec_foreach (index, indices)
-+        {
-+          ip4_full_reass_t *r = pool_elt_at_index (rt->pool, index[0]);
-+          /* Retiring state is freed, never re-enqueued to a custom error app. */
-+          r->error_next_index = ~0;
-+          ip4_full_reass_drop_all (vm, node, r);
-+          ip4_full_reass_free (rm, rt, r);
-+          removed++;
-+        }
-+      clib_spinlock_unlock (&rt->lock);
-+    }
-+  vec_free (indices);
-+  return removed;
-+}
-+
-+static clib_error_t *
-+ip4_reass_retire_probe (vlib_main_t *vm, unformat_input_t *input,
-+                       CLIB_UNUSED (vlib_cli_command_t *cmd))
-+{
-+  u32 fib_index = ~0, full, shallow;
-+  if (!unformat (input, "fib-index %u", &fib_index) ||
-+      unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
-+    return clib_error_return (0, "expected fib-index <native-index>");
-+  vlib_worker_thread_barrier_sync (vm);
-+  if (!ip4_reass_fib_retire_ready ())
-+    {
-+      vlib_worker_thread_barrier_release (vm);
-+      return clib_error_return (0, "busy: pending graph/handoff buffers; FIB must remain allocated");
-+    }
-+  full = ip4_full_reass_purge_fib (fib_index);
-+  shallow = ip4_sv_reass_purge_fib (fib_index);
-+  vlib_worker_thread_barrier_release (vm);
-+  vlib_cli_output (vm, "fib_index %u full_purged %u shallow_purged %u", fib_index,
-+                   full, shallow);
-+  return 0;
-+}
-+
-+VLIB_CLI_COMMAND (ip4_reass_retire_probe_cmd, static) = {
-+  .path = "test ip4-reassembly purge-fib",
-+  .short_help = "test ip4-reassembly purge-fib fib-index <native-index>",
-+  .function = ip4_reass_retire_probe,
-+};
-+
-+/* Queue a real incomplete fragment while workers are stopped. The ready guard
-+ * must reject retirement, then the ordinary worker graph consumes the buffer
-+ * after the barrier opens. This is a queue probe, not a wire traffic test. */
-+static clib_error_t *
-+ip4_reass_handoff_guard_probe (vlib_main_t *vm, unformat_input_t *input,
-+                             CLIB_UNUSED (vlib_cli_command_t *cmd))
-+{
-+  u32 fib_index = ~0, rx = ~0, bi, sent;
-+  u16 ti = 1;
-+  int ready;
-+  if (!unformat (input, "fib-index %u rx %u", &fib_index, &rx) ||
-+      unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
-+    return clib_error_return (0, "expected fib-index <native-index> rx <sw-if-index>");
-+  if (vlib_get_n_threads () < 2)
-+    return clib_error_return (0, "queue probe requires a worker thread");
-+  vlib_worker_thread_barrier_sync (vm);
-+  if (!vlib_buffer_alloc (vm, &bi, 1))
-+    {
-+      vlib_worker_thread_barrier_release (vm);
-+      return clib_error_return (0, "buffer allocation failed");
-+    }
-+  vlib_buffer_t *b = vlib_get_buffer (vm, bi);
-+  ip4_header_t *ip = vlib_buffer_get_current (b);
-+  clib_memset (ip, 0, 28);
-+  b->current_length = 28;
-+  vnet_buffer (b)->sw_if_index[VLIB_RX] = rx;
-+  vnet_buffer (b)->sw_if_index[VLIB_TX] = fib_index;
-+  ip->ip_version_and_header_length = 0x45;
-+  ip->length = clib_host_to_net_u16 (28);
-+  ip->fragment_id = clib_host_to_net_u16 (0x7171);
-+  ip->flags_and_fragment_offset = clib_host_to_net_u16 (0x2000);
-+  ip->ttl = 64;
-+  ip->protocol = IP_PROTOCOL_UDP;
-+  ip->src_address.as_u32 = clib_host_to_net_u32 (0x0a070002);
-+  ip->dst_address.as_u32 = clib_host_to_net_u32 (0xc6336402);
-+  ip->checksum = ip4_header_checksum (ip);
-+  sent = vlib_buffer_enqueue_to_thread (
-+    vm, vlib_node_get_runtime (vm, ip4_full_reass_main.ip4_full_reass_expire_node_idx),
-+    ip4_full_reass_main.fq_index, &bi, &ti, 1);
-+  ready = ip4_reass_fib_retire_ready ();
-+  vlib_worker_thread_barrier_release (vm);
-+  if (sent != 1 || ready)
-+    return clib_error_return (0, "queue guard failed: enqueued %u ready %u", sent, ready);
-+  vlib_cli_output (vm, "enqueued %u retire_ready %u worker %u", sent, ready, ti);
-+  return 0;
-+}
-+
-+VLIB_CLI_COMMAND (ip4_reass_handoff_guard_probe_cmd, static) = {
-+  .path = "test ip4-reassembly handoff-guard",
-+  .short_help = "test ip4-reassembly handoff-guard fib-index <native-index> rx <sw-if-index>",
-+  .function = ip4_reass_handoff_guard_probe,
-+};
-+#endif /* CLIB_MARCH_VARIANT */
-diff --git a/src/vnet/ip/reass/ip4_full_reass.h b/src/vnet/ip/reass/ip4_full_reass.h
-index b1ed2dc..eea099a 100644
---- a/src/vnet/ip/reass/ip4_full_reass.h
-+++ b/src/vnet/ip/reass/ip4_full_reass.h
-@@ -40,4 +40,9 @@ uword ip4_full_reass_custom_register_next_node (uword node_index);
- 
- void ip4_local_full_reass_enable_disable (int enable);
- int ip4_local_full_reass_enabled ();
-+/* Experimental main-thread retirement helpers. Caller holds worker barrier,
-+ * closes ingress admission, and confirms no native NAT references before FIB
-+ * deletion. ready==0 requires retaining FIB/ifindex and retrying later. */
-+int ip4_reass_fib_retire_ready (void);
-+u32 ip4_full_reass_purge_fib (u32 fib_index);
- #endif /* __included_ip4_full_reass_h__ */
-diff --git a/src/vnet/ip/reass/ip4_sv_reass.c b/src/vnet/ip/reass/ip4_sv_reass.c
-index b6798d7..3e75bb6 100644
---- a/src/vnet/ip/reass/ip4_sv_reass.c
-+++ b/src/vnet/ip/reass/ip4_sv_reass.c
-@@ -17,6 +17,7 @@
- #include <vppinfra/fifo.h>
- #include <vppinfra/bihash_16_8.h>
- #include <vnet/ip/reass/ip4_sv_reass.h>
-+#include <vnet/ip/reass/ip4_full_reass.h>
- 
- #define MSEC_PER_SEC			1000
- #define IP4_SV_REASS_TIMEOUT_DEFAULT_MS 100
-@@ -2199,3 +2200,36 @@ ip4_sv_reass_extended_unlock (vlib_buffer_t *b)
- }
- 
- #endif
-+
-+
-+#ifndef CLIB_MARCH_VARIANT
-+/* Standard FIB-keyed shallow reassembly only. The controlled egress graph does
-+ * not use a custom-context SV key namespace overlapping native FIB indexes. */
-+u32
-+ip4_sv_reass_purge_fib (u32 fib_index)
-+{
-+  vlib_main_t *vm = vlib_get_main ();
-+  ip4_sv_reass_main_t *rm = &ip4_sv_reass_main;
-+  u32 *indices = 0, *index, removed = 0;
-+  ASSERT (ip4_reass_fib_retire_ready ());
-+  for (u32 ti = 0; ti < vec_len (rm->per_thread_data); ti++)
-+    {
-+      ip4_sv_reass_per_thread_t *rt = &rm->per_thread_data[ti];
-+      u32 pi;
-+      clib_spinlock_lock (&rt->lock);
-+      vec_reset_length (indices);
-+      pool_foreach_index (pi, rt->pool)
-+        if (pool_elt_at_index (rt->pool, pi)->key.fib_index == fib_index)
-+          vec_add1 (indices, pi);
-+      vec_foreach (index, indices)
-+        {
-+          ip4_sv_reass_free (vm, rm, rt,
-+                             pool_elt_at_index (rt->pool, index[0]), true);
-+          removed++;
-+        }
-+      clib_spinlock_unlock (&rt->lock);
-+    }
-+  vec_free (indices);
-+  return removed;
-+}
-+#endif /* CLIB_MARCH_VARIANT */
-diff --git a/src/vnet/ip/reass/ip4_sv_reass.h b/src/vnet/ip/reass/ip4_sv_reass.h
-index be45f8d..a079b4a 100644
---- a/src/vnet/ip/reass/ip4_sv_reass.h
-+++ b/src/vnet/ip/reass/ip4_sv_reass.h
-@@ -71,4 +71,6 @@ void ip4_sv_reass_extended_unlock (vlib_buffer_t *b);
- uword ip4_sv_reass_custom_register_next_node (uword node_index);
- uword ip4_sv_reass_custom_context_register_next_node (uword node_index);
- 
-+/* Experimental FIB-keyed retirement; same barrier/queue guard as full. */
-+u32 ip4_sv_reass_purge_fib (u32 fib_index);
- #endif /* __included_ip4_sv_reass_h__ */
++  u64 cookie, path_signature;
++  u32 thread_index, native_index, inside_fib, outside_fib, route_fib;
++  ip4_address_t local, original_remote, backend, snat;
++  u16 local_port, original_remote_port, backend_port, snat_port;
++  u8 proto;
++} nat44_ed_policy_flow_t;
++typedef int (*nat44_ed_policy_visit_t) (const nat44_ed_policy_flow_t *, void *);
++extern nat44_ed_policy_hooks_t nat44_ed_policy_hooks;
++int nat44_ed_policy_register (const nat44_ed_policy_hooks_t *);
++/* Caller holds the VPP worker barrier. Return nonzero from visit to delete. */
++u32 nat44_ed_policy_walk (nat44_ed_policy_visit_t visit, void *opaque);
++#endif

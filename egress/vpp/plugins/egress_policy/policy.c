@@ -3,7 +3,8 @@
  * hold the worker barrier; packet workers only reserve/release atomic counters.
  * NAT owns mappings, timeouts, TCP state, checksums and address/port allocation. */
 #include <nat/nat44-ed/nat44_ed_policy.h>
-#include <vlib/unix/plugin.h>
+#include <egress_geneve/geneve.h>
+#include <egress_policy/policy.h>
 #include <vlib/vlib.h>
 #include <vnet/adj/adj.h>
 #include <vnet/dpo/load_balance.h>
@@ -72,12 +73,7 @@ static area_t *areas, staged, *pending;
 static u8 staging, batching;
 static uword *area_by_id;
 static attachment_t *attachments;
-static u32 (*native_walk) (nat44_ed_policy_visit_t, void *);
-static u32 (*native_expire) (u32);
-static u32 (*return_mtu) (u32);
 
-static int (*native_address) (ip4_address_t, u8);
-static int (*native_outside) (u32, u8);
 typedef struct
 {
   u32 sw, hop;
@@ -180,7 +176,7 @@ egress_policy_vtep_conflict (u32 address)
   if (!hash_get (public_addresses, address))
     return 0;
   vtep_check_t check = { .address = address };
-  native_walk (check_vtep_flow, &check);
+  nat44_ed_policy_walk (check_vtep_flow, &check);
   return check.conflict;
 }
 static void
@@ -195,7 +191,7 @@ resources_collect (void)
   vec_foreach (a, areas) mark_area_resources (a, &mark);
   vec_foreach (a, pending) mark_area_resources (a, &mark);
   mark_area_resources (&staged, &mark);
-  native_walk (mark_flow_resource, &mark);
+  nat44_ed_policy_walk (mark_flow_resource, &mark);
   collect_resources = 0;
   u32 *remove = 0, *index;
   pool_foreach (r, resources)
@@ -227,7 +223,7 @@ resources_collect (void)
   vec_foreach (index, remove)
   {
     ip4_address_t addr = { .as_u32 = *index };
-    ALWAYS_ASSERT (!native_address (addr, 0));
+    ALWAYS_ASSERT (!nat44_ed_policy_address (addr, 0));
     hash_unset (public_addresses, *index);
   }
   vec_reset_length (remove);
@@ -244,7 +240,7 @@ resources_collect (void)
   });
   vec_foreach (index, remove)
   {
-    ALWAYS_ASSERT (!native_outside (*index, 0));
+    ALWAYS_ASSERT (!nat44_ed_policy_outside (*index, 0));
     hash_unset (outside_interfaces, *index);
   }
   vec_free (remove);
@@ -268,14 +264,14 @@ resources_prepare (void)
     resource_t *r = &resources[hash_get (resource_by_fib, p->fib)[0]];
     if (!hash_get (outside_interfaces, r->key.sw))
       {
-        if ((rv = native_outside (r->key.sw, 1)))
+        if ((rv = nat44_ed_policy_outside (r->key.sw, 1)))
           goto fail;
         hash_set (outside_interfaces, r->key.sw, 1);
         vec_add1 (added_interfaces, r->key.sw);
       }
     vec_foreach (addr, p->addresses) if (!hash_get (public_addresses, addr->as_u32))
     {
-      if ((rv = native_address (*addr, 1)))
+      if ((rv = nat44_ed_policy_address (*addr, 1)))
         goto fail;
       hash_set (public_addresses, addr->as_u32, 1);
       vec_add1 (added_addresses, *addr);
@@ -287,12 +283,12 @@ resources_prepare (void)
 fail:
   vec_foreach (addr, added_addresses)
   {
-    ALWAYS_ASSERT (!native_address (*addr, 0));
+    ALWAYS_ASSERT (!nat44_ed_policy_address (*addr, 0));
     hash_unset (public_addresses, addr->as_u32);
   }
   vec_foreach (sw, added_interfaces)
   {
-    ALWAYS_ASSERT (!native_outside (*sw, 0));
+    ALWAYS_ASSERT (!nat44_ed_policy_outside (*sw, 0));
     hash_unset (outside_interfaces, *sw);
   }
   vec_free (added_interfaces);
@@ -532,8 +528,8 @@ path_mtu (u64 cookie, u64 expected, u32 inside, u32 route, ip4_address_t dst, ip
       if (!out2in)
         return mtu;
     }
-  if (out2in && return_mtu)
-    return return_mtu (inside);
+  if (out2in)
+    return egress_geneve_return_mtu (inside);
   return 0;
 }
 __clib_export int
@@ -650,13 +646,13 @@ __clib_export u32
 egress_policy_context_flush (u32 fib)
 {
   walk_t w = { .fib = fib, .area = ~0, .flush = 1 };
-  return native_walk (visit, &w);
+  return nat44_ed_policy_walk (visit, &w);
 }
 __clib_export u32
 egress_policy_flush_revoked (void)
 {
   walk_t w = { .revoked = 1 };
-  return native_walk (visit, &w);
+  return nat44_ed_policy_walk (visit, &w);
 }
 static void
 abort_batch (void)
@@ -735,7 +731,7 @@ egress_policy_batch_publish (void)
   access_t *access;
   pool_foreach (access, accesses) sync_counters (access);
   walk_t w = { .fib = ~0, .area = ~0 };
-  u32 terminated = native_walk (visit, &w);
+  u32 terminated = nat44_ed_policy_walk (visit, &w);
   pool_foreach (access, accesses) sync_counters (access);
   collect_resources = 1;
   resources_collect ();
@@ -1009,7 +1005,7 @@ reaper (vlib_main_t *vm, vlib_node_runtime_t *rt, vlib_frame_t *f)
       vlib_process_get_events (vm, &events);
       vec_reset_length (events);
       vlib_worker_thread_barrier_sync (vm);
-      native_expire (4096);
+      nat44_ed_policy_expire (4096);
       static f64 last_collection;
       f64 now = vlib_time_now (vm);
       if (collect_resources && now - last_collection >= 1.0)
@@ -1024,29 +1020,20 @@ reaper (vlib_main_t *vm, vlib_node_runtime_t *rt, vlib_frame_t *f)
 VLIB_REGISTER_NODE (eg_reaper)
     = { .function = reaper, .type = VLIB_NODE_TYPE_PROCESS, .name = "egress-native-reaper" };
 static clib_error_t *
-init (vlib_main_t *vm)
+egress_policy_init (vlib_main_t *vm)
 {
-  int (*reg) (const nat44_ed_policy_hooks_t *)
-      = vlib_get_plugin_symbol ("nat_plugin.so", "nat44_ed_policy_register");
-  native_walk = vlib_get_plugin_symbol ("nat_plugin.so", "nat44_ed_policy_walk");
-  native_expire = vlib_get_plugin_symbol ("nat_plugin.so", "nat44_ed_policy_expire");
-  return_mtu = vlib_get_plugin_symbol ("egress_geneve_plugin.so", "egress_geneve_return_mtu");
-  native_address = vlib_get_plugin_symbol ("nat_plugin.so", "nat44_ed_policy_address");
-  native_outside = vlib_get_plugin_symbol ("nat_plugin.so", "nat44_ed_policy_outside");
   access_by_key = hash_create_mem (0, sizeof (access_key_t), sizeof (uword));
   resource_by_path = hash_create_mem (0, sizeof (path_key_t), sizeof (uword));
-  if (!reg || !native_walk || !native_expire || !return_mtu || !native_address || !native_outside)
-    return clib_error_return (0, "pinned Egress/NAT hooks unavailable");
   nat44_ed_policy_hooks_t h = { .managed = managed,
                                 .prepare = prepare,
                                 .reserve = reserve,
                                 .commit = commit,
                                 .release = release,
                                 .path_mtu = path_mtu };
-  if (reg (&h))
+  if (nat44_ed_policy_register (&h))
     return clib_error_return (0, "NAT hooks already registered");
   return 0;
 }
-VLIB_INIT_FUNCTION (init);
+VLIB_INIT_FUNCTION (egress_policy_init);
 VLIB_PLUGIN_REGISTER ()
     = { .version = VPP_BUILD_VER, .description = "Connector Egress Area policy" };

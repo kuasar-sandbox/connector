@@ -14,8 +14,6 @@ func TestOriginalYAMLAreaContract(t *testing.T) {
 	dir := t.TempDir()
 	main := `# Main file remains independent of Area policy.
 name: test
-vpp: /opt/egress/bin/vpp
-plugin_path: /opt/egress/plugins
 interfaces:
   - {name: transit, address: 198.18.0.1/24, mtu: 1500}
   - {name: outside, address: 192.0.2.1/24, mtu: 1500}
@@ -121,9 +119,37 @@ func TestOmittedAndEmptyRoutesRemainDistinct(t *testing.T) {
 	}
 }
 
+func TestOptionalDataplanePathSourceTypes(t *testing.T) {
+	for input, want := range map[string]string{
+		"name: test\n":                          "",
+		"vpp: \"\"\n":                           "",
+		"vpp: /opt/connector/bin/connector-vpp": "/opt/connector/bin/connector-vpp",
+		`{}`:                                    "",
+		`{"vpp":""}`:                            "",
+		`{"vpp":"/custom/connector-vpp"}`:       "/custom/connector-vpp",
+	} {
+		var c Config
+		if err := Decode(strings.NewReader(input), &c); err != nil || c.VPP != want {
+			t.Errorf("Decode(%q): vpp=%q, err=%v", input, c.VPP, err)
+		}
+	}
+	for _, input := range []string{
+		"vpp: null", "vpp: 42", "vpp: false", "vpp: []", "vpp: {}",
+		"main_core: &absent null\nvpp: *absent",
+		`{"vpp":null}`, `{"VPP":null}`, `{"vpp":42}`, `{"vpp":false}`, `{"vpp":[]}`, `{"vpp":{}}`,
+	} {
+		var c Config
+		if err := Decode(strings.NewReader(input), &c); err == nil {
+			t.Errorf("accepted %s", input)
+		}
+	}
+}
+
 func TestSourceCollectionsAndAmbiguities(t *testing.T) {
 	for _, input := range []string{
 		"name: test\nName: other\n", "name: test\nunknown: 1\n", "name: test\n---\nname: second\n",
+		"plugin_path: /opt/egress/plugins\n", "library_path: /opt/egress/lib\n",
+		`{"plugin_path":"/opt/egress/plugins"}`, `{"library_path":"/opt/egress/lib"}`,
 		"areas: [{vni: 7, routes: null}]", "areas: [{vni: 7, routes: [] , routes: []}]",
 		"name: test\ninterfaces: [*unknown]\n", "name: &loop [*loop]",
 	} {

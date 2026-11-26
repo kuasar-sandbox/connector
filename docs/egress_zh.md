@@ -8,9 +8,9 @@ Egress 是通过文件配置的 IPv4 Geneve 转发网关，提供有序 ACL、TC
 
 ## 部署和归属
 
-按照[构建与验收](../egress/README_zh.md)构建相互匹配的原生运行时和纯 Go 控制程序。可执行文件、运行库与插件须配套。配置中的网关/SNAT 地址归 VPP 所有，Linux 不得在同一接口重复持有这些地址；无关 Linux IPv4 地址可以保留。数据面在转发前处理 AF_PACKET 携带的校验和和 TCP 分段元数据，不要求修改借用设备或外部对端的 offload 设置；本地专用 veth 仍按既有 vSwitch 报文契约准备。
+按照[构建与验收](../egress/README_zh.md)构建相互匹配的全静态 `connector-vpp` 数据面和纯 Go `connector-ctl`，安装同一组件版本的两个可执行文件。配置中的网关/SNAT 地址归 VPP 所有，Linux 不得在同一接口重复持有这些地址；无关 Linux IPv4 地址可以保留。数据面在转发前处理 AF_PACKET 携带的校验和和 TCP 分段元数据，不要求修改借用设备或外部对端的 offload 设置；本地专用 veth 仍按既有 vSwitch 报文契约准备。
 
-本地部署参考 [link.json](../dist/egress/link.json)、[switch.json](../dist/egress/switch.json)、[gateway.yaml](../dist/egress/gateway.yaml) 和 [area7.yaml](../dist/egress/area7.yaml)。部署前替换示例地址和资源；ARM64 使用 `aarch64-linux-gnu` 库路径。
+本地部署参考 [link.json](../dist/egress/link.json)、[switch.json](../dist/egress/switch.json)、[gateway.yaml](../dist/egress/gateway.yaml) 和 [area7.yaml](../dist/egress/area7.yaml)。将选定组件归档解压至 `/opt/connector`，保留完整的 `bin/` 目录；服务模板和网关示例采用此前缀。以下命令使用 `/opt/connector/bin/connector-ctl`，也可先将该目录加入 `PATH`。`vpp` 是可选的绝对路径覆盖项；省略时，`connector-ctl` 在自身可执行文件所在目录定位 `connector-vpp`，先解析控制程序的符号链接，查找不受工作目录或 `PATH` 影响。部署前替换示例地址和资源。
 
 1. 运行 `connector-ctl egress link prepare --config link.json`。vSwitch 停止时，其接线端保留在稳定 owner namespace，网关端保留在 Egress namespace，并记录 namespace 与设备归属。
 2. 由外部网络所有者将 uplink 放入网关 namespace，配置 MTU 并启用。SNAT 资源必须具有真实外部可达性；主机默认路由不隐式构成 Pool 出口。
@@ -21,7 +21,7 @@ Egress 是通过文件配置的 IPv4 Geneve 转发网关，提供有序 ACL、TC
 
 重复 prepare 核验并复用自有 pair，拒绝外部同名设备、变化的 namespace 身份和已损坏的已安装 pair。每个本地 vSwitch 使用独立 pair，多个 pair 可以共用 Egress 实例。不同 gatewayIP 使用不同的接收地址；相同 peer、locator 和内层地址可以分别接入这些 gatewayIP，而不串用状态。既有 vSwitch `transit_dev_mtu:auto` 可以将其端点 MTU 调低至网关预留 MTU 以下，这不改变 pair 归属。
 
-远端部署使用外部拥有的 transit 设备。`peer` 为可选的 IPv4 地址/CIDR 列表，例如 `["198.18.0.2", "203.0.113.0/24"]`；省略或空列表不额外限制来源，实际 peer 从外层源 IP 获取。`next_hop` 省略时对实际 peer 按直连回程处理，路由接入应指定同链路路由器。报文 VNI 直接选择已配置 Area，不按 attachment 重复登记 Area。同一入口和外层网关地址的来源范围重叠时，解码、MTU 和回程约定必须一致，否则整批拒绝。同一网关/来源范围不能指向不同回程设备；不同 peer 范围可以跨设备复用网关地址。远端 transit 与 Pool 可以共用接口，但 Geneve 网关地址必须与 SNAT 地址分离；本地专用 veth 保持独立。Geneve 和 generation MAC 不是密码学认证，underlay 资源归属必须防止发送方伪造。
+远端部署使用外部拥有的 transit 设备。`peer` 可填写单个 IPv4 地址、CIDR 网段、包含首尾的 IP 范围，或它们的列表，例如 `["198.18.0.2", "203.0.113.0/24"]`；省略或空列表不额外限制来源，实际 peer 从外层源 IP 获取。`next_hop` 省略时对实际 peer 按直连回程处理，路由接入应指定同链路路由器。报文 VNI 直接选择已配置 Area，不按 attachment 重复登记 Area。同一入口和外层网关地址的来源范围重叠时，解码、MTU 和回程约定必须一致，否则整批拒绝。同一网关/来源范围不能指向不同回程设备；不同 peer 范围可以跨设备复用网关地址。远端 transit 与 Pool 可以共用接口，但 Geneve 网关地址必须与 SNAT 地址分离；本地专用 veth 保持独立。Geneve 接入字段和不透明回程 MAC 不提供密码学认证，underlay 资源归属必须防止发送方伪造。
 
 ## 文件与 reload
 
@@ -37,9 +37,9 @@ kill -HUP "$(cat /var/lib/connector-egress/egress-local/pid)"
 
 每次 reload 重新读取主配置和全部关联 Area 文件，完成整份候选配置的校验及暂存，再在同一个 worker barrier 内发布全部 Area 和接入配置。解析、引用或准备失败时保留原配置。不再存在独立可写的在线策略存储。使用原子替换文件，并在整套文件准备完成后发送 SIGHUP。
 
-reload 支持 Area 增删、ACL/DNAT/路由/Pool、接入来源及 peer 回程、空闲回收和协议超时。在已接入设备范围内，Pool 的 `interface`、`next_hop` 和 `addresses` 也支持 reload；旧连接继续引用原出口资源直到回收，新连接采用新定义。新增入口地址若与旧连接仍在使用的 SNAT 地址重叠，整批 reload 拒绝；待旧映射回收后可重试。删除 Area 时同步更新 Area 文件清单。程序/库路径、CPU/预分配内存、物理设备接管和 namespace 变化需要维护重启；此类变更在发布前被拒绝，保留运行配置。原生发布应答不明确时停止网关，不报告未经证明的回滚。
+reload 支持 Area 增删、ACL/DNAT/路由/Pool、接入来源及 peer 回程、空闲回收和协议超时。在已接入设备范围内，Pool 的 `interface`、`next_hop` 和 `addresses` 也支持 reload；旧连接继续引用原出口资源直到回收，新连接采用新定义。新增入口地址若与旧连接仍在使用的 SNAT 地址重叠，整批 reload 拒绝；待旧映射回收后可重试。删除 Area 时同步更新 Area 文件清单。程序路径、CPU/预分配内存、物理设备接管和 namespace 变化需要维护重启；此类变更在发布前被拒绝，保留运行配置。原生发布应答不明确时停止网关，不报告未经证明的回滚。
 
-普通路由、DNAT 和 SNAT 选择变化作用于新映射，既有映射保留原公网元组、目的转换及出口。降低 Pool 额度只限制新映射，不驱逐已有映射。ACL 撤销、Pool/Area 删除和原路径不可用只使相关映射失效。不兼容的接入线协议/网关变更回收相关上下文；回程标记不会借用其他代次的身份。
+普通路由、DNAT 和 SNAT 选择变化作用于新映射，既有映射保留原公网元组、目的转换及出口。降低 Pool 额度只限制新映射，不驱逐已有映射。ACL 撤销、Pool/Area 删除和原路径不可用只使相关映射失效。不兼容的接入线协议/网关变更回收相关上下文；旧映射保存的不透明回程 MAC 不会被后续流量替换。
 
 进程重启重新读取文件，不恢复 NAT 状态。后续有效流量自动建立新状态，无需控制方重新登记。
 
@@ -48,7 +48,7 @@ reload 支持 Area 增删、ACL/DNAT/路由/Pool、接入来源及 peer 回程�
 | 对象 | 含义 |
 |---|---|
 | Interface | Linux 设备名、VPP 拥有的 IPv4 `address` 前缀和物理 L3 `mtu`。 |
-| Attachment | `name`、`interface`、可选 `peer` 来源列表、可选回程 `next_hop`、`locator` 及 TLV 解码字段。`locator` 默认 `port`；`inner_mtu` 默认 1500，`mtu` 默认采用接口 MTU。Ether/IP 和 fencing 从报文识别。 |
+| Attachment | `name`、`interface`、可选 `peer` 来源列表、可选回程 `next_hop`、`locator` 及 TLV 解码字段。`locator` 默认 `port`；`inner_mtu` 默认 1500，`mtu` 默认采用接口 MTU。Ether/IP 封装从报文确定；Ether 源 MAC 作为不透明回程信息保留。 |
 | Area | 逻辑 `vni`、有序 `acl`、有序 TCP/UDP `dnat`、最长前缀 `routes` 和 Pool。 |
 | Pool | Area 内唯一的 `name`，直接定义 `interface`、同链路 `next_hop` 和 SNAT `addresses`；路由与 DNAT 按名称引用。`max_connections` 限制每个外层接入在该 Pool 的存活 NAT 映射，零或省略取消业务额度。 |
 | Match | 目的 IP/CIDR/范围、协议和端口集合，写法见下文；端口仅适用于 TCP/UDP。`any` 也覆盖其他普通 IPv4 协议。 |
@@ -90,7 +90,11 @@ acl:
 | `vni` | UDP 6081，VNI 为 `(slot << 12) | area`，逻辑 Area 为 12 位。 |
 | `tlv` | UDP 6081，配置的 class/type 标识第一个 locator option，Area 为 24 位。未知 critical option 拒绝，非 critical 元数据接收但不反射。 |
 
-Egress 不限制 slot 范围，按报文字段保留 locator，包括完整 32-bit TLV 值。上下文按来源及 locator 建立索引，不按 slot 数值分配数组。Egress 不配置 `port_base`。Ether 封装且 generation 位宽为 1–20 时，源 MAC `02:fe:<32-bit big-endian generation>` 携带既有 generation，零也是有效值。Egress 从报文识别并保留各连接的回程标记，不重复配置 generation 位宽。接入身份为外层源 IP + Geneve 目的端口或 SlotID + VNI/逻辑 Area + 外层目的 IP（gatewayIP）。内层 IP 只参与转发和连接匹配；多个内层 IP 共用这一接入的 Pool 额度。vSwitch 按既有 generation 校验带标记目的 MAC，恢复 Guest MAC，并保留未标记 legacy 兼容。没有 vSwitch Go 配置、Attach 参数或代次方案变化。
+Egress 不限制 slot 范围，按报文字段保留 locator，包括完整 32-bit TLV 值。上下文按来源及 locator 建立索引，不按 slot 数值分配数组。Egress 不配置 `port_base`。
+
+接入身份为外层源 IP + Geneve 目的端口或 SlotID + VNI/逻辑 Area + 外层目的 IP（gatewayIP）。内层 IP 只参与转发和连接匹配；多个内层 IP 共用这一接入的 Pool 额度。内层 MAC 是回程信息，不增加接入身份或单独的 Pool 额度。
+
+Ether 封装中，Egress 将收到的内层源 MAC 作为不透明回程信息保留，并原样用作该映射回包的内层目的 MAC。后续流量不能替换已有映射保存的回程 MAC。Egress 不解析 fencing 前缀、代次值或代次位宽。[vSwitch](vswitch_zh.md) 负责 fencing 校验、Guest MAC 恢复及既有 legacy 兼容。
 
 attachment 不设置内层 `gateway`。ICMP 差错以接入接口的数据面地址为来源，不修改 Guest 默认网关，也不限制内层源 IP。
 
@@ -112,6 +116,6 @@ IP 封装和 legacy Ether 不增加新身份字段，既有协议无法区分身
 
 ## 组件交付与 node-infra
 
-同版本 Connector 发行包包含 `bin/connector-egress.bundle`、控制程序、`deploy/connector-egress@.service` 和 `deploy/egress` 示例。平台将原生运行时解压至 `/opt/node-infra/lib/connector-egress`；配置需选用对应架构的库和插件路径。
+同版本 Connector 发行包将 `connector-ctl`、`connector-vpp` 和 `vpp-runtime.json` 直接放在 `bin/` 下。数据面将 VPP、六个内建插件及 libc 静态链接到一个可执行文件。归档同时包含原生许可证材料、`deploy/connector-egress@.service` 和 `deploy/egress` 示例。安装或复制组件时保留完整目录。node-infra 中这些文件位于 `/opt/node-infra/bin`，网关使用 `/opt/node-infra/bin/connector-vpp`。
 
 本地网关将主配置、Area 文件和 `link.json` 挂载到 `/etc/connector-egress`，参考平台 `node-infra/examples/local-egress`。现有节点准备流程管理共享链路；`owner_netns: ""` 表示节点流程保留的主网络命名空间，每次操作均核对其 inode。vSwitch 继续通过原有节点服务启停。Egress 仅运行转发进程，通过 SIGHUP reload，不接收沙箱生命周期通知。普通服务停止保留 pair；最终 owner 卸载在网关与 vSwitch 停止后清理 pair。借用的网关 namespace 和 Pool 接口由外部所有者保留。

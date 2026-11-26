@@ -2,30 +2,51 @@
 
 # Native Egress build and acceptance
 
-Operator configuration, ownership, file reload and recovery are defined in [Egress operations](../docs/egress.md). This directory owns the native build and its source acceptance executors. `connector-ctl` remains a pure-Go binary; the native dataplane is built separately.
+Operator configuration, ownership, file reload and recovery are defined in [Egress operations](../docs/egress.md). This directory contains the Connector plugins and source acceptance executors. The upstream VPP build and patches follow the repository's `native-deps` workflow. `connector-vpp` is the fully static Egress executable; `connector-ctl` remains a pure-Go binary.
 
-## Build inputs
+## Build inputs and outputs
 
-[`vpp/source.json`](vpp/source.json) pins FD.io VPP 26.10 to commit `4acb320269bc4f3533e35c80afedac38853b2f60`. [`vpp/patches/native-policy.patch`](vpp/patches/native-policy.patch) adapts native NAT44-ED allocation, accounting, flow retirement, path MTU and short TCP-quoted ICMP translation. It also provides safe native reassembly retirement hooks. The native implementation continues to own NAT hashes, ports, TCP state, timers, checksums and packet fragmentation. The three Connector plugins own Area policy, traffic-created Geneve forwarding contexts and packet normalization.
+[`../native-deps/deps/vpp-source.json`](../native-deps/deps/vpp-source.json) pins the FD.io VPP 26.10 source archive and its SHA256. Source acquisition verifies the archive, extracts it into `native-deps/build/src/vpp`, and creates the `vpp-patches-base` Git baseline. The numbered patches in [`../native-deps/deps/vpp-patches`](../native-deps/deps/vpp-patches) are applied with `git am`. They adapt native NAT44-ED allocation, accounting, flow retirement, path MTU and short TCP-quoted ICMP translation, and provide safe native reassembly retirement hooks. Native VPP continues to own NAT hashes, ports, TCP state, timers, checksums and packet fragmentation. The three Connector plugins own Area policy, traffic-created Geneve forwarding contexts and packet normalization.
 
-The patch is applied only to the pinned commit. A build rejects unrelated tracked source changes. Rebuilding reuses its source and object directory and only copies changed plugin inputs. The native runtime targets `x86-64-v2` on x86_64 and `armv8-a+crc` on aarch64, matching the pinned VPP baseline; it does not use the build machine's unrestricted `-march=native` features. Build each architecture natively. The compiler, C library and native build dependencies are part of the selected build environment.
+Build each architecture natively. `TARGET_ARCH` selects `x86_64` or `aarch64` (also accepting `amd64` and `arm64`); the native build checks it against the build host. The CPU baseline is `x86-64-v2` on x86_64 and `armv8-a+crc` on aarch64. Source and downloads are retained separately from the architecture-specific object directory, `native-deps/build/<arch>/vpp`. `KUASAR_BUILD_JOBS` controls build parallelism. The compiler, glibc static libraries and native dependencies belong to the selected build environment.
 
-The acceptance environment is Linux with Ubuntu 24.04 userspace, GCC 13 and CMake/Ninja. Prepare its build dependencies:
+The following build-dependency example uses Ubuntu 24.04 with CMake/Ninja. Compiler selection follows upstream VPP: honor `CC` when set; otherwise prefer Clang and fall back to GCC. Before changing the compiler or compiler flags, run `make -C native-deps clean` to clear the CMake build directory; this retains the source and downloaded archives.
 
 ```bash
 sudo apt-get update
 sudo apt-get install --no-install-recommends \
-  build-essential ninja-build cmake git python3 python3-ply pkg-config \
+  build-essential clang ninja-build cmake git python3 python3-ply pkg-config \
   libunwind-dev libmbedtls-dev libpcap-dev libssl-dev libnl-3-dev \
   libnl-route-3-dev libelf-dev liblz4-dev libzstd-dev libbpf-dev libyaml-dev \
   iproute2 ethtool
-make build
-JOBS=8 make egress-runtime
+KUASAR_BUILD_JOBS=8 make build
 ```
 
-Use the repository's supported Go toolchain from [CONTRIBUTING](../CONTRIBUTING.md). `EGRESS_BUILD_DIR` defaults to `build/egress`; `EGRESS_RUNTIME_DIR` defaults to its `runtime` child. Staging requires a new output directory, so choose another `EGRESS_RUNTIME_DIR` for a subsequent candidate. It copies the selected VPP executable, core libraries and six enabled plugins; verifies native ELF architecture; preserves licenses and embedded upstream notices; and records payload hashes and required system libraries in `runtime.json`. It does not copy sources, build caches or test history into the runtime.
+Use the supported Go toolchain from [CONTRIBUTING](../CONTRIBUTING.md). The default `make build` builds both components directly into the same `bin/<arch>` directory:
 
-`make connector-egress.bundle` creates `bin/<arch>/connector-egress.bundle` from the verified native build. The ordinary component release now includes this runtime, the matching `connector-ctl`, the Egress service template, and the main/Area/link configuration examples. Extract the native bundle into the directory selected by the gateway configuration (for example `/opt/connector-egress`), preserving `bin`, `lib/<triplet>`, and `share/licenses`. Supply the system libraries listed in `runtime.json` (glibc and libunwind on the validated Ubuntu build). Do not mix a control binary with a native runtime from another component version. The platform consumes the same bundle in its native CI and node-infra image.
+| Path | Contents |
+|---|---|
+| `connector-ctl` | Go control program |
+| `connector-vpp` | Fully static VPP forwarding executable, including libc, NAT, af_packet, ping and the three Egress plugins |
+| `vpp-runtime.json` | Source inputs, architecture, CPU baseline and executable hash; `required_system_libraries` is empty |
+
+For control-only Go development or cross-compilation, use `make connector-ctl`; `make connector-vpp` builds only the static dataplane; `make vpp` and `make egress` are aliases. Native license materials are retained in `native-deps/build/<arch>/vpp/licenses` for packaging.
+
+The component release keeps the same runtime layout under `bin/`, alongside the normal `deploy/` and `share/licenses/connector` directories. Extract the component archive once, for example into `/opt/connector`, and retain the entire `bin/` directory. The gateway example omits `vpp`: `connector-ctl` resolves its own executable path and uses the adjacent `connector-vpp`, including when the control program is invoked through the source build's symlink. Set `vpp` to an absolute path only when overriding this default. VPP, the fixed six plugins and glibc are linked into that executable, which requires no shared libraries. Install the control program and dataplane from the same component version. Platform CI and node-infra consume these files directly.
+
+### Maintain the upstream patches
+
+The stages match the Cloud Hypervisor and Guest kernel workflows:
+
+```bash
+make -C native-deps vpp-fetch
+make -C native-deps vpp-patches-apply
+# Edit and commit changes in native-deps/build/src/vpp.
+make -C native-deps vpp-patches-format
+make -C native-deps vpp-build
+```
+
+`vpp-patches` is an alias for `vpp-patches-apply`. The ordinary `vpp` target performs source acquisition, patch application and build. Export upstream changes to the numbered patch directory before producing a candidate. Project plugins remain normal sources in `egress/vpp/plugins`; format them using `egress/vpp/.clang-format`. `VPP_TARBALL` and `VPP_TARBALL_SHA256` support a verified source mirror or local archive using the same download conventions as other native dependencies. Runtime validation checks that its recorded native inputs match the selected Connector source and rejects an ELF interpreter or dynamic library dependency.
 
 ## Required source checks
 
@@ -39,12 +60,10 @@ After changing `bpf/switch_kern.c`, regenerate both tracked x86 and ARM64 object
 
 ## Native acceptance
 
-Run on a disposable, privileged executor with a BPF-capable kernel, at least two available CPUs (one main thread and one NAT worker; three CPUs exercise two workers), enough memory for the gateway and the 12288-context / 196608-mapping case, Python 3, iproute2 and ethtool. Use each architecture's native control binary and staged runtime. Do not run the suite against production interface names or a production gateway. Every case creates unique namespaces and links and cleans its owned topology.
+Run on a disposable, privileged executor with a BPF-capable kernel, at least two available CPUs (one main thread and one NAT worker; three CPUs exercise two workers), enough memory for the gateway and the 12288-context / 196608-mapping case, Python 3, iproute2 and ethtool. Use each architecture's control binary and native runtime from the same `bin/<arch>` directory. Do not run the suite against production interface names or a production gateway. Every case creates unique namespaces and links and cleans its owned topology.
 
 ```bash
-sudo make test-egress \
-  EGRESS_RUNTIME_DIR="$PWD/build/egress/runtime" \
-  EGRESS_TEST_DIR="$PWD/build/egress/acceptance"
+sudo make test-egress
 ```
 
 [`tests/run.sh`](tests/run.sh) executes 16 cases and writes `acceptance.json` only after every case succeeds:
@@ -53,14 +72,14 @@ sudo make test-egress \
 |---|---|
 | `e2e.py` | Real sandbox sockets → TC/eBPF → Geneve → native VPP/NAT → external sockets. All three locators, IP/Ether, local dedicated pair and remote routed underlay; two worker threads. |
 | Local lifecycle checks | Repeat prepare, stable-owner Start/Stop twice, automatic entry and idle cleanup, file reload, restart configuration restoration, isolated interface loss, refusal to repair active sandboxes, drained repair and reattachment, Pool resource preservation and safe uninstall. |
-| Policy/exit checks | Independent sandbox and Pool quotas, ACL default deny, LPM, DNAT tuple restoration, TCP/UDP, quota lowering, failed update preservation, selective revocation, and one failed exit while another continues. |
+| Policy/exit checks | Independent sandbox and Pool quotas, ACL default allow and explicit deny, LPM, DNAT tuple restoration, TCP/UDP, quota lowering, failed update preservation, selective revocation, and one failed exit while another continues. |
 | `wire.py --locator tlv` | Overlapping outer/inner identities on separate attachments, malformed framing and unknown critical options, opaque metadata behavior, out-of-order inner and outer reassembly, fragmented returns, pre-NAT PMTU, eight-byte TCP-quoted ICMP, ordinary IPv4 protocols, immutable generation returns and automatic accounting cleanup. |
 | `wire.py --locator port` / `--locator tlv` | Full wire-field locator values, named Pool references and reorder stability, dynamic configuration beyond old object counts, quota isolation and policy shrink. |
 | `wire.py --contexts 12288 --flows 16` | Traffic automatically creates 12288 simultaneously active contexts across three unchanged 4096-slot switch locators and 196608 actual bidirectional NAT connections. Checks distinct public tuples, file reload, selective Area revocation and automatic reclamation; records memory and elapsed time. |
 
 The additional legacy case runs Ether with fencing disabled. The real BPF suite separately verifies generation 0, 1, 15 and the 20-bit maximum, rejection of tagged old returns, and acceptance of untagged legacy returns for every locator. The raw wire executor tests gateway capacity and packet correctness; the TC executor covers the vSwitch boundary. These are functional and capacity checks, not a throughput or latency SLA.
 
-For focused iteration, invoke a Python executor with `--ctl`, `--vpp-build` (the staged runtime) and a fresh `--output` directory. `e2e.py` accepts `--locator`, `--encap`, `--remote`, `--legacy` and `--workers`. `wire.py` accepts `--locator vni|tlv`, `--contexts` and `--flows`. The executors retain commands, assertions, gateway logs, native diagnostics and results. The suite verifies every runtime payload hash; the source-tree entry also verifies the current native source receipt, then binds the control binary hash to that manifest, which also records native source/patch/build-input hashes. Staging rejects inputs changed since the completed build. Keep these records with the reviewed source and CI evidence, outside product packages.
+For focused iteration, invoke a Python executor with `--ctl`, `--runtime` (the `bin/<arch>` directory) and a fresh `--output` directory. `e2e.py` accepts `--locator`, `--encap`, `--remote`, `--legacy` and `--workers`. `wire.py` accepts `--locator vni|tlv`, `--contexts` and `--flows`. The executors retain commands, assertions, gateway logs, native diagnostics, results and process maps. They check the dataplane executable identity and absence of mapped shared libraries after startup and after traffic. The suite verifies every runtime payload hash; the source-tree entry also verifies the current native source receipt, then binds the control binary hash to that manifest, which also records native source/patch/build-input hashes. Runtime validation rejects inputs changed since the completed build. Keep these records with the reviewed source and CI evidence, outside product packages.
 
 The normal protected integration flow and current-base/current-head merge requirements remain those of [CONTRIBUTING](../CONTRIBUTING.md). Native acceptance evidence supplements that gate and must identify the exact candidate; it does not replace or manufacture the protected status.
 

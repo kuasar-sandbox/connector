@@ -82,7 +82,7 @@ for line in sys.stdin:
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument('--ctl',required=True)
-    ap.add_argument('--vpp-build',required=True)
+    ap.add_argument('--runtime',required=True,help='Connector bin directory containing connector-vpp and vpp-runtime.json')
     ap.add_argument('--output',required=True)
     ap.add_argument('--locator',choices=['port','vni','tlv'],default='port')
     ap.add_argument('--encap',choices=['ether','ip'],default='ether')
@@ -124,6 +124,22 @@ def main():
         if not condition:raise AssertionError((name,actual))
     def status():
         return json.loads((runtime_dir/'status.json').read_text())
+    def check_static_native(phase):
+        pid = status()['native_pid']
+        executable = Path('/proc', str(pid), 'exe').resolve()
+        check('selected static dataplane executable ('+phase+')',
+              executable == runtime/'connector-vpp', str(executable))
+        mappings = Path('/proc', str(pid), 'maps').read_text()
+        (output/('native-maps-'+phase+'.txt')).write_text(mappings)
+        foreign = []
+        for line in mappings.splitlines():
+            fields = line.split(None, 5)
+            if len(fields) != 6 or not fields[5].startswith('/'):
+                continue
+            path = fields[5].removesuffix(' (deleted)')
+            if path != str(executable) and ('x' in fields[1] or '.so' in Path(path).name):
+                foreign.append(line)
+        check('no shared libraries mapped ('+phase+')', not foreign, foreign)
     def wait_status(predicate, timeout=15):
         until=time.monotonic()+timeout; current={}
         while time.monotonic()<until:
@@ -162,6 +178,8 @@ def main():
         p=subprocess.Popen(['ip','netns','exec',names[who],'python3','-u','-c',CLIENT],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         children.append(p);clients[who]=p
     try:
+        run(sys.executable, Path(__file__).with_name('runtime.py'), 'validate',
+            '--arch', os.uname().machine, '--runtime', args.runtime)
         check('root executor',os.geteuid()==0)
         if not Path('/sys/fs/bpf').is_mount():run('mount','-t','bpf','bpf','/sys/fs/bpf')
         if args.remote:
@@ -195,7 +213,7 @@ def main():
         run('ip','-n',names['out'],'addr','add','203.0.113.11/32','dev','lo')
         run('ip','-n',names['out'],'addr','add','203.0.113.12/32','dev','lo')
         spawn(['ip','netns','exec',names['out'],'python3','-u','-c',SERVER],'backend.log')
-        build=Path(args.vpp_build);lib=next((build/'lib').glob('*-linux-gnu'))
+        runtime=Path(args.runtime).resolve()
         area={'vni':7,'pools':[{'name':'primary','interface':tag+'x0','next_hop':'192.0.2.2','addresses':['192.0.2.1'],'max_connections':2},
                                {'name':'secondary','interface':tag+'x1','next_hop':'198.19.0.2','addresses':['198.19.0.1'],'max_connections':1}],
               'acl':[{'destination':'203.0.113.0/24','protocol':'any','action':'allow'},
@@ -203,8 +221,7 @@ def main():
               'routes':[{'destination':'0.0.0.0/0','pool':'primary'},{'destination':'203.0.113.12/32','pool':'secondary'}],
               'dnat':[{'destination':'198.18.1.1/32','protocol':'udp','pool':'secondary','target':'203.0.113.11','target_port':18080}]}
         bits=4 if args.encap=='ether' and not args.legacy else 0
-        cfg={'name':tag,'runtime_dir':str(runtime_dir),'vpp':str(build/'bin/vpp'),
-             'plugin_path':str(lib/'vpp_plugins'),'library_path':str(lib),
+        cfg={'name':tag,'runtime_dir':str(runtime_dir),
              'interfaces':[{'name':gateway,'address':'198.18.0.1/24','mtu':9000},
                            {'name':tag+'x0','address':'192.0.2.1/24','mtu':1500},
                            {'name':tag+'x1','address':'198.19.0.1/24','mtu':1500}],
@@ -224,6 +241,7 @@ def main():
         service=spawn(['ip','netns','exec',names['eg'],args.ctl,'egress','serve','--config',str(cfgfile)],'gateway.log')
         ready=wait_status(lambda st: st['configuration_generation']==1)
         check('file-configured gateway started',ready['contexts']==0,ready)
+        check_static_native('startup')
         check('no management socket is created',not any(p.is_socket() for p in runtime_dir.iterdir()))
         listeners=run('ip','netns','exec',names['eg'],'ss','-H','-lntup').stdout+run('ip','netns','exec',names['eg'],'ss','-H','-lx').stdout
         check('no TCP UDP or Unix management listener',not listeners.strip(),listeners)
@@ -304,6 +322,7 @@ def main():
         check('stop returns original pair to stable owner',state['pair_valid'] and state['switch_endpoint']==names['ow'],state)
         start_switch();stop_switch()
         check('same attachment supports second Start Stop cycle',switch_state()['pair_valid'])
+        check_static_native('traffic')
         if args.remote:
             service.terminate();service.wait(timeout=5)
             check('remote shutdown preserves external transit and Pool interfaces',all(run('ip','-n',ns,'link','show',dev,check=False).returncode==0 for ns,dev in [(names['ow'],transit),(names['eg'],gateway),(names['eg'],tag+'x0'),(names['rt'],tag+'rg')]))
@@ -334,6 +353,7 @@ def main():
         clients['ga'].terminate();clients['ga'].wait(timeout=3)
         attach('ga',1,4 if bits else 0)
         check('reattachment after repair restores real return path',call('ga','repaired',31500,'203.0.113.12')['ok'])
+        check_static_native('repair')
         ctl('vswitch','detach',switch,'--port=1','--from-netns='+names['ga'])
         stop_switch()
         if args.locator=='port' and args.encap=='ether' and not args.legacy:

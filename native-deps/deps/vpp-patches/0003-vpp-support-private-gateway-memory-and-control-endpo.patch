@@ -1,0 +1,72 @@
+From 9ef26ebb9bedf4b198f218940937b4209705fa3a Mon Sep 17 00:00:00 2001
+From: Xiaohui Chen <9959614+fullof-work@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 17:48:54 +0800
+Subject: [PATCH 3/6] vpp: support private gateway memory and control endpoints
+
+---
+ src/svm/svm.c               | 8 +++++++-
+ src/vlib/stats/init.c       | 4 +++-
+ src/vlibmemory/socket_api.c | 2 ++
+ 3 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/src/svm/svm.c b/src/svm/svm.c
+index fb5ec5f..acfef52 100644
+--- a/src/svm/svm.c
++++ b/src/svm/svm.c
+@@ -7,6 +7,8 @@
+  * library
+  */
+ 
++#include <sys/syscall.h>
++#include <linux/memfd.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <sys/types.h>
+@@ -558,7 +560,11 @@ svm_map_region (svm_map_region_args_t * a)
+     clib_warning ("[%d] map region %s: shm_open (%s)",
+ 		  getpid (), a->name, shm_name);
+ 
+-  svm_fd = shm_open ((char *) shm_name, O_RDWR | O_CREAT | O_EXCL, 0777);
++  /* Keep native internal message queues, without publishing a shared-memory
++   * API name. Normal VPP deployments retain their existing transport. */
++  svm_fd = getenv ("CONNECTOR_EGRESS_PRIVATE_MEMORY")
++             ? syscall (SYS_memfd_create, "connector-egress-private", MFD_CLOEXEC)
++             : shm_open ((char *) shm_name, O_RDWR | O_CREAT | O_EXCL, 0777);
+ 
+   if (svm_fd >= 0)
+     {
+diff --git a/src/vlib/stats/init.c b/src/vlib/stats/init.c
+index 50f71b3..f6d0412 100644
+--- a/src/vlib/stats/init.c
++++ b/src/vlib/stats/init.c
+@@ -236,7 +236,7 @@ stats_segment_socket_exit (vlib_main_t *vm)
+    * cleanup the listener socket on exit.
+    */
+   vlib_stats_segment_t *sm = vlib_stats_get_segment ();
+-  unlink ((char *) sm->socket_name);
++  if (sm->socket) unlink ((char *) sm->socket_name);
+   return 0;
+ }
+ 
+@@ -247,6 +247,8 @@ statseg_init (vlib_main_t *vm)
+ {
+   vlib_stats_segment_t *sm = vlib_stats_get_segment ();
+ 
++  /* No external statistics endpoint in file-only gateway deployments. */
++  if (sm->socket_name && !strcmp ((char *) sm->socket_name, "none")) return 0;
+   /* set default socket file name when statseg config stanza is empty. */
+   if (!vec_len (sm->socket_name))
+     sm->socket_name = format (0, "%s/%s%c", vlib_unix_get_runtime_dir (),
+diff --git a/src/vlibmemory/socket_api.c b/src/vlibmemory/socket_api.c
+index 65cd137..5839f1d 100644
+--- a/src/vlibmemory/socket_api.c
++++ b/src/vlibmemory/socket_api.c
+@@ -786,6 +786,8 @@ vl_sock_api_init (vlib_main_t * vm)
+   clib_socket_t *sock = &sm->socksvr_listen_socket;
+   clib_error_t *error;
+ 
++  /* The gateway owns an unnamed child control stream, never an API listener. */
++  if (getenv ("CONNECTOR_EGRESS_PRIVATE_MEMORY")) return 0;
+   /* If not explicitly configured, do not bind/enable, etc. */
+   if (sm->socket_name == 0)
+     return 0;

@@ -1,2 +1,2 @@
 # Unified diffs retain upstream whitespace in their context lines.
-egress/vpp/patches/*.patch -whitespace
+native-deps/deps/vpp-patches/*.patch -whitespace

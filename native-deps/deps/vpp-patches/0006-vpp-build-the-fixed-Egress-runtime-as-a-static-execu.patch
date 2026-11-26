@@ -1,0 +1,562 @@
+From 55c62d601f4339204811a3ff24f5d6a2bab4d630 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Thu, 26 Nov 2026 07:08:04 -0500
+Subject: [PATCH 6/6] vpp: build the fixed Egress runtime as a static
+ executable
+
+---
+ src/CMakeLists.txt                         | 38 ++++++++++++++++------
+ src/cmake/library.cmake                    | 10 ++++--
+ src/cmake/plugin.cmake                     | 14 +++++---
+ src/plugins/CMakeLists.txt                 |  4 +++
+ src/plugins/nat/nat44-ed/nat44_ed_policy.h |  5 +++
+ src/vlib/CMakeLists.txt                    |  8 +++--
+ src/vlib/unix/plugin.c                     |  8 +++++
+ src/vlib/unix/plugin.h                     |  8 +++++
+ src/vlibapi/jsonformat.c                   | 12 +++++++
+ src/vnet/crypto/crypto.c                   |  4 +++
+ src/vnet/dev/dev.c                         |  4 +++
+ src/vnet/unix/gdb_funcs.c                  |  3 ++
+ src/vpp/CMakeLists.txt                     | 26 +++++++++++++--
+ src/vpp/api/api.c                          |  7 +++-
+ src/vpp/vnet/main.c                        |  2 ++
+ src/vppinfra/CMakeLists.txt                |  8 +++--
+ src/vppinfra/socket.c                      |  4 +++
+ src/vppinfra/unix-formats.c                | 12 +++++--
+ 18 files changed, 150 insertions(+), 27 deletions(-)
+
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 74521dd..af45b72 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -45,6 +45,20 @@ endif()
+ 
+ project(vpp C)
+ 
++option(VPP_STATIC_EGRESS "Build the fixed Connector Egress runtime as one static executable" OFF)
++if(VPP_STATIC_EGRESS)
++  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
++    message(FATAL_ERROR "Connector Egress requires Linux")
++  endif()
++  add_compile_definitions(VPP_STATIC_EGRESS=1)
++  set(VPP_API_TEST_BUILTIN OFF CACHE BOOL "Use builtin VPP API test." FORCE)
++  set(VPP_ALLOC_FREE_INTERCEPT OFF CACHE BOOL "intercept libc alloc/free calls" FORCE)
++  set(VPP_SET_RPATH OFF CACHE BOOL "Set rpath for resulting binaries and libraries." FORCE)
++  set(VPP_TOOLS none CACHE STRING "Tools included in build" FORCE)
++  set(VPP_PLUGINS "af_packet,nat,ping,egress_policy,egress_geneve,egress_packet"
++      CACHE STRING "Plugins included in the static Egress runtime" FORCE)
++endif()
++
+ if(NOT DEFINED CMAKE_PREFIX_PATH)
+   set(CMAKE_PREFIX_PATH
+     /opt/vpp/external/${CMAKE_SYSTEM_PROCESSOR}
+@@ -374,6 +388,8 @@ if(VPP_HOST_TOOLS_ONLY)
+     DESTINATION ${VPP_RUNTIME_DIR}
+     COMPONENT vpp-dev
+   )
++elseif(VPP_STATIC_EGRESS)
++  set(SUBDIRS vppinfra svm vlib vlibmemory vlibapi vnet vpp plugins tools/vppapigen cmake)
+ elseif(${CMAKE_SYSTEM_NAME} MATCHES "Linux|FreeBSD")
+   find_package(OpenSSL)
+   set(SUBDIRS
+@@ -424,17 +440,19 @@ endif()
+ # custom targets
+ ##############################################################################
+ 
+-add_custom_target(run
+-  COMMAND ./${VPP_RUNTIME_DIR}/vpp -c startup.conf
+-  COMMENT "Starting VPP..."
+-  USES_TERMINAL
+-)
++if(TARGET vpp)
++  add_custom_target(run
++    COMMAND $<TARGET_FILE:vpp> -c startup.conf
++    COMMENT "Starting VPP..."
++    USES_TERMINAL
++  )
+ 
+-add_custom_target(debug
+-  COMMAND gdb --args ./${VPP_RUNTIME_DIR}/vpp -c startup.conf
+-  COMMENT "Starting VPP in the debugger..."
+-  USES_TERMINAL
+-)
++  add_custom_target(debug
++    COMMAND gdb --args $<TARGET_FILE:vpp> -c startup.conf
++    COMMENT "Starting VPP in the debugger..."
++    USES_TERMINAL
++  )
++endif()
+ 
+ add_custom_target(config
+   COMMAND ccmake ${CMAKE_BINARY_DIR}
+diff --git a/src/cmake/library.cmake b/src/cmake/library.cmake
+index 4ab9234..c877f82 100644
+--- a/src/cmake/library.cmake
++++ b/src/cmake/library.cmake
+@@ -30,7 +30,11 @@ macro(add_vpp_library lib)
+     target_compile_definitions(${lo} PRIVATE ${ARG_COMPILE_DEFINITIONS})
+   endif()
+ 
+-  add_library(${lib} SHARED)
++  if(VPP_STATIC_EGRESS)
++    add_library(${lib} STATIC)
++  else()
++    add_library(${lib} SHARED)
++  endif()
+   target_sources(${lib} PRIVATE $<TARGET_OBJECTS:${lo}>)
+ 
+   if(VPP_LIB_VERSION)
+@@ -58,7 +62,9 @@ macro(add_vpp_library lib)
+      set_property(TARGET ${lib} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+      target_compile_options (${lib} PRIVATE "-ffunction-sections")
+      target_compile_options (${lib} PRIVATE "-fdata-sections")
+-     target_link_libraries (${lib} "-Wl,--gc-sections")
++     if(NOT VPP_STATIC_EGRESS)
++       target_link_libraries (${lib} "-Wl,--gc-sections")
++     endif()
+      if(compiler_flag_no_stringop_overflow)
+        target_link_libraries (${lib} "-Wno-stringop-overflow")
+      endif()
+diff --git a/src/cmake/plugin.cmake b/src/cmake/plugin.cmake
+index beec94f..012f217 100644
+--- a/src/cmake/plugin.cmake
++++ b/src/cmake/plugin.cmake
+@@ -75,13 +75,19 @@ macro(add_vpp_plugin name)
+       COMPONENT ${PLUGIN_DEV_COMPONENT}
+     )
+   endforeach()
+-  add_library(${plugin_name} SHARED ${api_includes} ${PLUGIN_SOURCES})
++  if(VPP_STATIC_EGRESS)
++    add_library(${plugin_name} STATIC ${api_includes} ${PLUGIN_SOURCES})
++  else()
++    add_library(${plugin_name} SHARED ${api_includes} ${PLUGIN_SOURCES})
++  endif()
+   target_compile_options(${plugin_name} PUBLIC ${VPP_DEFAULT_MARCH_FLAGS})
+   set_target_properties(${plugin_name} PROPERTIES NO_SONAME 1)
+   target_compile_options(${plugin_name} PRIVATE "-fvisibility=hidden")
+   target_compile_options (${plugin_name} PRIVATE "-ffunction-sections")
+   target_compile_options (${plugin_name} PRIVATE "-fdata-sections")
+-  target_link_libraries (${plugin_name} "-Wl,--gc-sections")
++  if(NOT VPP_STATIC_EGRESS)
++    target_link_libraries (${plugin_name} "-Wl,--gc-sections")
++  endif()
+   set(deps "")
+   if(NOT VPP_EXTERNAL_PROJECT)
+     list(APPEND deps vpp_version_h api_headers)
+@@ -118,7 +124,7 @@ macro(add_vpp_plugin name)
+       )
+     endforeach()
+   endif()
+-  if(PLUGIN_API_TEST_SOURCES)
++  if(PLUGIN_API_TEST_SOURCES AND NOT VPP_STATIC_EGRESS)
+     set(test_plugin_name ${name}_test_plugin)
+     add_library(${test_plugin_name} SHARED ${PLUGIN_API_TEST_SOURCES}
+ 		${api_includes})
+@@ -139,7 +145,7 @@ macro(add_vpp_plugin name)
+       COMPONENT ${PLUGIN_COMPONENT}
+     )
+   endif()
+-  if (PLUGIN_API_FILES AND NOT PLUGIN_VAT_AUTO_TEST STREQUAL OFF)
++  if (PLUGIN_API_FILES AND NOT PLUGIN_VAT_AUTO_TEST STREQUAL OFF AND NOT VPP_STATIC_EGRESS)
+     add_vpp_test_library(${name}_test_plugin ${PLUGIN_API_FILES})
+   endif()
+ 
+diff --git a/src/plugins/CMakeLists.txt b/src/plugins/CMakeLists.txt
+index 1f3fd5a..f4bf28a 100644
+--- a/src/plugins/CMakeLists.txt
++++ b/src/plugins/CMakeLists.txt
+@@ -61,6 +61,10 @@ FILE(GLOB files RELATIVE
+   ${CMAKE_CURRENT_SOURCE_DIR}
+   ${CMAKE_CURRENT_SOURCE_DIR}/*/CMakeLists.txt
+ )
++if(VPP_STATIC_EGRESS)
++  set(files af_packet/CMakeLists.txt nat/CMakeLists.txt ping/CMakeLists.txt
++      egress_policy/CMakeLists.txt egress_geneve/CMakeLists.txt egress_packet/CMakeLists.txt)
++endif()
+ 
+ foreach (f ${files})
+   get_filename_component(dir ${f} DIRECTORY)
+diff --git a/src/plugins/nat/nat44-ed/nat44_ed_policy.h b/src/plugins/nat/nat44-ed/nat44_ed_policy.h
+index 62c0a22..c073903 100644
+--- a/src/plugins/nat/nat44-ed/nat44_ed_policy.h
++++ b/src/plugins/nat/nat44-ed/nat44_ed_policy.h
+@@ -40,4 +40,9 @@ extern nat44_ed_policy_hooks_t nat44_ed_policy_hooks;
+ int nat44_ed_policy_register (const nat44_ed_policy_hooks_t *);
+ /* Caller holds the VPP worker barrier. Return nonzero from visit to delete. */
+ u32 nat44_ed_policy_walk (nat44_ed_policy_visit_t visit, void *opaque);
++u32 nat44_ed_policy_expire (u32 per_worker_budget);
++void nat44_ed_policy_timeouts (u32 udp, u32 established, u32 transitory, u32 icmp);
++int nat44_ed_interface_bind (u32 sw_if_index, u8 enable);
++int nat44_ed_policy_outside (u32 sw_if_index, u8 enable);
++int nat44_ed_policy_address (ip4_address_t address, u8 enable);
+ #endif
+diff --git a/src/vlib/CMakeLists.txt b/src/vlib/CMakeLists.txt
+index bb30ab6..645baf5 100644
+--- a/src/vlib/CMakeLists.txt
++++ b/src/vlib/CMakeLists.txt
+@@ -75,10 +75,12 @@ endif()
+ 
+ set(VLIB_LIBS vppinfra ${CMAKE_DL_LIBS} ${EPOLL_LIB})
+ 
+-vpp_find_path(LIBIBERTY_INCLUDE_DIR libiberty/demangle.h)
+-vpp_find_library(LIBIBERTY_LIB NAMES iberty libiberty)
++if(NOT VPP_STATIC_EGRESS)
++  vpp_find_path(LIBIBERTY_INCLUDE_DIR libiberty/demangle.h)
++  vpp_find_library(LIBIBERTY_LIB NAMES iberty libiberty)
++endif()
+ 
+-if (LIBIBERTY_INCLUDE_DIR AND LIBUNWIND_LIB)
++if (LIBIBERTY_INCLUDE_DIR AND LIBUNWIND_LIB AND NOT VPP_STATIC_EGRESS)
+   message(STATUS "libiberty found at ${LIBIBERTY_LIB}")
+   list(APPEND VLIB_LIBS ${LIBIBERTY_LIB})
+   add_definitions(-DHAVE_LIBIBERTY)
+diff --git a/src/vlib/unix/plugin.c b/src/vlib/unix/plugin.c
+index a4b891c..2a6427e 100644
+--- a/src/vlib/unix/plugin.c
++++ b/src/vlib/unix/plugin.c
+@@ -29,6 +29,10 @@ char *vlib_plugin_app_version = "";
+ void *
+ vlib_get_plugin_symbol (const char *plugin_name, const char *symbol_name)
+ {
++#ifdef VPP_STATIC_EGRESS
++  /* Fixed modules have typed direct references, never a runtime loader. */
++  return 0;
++#endif
+   plugin_main_t *pm = &vlib_plugin_main;
+   uword *p;
+   plugin_info_t *pi;
+@@ -728,6 +732,10 @@ index_cmp (void *a1, void *a2)
+ int
+ vlib_load_new_plugins (plugin_main_t * pm, int from_early_init)
+ {
++#ifdef VPP_STATIC_EGRESS
++  /* Ignore filesystem plugin paths in the fixed, fully static runtime. */
++  return 0;
++#endif
+   DIR *dp;
+   struct dirent *entry;
+   struct stat statb;
+diff --git a/src/vlib/unix/plugin.h b/src/vlib/unix/plugin.h
+index fd87105..6bff2be 100644
+--- a/src/vlib/unix/plugin.h
++++ b/src/vlib/unix/plugin.h
+@@ -142,9 +142,17 @@ void *vlib_get_plugin_symbol (const char *plugin_name,
+ 			      const char *symbol_name);
+ u8 *vlib_get_vat_plugin_path (void);
+ 
++#ifdef VPP_STATIC_EGRESS
++/* Built-in modules use normal VLIB constructors; their descriptive metadata
++ * has translation-unit scope instead of the dynamic loader's shared symbol. */
++#define VLIB_PLUGIN_REGISTER()                                                \
++  static const vlib_plugin_registration_t vlib_plugin_registration           \
++    __attribute__ ((used)) __clib_section (".vlib_plugin_registration")
++#else
+ #define VLIB_PLUGIN_REGISTER() \
+   vlib_plugin_registration_t vlib_plugin_registration \
+   __clib_export __clib_section(".vlib_plugin_registration")
++#endif
+ 
+ /* Call a plugin init function: used for init function dependencies. */
+ #define vlib_call_plugin_init_function(vm,p,x)                  \
+diff --git a/src/vlibapi/jsonformat.c b/src/vlibapi/jsonformat.c
+index 29298a8..d88a80d 100644
+--- a/src/vlibapi/jsonformat.c
++++ b/src/vlibapi/jsonformat.c
+@@ -68,7 +68,10 @@ u8string_fromjson2(cJSON *o, char *fieldname, u8 *data)
+     return 0;
+ }
+ 
++/* Standalone vlibapi supplies its own address helpers. The static Egress
++ * executable uses the matching vnet helpers instead of duplicate globals. */
+ /* Parse an IP4 address %d.%d.%d.%d. */
++#ifndef VPP_STATIC_EGRESS
+ uword
+ unformat_ip4_address (unformat_input_t * input, va_list * args)
+ {
+@@ -88,8 +91,10 @@ unformat_ip4_address (unformat_input_t * input, va_list * args)
+ 
+   return 1;
+ }
++#endif
+ 
+ /* Parse an IP6 address. */
++#ifndef VPP_STATIC_EGRESS
+ uword
+ unformat_ip6_address (unformat_input_t * input, va_list * args)
+ {
+@@ -184,7 +189,9 @@ unformat_ip6_address (unformat_input_t * input, va_list * args)
+     return 1;
+   }
+ }
++#endif
+ 
++#ifndef VPP_STATIC_EGRESS
+ u8 *
+ format_ip6_address (u8 * s, va_list * args)
+ {
+@@ -252,6 +259,7 @@ format_ip6_address (u8 * s, va_list * args)
+ 
+   return s;
+ }
++#endif
+ 
+ int
+ vl_api_ip4_address_t_fromjson (void **mp, int *len, cJSON *o,
+@@ -369,6 +377,7 @@ vl_api_address_with_prefix_t_fromjson (void **mp, int *len, cJSON *o,
+   return vl_api_prefix_t_fromjson(mp, len, o, a);
+ }
+ 
++#ifndef VPP_STATIC_EGRESS
+ uword
+ unformat_mac_address (unformat_input_t * input, va_list * args)
+ {
+@@ -396,6 +405,7 @@ unformat_mac_address (unformat_input_t * input, va_list * args)
+     }
+   return (0);
+ }
++#endif
+ 
+ int
+ vl_api_mac_address_t_fromjson (void **mp, int *len, cJSON *o,
+@@ -411,12 +421,14 @@ vl_api_mac_address_t_fromjson (void **mp, int *len, cJSON *o,
+ }
+ 
+ /* Format an IP4 address. */
++#ifndef VPP_STATIC_EGRESS
+ u8 *
+ format_ip4_address (u8 * s, va_list * args)
+ {
+   u8 *a = va_arg (*args, u8 *);
+   return format (s, "%d.%d.%d.%d", a[0], a[1], a[2], a[3]);
+ }
++#endif
+ 
+ void
+ vl_api_string_cJSON_AddToObject(cJSON * const object, const char * const name, vl_api_string_t *astr)
+diff --git a/src/vnet/crypto/crypto.c b/src/vnet/crypto/crypto.c
+index 408a420..a765cc1 100644
+--- a/src/vnet/crypto/crypto.c
++++ b/src/vnet/crypto/crypto.c
+@@ -502,6 +502,10 @@ vnet_crypto_register_post_node (vlib_main_t * vm, char *post_node_name)
+ static void
+ vnet_crypto_load_engines (vlib_main_t *vm)
+ {
++#ifdef VPP_STATIC_EGRESS
++  /* The fixed Egress runtime does not load external crypto engines. */
++  return;
++#endif
+   vlib_thread_main_t *tm = vlib_get_thread_main ();
+   vnet_crypto_main_t *cm = &crypto_main;
+   vnet_crypto_engine_registration_t *r;
+diff --git a/src/vnet/dev/dev.c b/src/vnet/dev/dev.c
+index d7044c7..7cc2e72 100644
+--- a/src/vnet/dev/dev.c
++++ b/src/vnet/dev/dev.c
+@@ -21,6 +21,10 @@ vnet_dev_main_t vnet_dev_main = { .next_rx_queue_thread = 1 };
+ static void
+ vnet_dev_load_drivers (vlib_main_t *vm __clib_unused)
+ {
++#ifdef VPP_STATIC_EGRESS
++  /* Egress uses the built-in AF_PACKET module, not external device drivers. */
++  return;
++#endif
+   u8 *path = 0;
+   char *p = 0;
+   u32 path_len = 0;
+diff --git a/src/vnet/unix/gdb_funcs.c b/src/vnet/unix/gdb_funcs.c
+index 5835614..c0928c8 100644
+--- a/src/vnet/unix/gdb_funcs.c
++++ b/src/vnet/unix/gdb_funcs.c
+@@ -22,11 +22,14 @@
+  * @return length - u32
+  *
+  */
++#ifndef VPP_STATIC_EGRESS
++/* The static executable already includes the identical helper from vlib. */
+ u32
+ vl (void *p)
+ {
+   return vec_len (p);
+ }
++#endif
+ 
+ /**
+  * @brief GDB callable function: pvh - Return vector header of vector
+diff --git a/src/vpp/CMakeLists.txt b/src/vpp/CMakeLists.txt
+index 5a08056..9fa9c94 100644
+--- a/src/vpp/CMakeLists.txt
++++ b/src/vpp/CMakeLists.txt
+@@ -87,12 +87,34 @@ if(VPP_API_TEST_BUILTIN)
+   add_definitions(-DVPP_API_TEST_BUILTIN=1)
+ endif()
+ 
++set(VPP_LINK_LIBRARIES svm vlibapi vlib vppinfra vlibmemory vnet)
++set(VPP_EXECUTABLE_OPTIONS ENABLE_EXPORTS)
++if(VPP_STATIC_EGRESS)
++  # Node, CLI, init and CPU dispatch registrations may have no ordinary symbol
++  # reference. Keep every selected object's registrations in the executable.
++  set(VPP_LINK_LIBRARIES
++      -Wl,--whole-archive
++      af_packet_plugin nat_plugin ping_plugin
++      egress_policy_plugin egress_geneve_plugin egress_packet_plugin
++      nat vnet vlibmemory vlibapi vlib svm vppinfra
++      -Wl,--no-whole-archive)
++  set(VPP_EXECUTABLE_OPTIONS "")
++endif()
++
+ add_vpp_executable(vpp
+-  ENABLE_EXPORTS
++  ${VPP_EXECUTABLE_OPTIONS}
+   SOURCES ${VPP_SOURCES}
+-  LINK_LIBRARIES svm vlibapi vlib vppinfra vlibmemory vnet Threads::Threads ${CMAKE_DL_LIBS} ${EPOLL_LIB}
++  LINK_LIBRARIES ${VPP_LINK_LIBRARIES} Threads::Threads ${CMAKE_DL_LIBS} ${EPOLL_LIB}
+   DEPENDS vpp_version_h api_headers
+ )
++if(VPP_STATIC_EGRESS)
++  set_target_properties(vpp PROPERTIES OUTPUT_NAME connector-vpp)
++  target_link_options(vpp PRIVATE -static
++      "-Wl,-Map,${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/connector-vpp.map")
++  if(VPP_USE_LTO)
++    set_property(TARGET vpp PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
++  endif()
++endif()
+ 
+ ##############################################################################
+ # vppctl binary
+diff --git a/src/vpp/api/api.c b/src/vpp/api/api.c
+index fc84b56..c3ed377 100644
+--- a/src/vpp/api/api.c
++++ b/src/vpp/api/api.c
+@@ -266,13 +266,16 @@ api_segment_config (vlib_main_t * vm, unformat_input_t * input)
+ {
+   u8 *chroot_path;
+   u64 baseva, size, pvt_heap_size;
+-  int uid, gid, rv;
++  int uid, gid;
++#ifndef VPP_STATIC_EGRESS
++  int rv;
+   const int max_buf_size = 4096;
+   char *s, *buf;
+   struct passwd _pw, *pw;
+   struct group _grp, *grp;
+   clib_error_t *e;
+   buf = vec_new (char, 128);
++#endif
+   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+     {
+       if (unformat (input, "prefix %s", &chroot_path))
+@@ -308,6 +311,7 @@ api_segment_config (vlib_main_t * vm, unformat_input_t * input)
+ 	vl_set_api_memory_size (size * (1ULL << 30));
+       else if (unformat (input, "api-size %lld", &size))
+ 	vl_set_api_memory_size (size);
++#ifndef VPP_STATIC_EGRESS
+       else if (unformat (input, "uid %s", &s))
+ 	{
+ 	  /* lookup the username */
+@@ -371,6 +375,7 @@ api_segment_config (vlib_main_t * vm, unformat_input_t * input)
+ 	  vec_free (buf);
+ 	  vl_set_memory_gid (grp->gr_gid);
+ 	}
++#endif
+       else
+ 	return clib_error_return (0, "unknown input `%U'",
+ 				  format_unformat_error, input);
+diff --git a/src/vpp/vnet/main.c b/src/vpp/vnet/main.c
+index d69d1f7..a4501fe 100644
+--- a/src/vpp/vnet/main.c
++++ b/src/vpp/vnet/main.c
+@@ -101,7 +101,9 @@ main (int argc, char *argv[])
+   clib_mem_init_ex_args_t mem_init_args = {
+     .log2_page_sz = CLIB_MEM_PAGE_SZ_DEFAULT,
+     .memory_size = (1ULL << 30),
++#ifndef VPP_STATIC_EGRESS
+     .alloc_free_intercept = 1,
++#endif
+   };
+   clib_mem_page_sz_t default_log2_hugepage_sz = CLIB_MEM_PAGE_SZ_UNKNOWN;
+   const size_t config_max_size = 1ULL << 18;
+diff --git a/src/vppinfra/CMakeLists.txt b/src/vppinfra/CMakeLists.txt
+index 33d00bb..a247d71 100644
+--- a/src/vppinfra/CMakeLists.txt
++++ b/src/vppinfra/CMakeLists.txt
+@@ -21,10 +21,12 @@ list(APPEND VPPINFRA_LIBS ${CMAKE_DL_LIBS})
+ ##############################################################################
+ # find libunwind
+ ##############################################################################
+-vpp_find_path(LIBUNWIND_INCLUDE_DIR unwind.h)
+-vpp_find_library(LIBUNWIND_LIB NAMES unwind libunwind)
++if(NOT VPP_STATIC_EGRESS)
++  vpp_find_path(LIBUNWIND_INCLUDE_DIR unwind.h)
++  vpp_find_library(LIBUNWIND_LIB NAMES unwind libunwind)
++endif()
+ 
+-if (LIBUNWIND_INCLUDE_DIR AND LIBUNWIND_LIB)
++if (LIBUNWIND_INCLUDE_DIR AND LIBUNWIND_LIB AND NOT VPP_STATIC_EGRESS)
+   message(STATUS "libunwind found at ${LIBUNWIND_LIB}")
+   list(APPEND VPPINFRA_LIBS ${LIBUNWIND_LIB})
+   add_definitions(-DHAVE_LIBUNWIND=1)
+diff --git a/src/vppinfra/socket.c b/src/vppinfra/socket.c
+index 18646f1..ebc7b33 100644
+--- a/src/vppinfra/socket.c
++++ b/src/vppinfra/socket.c
+@@ -507,12 +507,16 @@ clib_socket_init (clib_socket_t *s)
+ 
+ 	  else if (strlen ((char *) name) > 0)
+ 	    {
++#ifdef VPP_STATIC_EGRESS
++	      err = clib_error_return (0, "connector-vpp requires a numeric host or localhost");
++#else
+ 	      struct hostent *host = gethostbyname ((char *) name);
+ 	      if (!host)
+ 		err = clib_error_return (0, "unknown host `%s'", name);
+ 	      else
+ 		clib_memcpy (&si.sin_addr.s_addr, host->h_addr_list[0],
+ 			     host->h_length);
++#endif
+ 	    }
+ 
+ 	  else
+diff --git a/src/vppinfra/unix-formats.c b/src/vppinfra/unix-formats.c
+index bfd727f..66cd452 100644
+--- a/src/vppinfra/unix-formats.c
++++ b/src/vppinfra/unix-formats.c
+@@ -148,7 +148,7 @@ u8 * format_network_protocol (u8 * s, va_list * args)
+   uword family = va_arg (*args, uword);
+   uword protocol = va_arg (*args, uword);
+ 
+-#ifndef __KERNEL__
++#if !defined(__KERNEL__) && !defined(VPP_STATIC_EGRESS)
+   struct protoent * p = getprotobynumber (protocol);
+ 
+   ASSERT (family == AF_INET);
+@@ -166,7 +166,7 @@ u8 * format_network_port (u8 * s, va_list * args)
+   uword proto = va_arg (*args, uword);
+   uword port = va_arg (*args, uword);
+ 
+-#ifndef __KERNEL__
++#if !defined(__KERNEL__) && !defined(VPP_STATIC_EGRESS)
+   struct servent * p = getservbyport (port, proto == IPPROTO_UDP ? "udp" : "tcp");
+ 
+   if (p)
+@@ -445,6 +445,13 @@ __clib_export uword
+ unformat_unix_gid (unformat_input_t * input, va_list * args)
+ {
+   gid_t *gid = va_arg (*args, gid_t *);
++#ifdef VPP_STATIC_EGRESS
++  u32 value;
++  if (!unformat (input, "%u", &value))
++    return 0;
++  *gid = value;
++  return 1;
++#else
+   struct group *grp = 0;
+   int r;
+   u8 *s;
+@@ -464,6 +471,7 @@ unformat_unix_gid (unformat_input_t * input, va_list * args)
+       return 1;
+     }
+   return 0;
++#endif
+ }
+ 
+ /*

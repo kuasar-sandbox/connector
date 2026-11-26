@@ -12,7 +12,7 @@ import (
 )
 
 func validConfig() Config {
-	return Config{Name: "test", RuntimeDir: "/run/connector-egress/test", VPP: "/opt/egress/bin/vpp", PluginPath: "/opt/egress/plugins",
+	return Config{Name: "test", RuntimeDir: "/run/connector-egress/test", VPP: "/opt/egress/bin/connector-vpp",
 		Interfaces:  []Interface{{Name: "transit", Address: "198.18.0.1/24", MTU: 1500}, {Name: "outside", Address: "192.0.2.1/24", MTU: 1500}},
 		Attachments: []Attachment{{Name: "local", Interface: "transit", Peer: []string{"198.18.0.2"}, Locator: "port"}},
 		Areas:       []Area{{VNI: 7, Pools: []Pool{{Name: "public", Interface: "outside", NextHop: "192.0.2.2", Addresses: []string{"192.0.2.1"}, MaxConnections: 2}}, ACL: []ACL{{Match: Match{Destination: "203.0.113.0/24", Protocol: "any"}, Action: "allow"}}, Routes: []Route{{Destination: "0.0.0.0/0", Pool: "public"}}}},
@@ -340,6 +340,9 @@ func TestNoGatewayListenerConfiguration(t *testing.T) {
 	}
 	if !strings.Contains(s, "socket-name none") {
 		t.Fatal("native statistics endpoint not disabled")
+	}
+	if strings.Contains(s, "plugins {") || strings.Contains(s, ".so") {
+		t.Fatal("static dataplane configured with external plugins")
 	}
 }
 

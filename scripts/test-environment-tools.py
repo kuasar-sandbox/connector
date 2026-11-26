@@ -68,9 +68,9 @@ class EnvironmentTools(unittest.TestCase):
             recipe = original.split('\nrelease:\n', 1)[1].split('\ntest-release:', 1)[0]
             (root/'Makefile').write_text(
                 "SHELL := /bin/bash\nGO := go\nBUILD_DIR := build\nTARGET_ARCH := x86_64\n"
-                + recursive + "\nrelease:\n" + recipe + "\n.PHONY: build\nbuild:\n"
+                + recursive + "\nrelease:\n" + recipe + "\n.PHONY: build\nbuild: connector-vpp\n"
                 "\t@go env GOWORK > build-env\n\t@go build -o checked .\n"
-                ".PHONY: connector-egress.bundle\nconnector-egress.bundle:\n"
+                ".PHONY: connector-vpp\nconnector-vpp:\n"
                 "\t@go env GOWORK > native-build-env\n")
             (root/'go.mod').write_text('module example.com/release-fixture\n\ngo 1.20\n')
             (root/'main.go').write_text('package main\nfunc main() {}\n')
@@ -202,7 +202,15 @@ class ReleaseGoHandoff(unittest.TestCase):
                               "print('off')\n")
             command = "\n".join(command).replace("/inputs/release/ci/integration/go_workspace.py", str(helper))
             command = command.replace("${{ needs.preflight.outputs.version }}", "v0.1.1")
+            cache = root / "native-cache.sh"
+            command = command.replace("/inputs/release/ci/native-cache/native-cache.sh", str(cache))
             scripts = {
+                cache: '''#!/bin/sh
+set -eu
+[ "$KUASAR_WORKSPACE_ROOT" = /src ]
+[ "$*" = "restore-or-build vpp" ]
+make native-cache-vpp
+''',
                 tools / "make": '''#!/bin/sh
 set -e
 [ "$GOWORK" = off ] || exit 63
@@ -250,7 +258,7 @@ printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >>
                     for versioned in (False, True):
                         observed.unlink(missing_ok=True)
                         version_marker.unlink(missing_ok=True)
-                        targets = ["test", "vet", "build connector-egress.bundle BUILD_VERSION=v0.1.1"]
+                        targets = ["test", "vet", "connector-ctl test-native-deps BUILD_VERSION=v0.1.1", "native-cache-vpp"]
                         if versioned:
                             version_marker.touch()
                             targets.append("check-version BUILD_VERSION=v0.1.1")

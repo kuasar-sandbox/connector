@@ -1,0 +1,247 @@
+From d6750c257346dd5b88a7e4cacbbec369675a0c39 Mon Sep 17 00:00:00 2001
+From: Xiaohui Chen <9959614+fullof-work@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 17:48:54 +0800
+Subject: [PATCH 5/6] ip4: retire FIB reassembly state after queued traffic
+ drains
+
+---
+ src/vnet/ip/reass/ip4_full_reass.c | 145 +++++++++++++++++++++++++++++
+ src/vnet/ip/reass/ip4_full_reass.h |   5 +
+ src/vnet/ip/reass/ip4_sv_reass.c   |  34 +++++++
+ src/vnet/ip/reass/ip4_sv_reass.h   |   2 +
+ 4 files changed, 186 insertions(+)
+
+diff --git a/src/vnet/ip/reass/ip4_full_reass.c b/src/vnet/ip/reass/ip4_full_reass.c
+index ed04022..3b9f1b8 100644
+--- a/src/vnet/ip/reass/ip4_full_reass.c
++++ b/src/vnet/ip/reass/ip4_full_reass.c
+@@ -18,6 +18,9 @@
+ #include <vppinfra/bihash_16_8.h>
+ #include <vnet/ip/reass/ip4_full_reass.h>
+ #include <stddef.h>
++#include <vlib/threads.h>
++#include <vlib/handoff.h>
++#include <vnet/ip/reass/ip4_sv_reass.h>
+ 
+ #define MSEC_PER_SEC 1000
+ #define IP4_REASS_TIMEOUT_DEFAULT_MS 200
+@@ -2089,3 +2092,145 @@ ip4_local_full_reass_enabled ()
+ }
+ 
+ #endif
++
++
++#ifndef CLIB_MARCH_VARIANT
++/* Connector retirement experiment: the caller owns the worker barrier.
++ * A barrier alone does not empty inter-worker handoff queues. Do not recycle
++ * an RX interface/FIB while any pending graph or handoff buffer can refer to it.
++ * This deliberately conservative guard may delay retirement under other load.
++ */
++int
++ip4_reass_fib_retire_ready (void)
++{
++  vlib_main_t *vm = vlib_get_main ();
++  vlib_handoff_queue_main_t *hqm;
++  vlib_handoff_queue_t **hq;
++  if (vlib_get_thread_index () != 0 ||
++      (vlib_get_n_threads () > 1 && !vlib_worker_thread_barrier_held ()))
++    return 0;
++  for (u32 ti = 0; ti < vlib_get_n_threads (); ti++)
++    if (vec_len (vlib_get_main_by_index (ti)->node_main.pending_frames))
++      return 0;
++  vec_foreach (hqm, vm->handoff_queue_mains)
++    vec_foreach (hq, hqm->vlib_handoff_queues)
++      if (hq[0] && (__atomic_load_n (&hq[0]->head, __ATOMIC_RELAXED) !=
++                    __atomic_load_n (&hq[0]->tail, __ATOMIC_RELAXED)))
++        return 0;
++  return 1;
++}
++
++u32
++ip4_full_reass_purge_fib (u32 fib_index)
++{
++  vlib_main_t *vm = vlib_get_main ();
++  ip4_full_reass_main_t *rm = &ip4_full_reass_main;
++  vlib_node_runtime_t *node =
++    vlib_node_get_runtime (vm, rm->ip4_full_reass_expire_node_idx);
++  u32 *indices = 0, *index, removed = 0;
++  ASSERT (ip4_reass_fib_retire_ready ());
++  for (u32 ti = 0; ti < vec_len (rm->per_thread_data); ti++)
++    {
++      ip4_full_reass_per_thread_t *rt = &rm->per_thread_data[ti];
++      u32 pi;
++      clib_spinlock_lock (&rt->lock);
++      vec_reset_length (indices);
++      pool_foreach_index (pi, rt->pool)
++        if (pool_elt_at_index (rt->pool, pi)->key.fib_index == fib_index)
++          vec_add1 (indices, pi);
++      vec_foreach (index, indices)
++        {
++          ip4_full_reass_t *r = pool_elt_at_index (rt->pool, index[0]);
++          /* Retiring state is freed, never re-enqueued to a custom error app. */
++          r->error_next_index = ~0;
++          ip4_full_reass_drop_all (vm, node, r);
++          ip4_full_reass_free (rm, rt, r);
++          removed++;
++        }
++      clib_spinlock_unlock (&rt->lock);
++    }
++  vec_free (indices);
++  return removed;
++}
++
++static clib_error_t *
++ip4_reass_retire_probe (vlib_main_t *vm, unformat_input_t *input,
++                       CLIB_UNUSED (vlib_cli_command_t *cmd))
++{
++  u32 fib_index = ~0, full, shallow;
++  if (!unformat (input, "fib-index %u", &fib_index) ||
++      unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
++    return clib_error_return (0, "expected fib-index <native-index>");
++  vlib_worker_thread_barrier_sync (vm);
++  if (!ip4_reass_fib_retire_ready ())
++    {
++      vlib_worker_thread_barrier_release (vm);
++      return clib_error_return (0, "busy: pending graph/handoff buffers; FIB must remain allocated");
++    }
++  full = ip4_full_reass_purge_fib (fib_index);
++  shallow = ip4_sv_reass_purge_fib (fib_index);
++  vlib_worker_thread_barrier_release (vm);
++  vlib_cli_output (vm, "fib_index %u full_purged %u shallow_purged %u", fib_index,
++                   full, shallow);
++  return 0;
++}
++
++VLIB_CLI_COMMAND (ip4_reass_retire_probe_cmd, static) = {
++  .path = "test ip4-reassembly purge-fib",
++  .short_help = "test ip4-reassembly purge-fib fib-index <native-index>",
++  .function = ip4_reass_retire_probe,
++};
++
++/* Queue a real incomplete fragment while workers are stopped. The ready guard
++ * must reject retirement, then the ordinary worker graph consumes the buffer
++ * after the barrier opens. This is a queue probe, not a wire traffic test. */
++static clib_error_t *
++ip4_reass_handoff_guard_probe (vlib_main_t *vm, unformat_input_t *input,
++                             CLIB_UNUSED (vlib_cli_command_t *cmd))
++{
++  u32 fib_index = ~0, rx = ~0, bi, sent;
++  u16 ti = 1;
++  int ready;
++  if (!unformat (input, "fib-index %u rx %u", &fib_index, &rx) ||
++      unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
++    return clib_error_return (0, "expected fib-index <native-index> rx <sw-if-index>");
++  if (vlib_get_n_threads () < 2)
++    return clib_error_return (0, "queue probe requires a worker thread");
++  vlib_worker_thread_barrier_sync (vm);
++  if (!vlib_buffer_alloc (vm, &bi, 1))
++    {
++      vlib_worker_thread_barrier_release (vm);
++      return clib_error_return (0, "buffer allocation failed");
++    }
++  vlib_buffer_t *b = vlib_get_buffer (vm, bi);
++  ip4_header_t *ip = vlib_buffer_get_current (b);
++  clib_memset (ip, 0, 28);
++  b->current_length = 28;
++  vnet_buffer (b)->sw_if_index[VLIB_RX] = rx;
++  vnet_buffer (b)->sw_if_index[VLIB_TX] = fib_index;
++  ip->ip_version_and_header_length = 0x45;
++  ip->length = clib_host_to_net_u16 (28);
++  ip->fragment_id = clib_host_to_net_u16 (0x7171);
++  ip->flags_and_fragment_offset = clib_host_to_net_u16 (0x2000);
++  ip->ttl = 64;
++  ip->protocol = IP_PROTOCOL_UDP;
++  ip->src_address.as_u32 = clib_host_to_net_u32 (0x0a070002);
++  ip->dst_address.as_u32 = clib_host_to_net_u32 (0xc6336402);
++  ip->checksum = ip4_header_checksum (ip);
++  sent = vlib_buffer_enqueue_to_thread (
++    vm, vlib_node_get_runtime (vm, ip4_full_reass_main.ip4_full_reass_expire_node_idx),
++    ip4_full_reass_main.fq_index, &bi, &ti, 1);
++  ready = ip4_reass_fib_retire_ready ();
++  vlib_worker_thread_barrier_release (vm);
++  if (sent != 1 || ready)
++    return clib_error_return (0, "queue guard failed: enqueued %u ready %u", sent, ready);
++  vlib_cli_output (vm, "enqueued %u retire_ready %u worker %u", sent, ready, ti);
++  return 0;
++}
++
++VLIB_CLI_COMMAND (ip4_reass_handoff_guard_probe_cmd, static) = {
++  .path = "test ip4-reassembly handoff-guard",
++  .short_help = "test ip4-reassembly handoff-guard fib-index <native-index> rx <sw-if-index>",
++  .function = ip4_reass_handoff_guard_probe,
++};
++#endif /* CLIB_MARCH_VARIANT */
+diff --git a/src/vnet/ip/reass/ip4_full_reass.h b/src/vnet/ip/reass/ip4_full_reass.h
+index b1ed2dc..eea099a 100644
+--- a/src/vnet/ip/reass/ip4_full_reass.h
++++ b/src/vnet/ip/reass/ip4_full_reass.h
+@@ -40,4 +40,9 @@ uword ip4_full_reass_custom_register_next_node (uword node_index);
+ 
+ void ip4_local_full_reass_enable_disable (int enable);
+ int ip4_local_full_reass_enabled ();
++/* Experimental main-thread retirement helpers. Caller holds worker barrier,
++ * closes ingress admission, and confirms no native NAT references before FIB
++ * deletion. ready==0 requires retaining FIB/ifindex and retrying later. */
++int ip4_reass_fib_retire_ready (void);
++u32 ip4_full_reass_purge_fib (u32 fib_index);
+ #endif /* __included_ip4_full_reass_h__ */
+diff --git a/src/vnet/ip/reass/ip4_sv_reass.c b/src/vnet/ip/reass/ip4_sv_reass.c
+index b6798d7..3e75bb6 100644
+--- a/src/vnet/ip/reass/ip4_sv_reass.c
++++ b/src/vnet/ip/reass/ip4_sv_reass.c
+@@ -17,6 +17,7 @@
+ #include <vppinfra/fifo.h>
+ #include <vppinfra/bihash_16_8.h>
+ #include <vnet/ip/reass/ip4_sv_reass.h>
++#include <vnet/ip/reass/ip4_full_reass.h>
+ 
+ #define MSEC_PER_SEC			1000
+ #define IP4_SV_REASS_TIMEOUT_DEFAULT_MS 100
+@@ -2199,3 +2200,36 @@ ip4_sv_reass_extended_unlock (vlib_buffer_t *b)
+ }
+ 
+ #endif
++
++
++#ifndef CLIB_MARCH_VARIANT
++/* Standard FIB-keyed shallow reassembly only. The controlled egress graph does
++ * not use a custom-context SV key namespace overlapping native FIB indexes. */
++u32
++ip4_sv_reass_purge_fib (u32 fib_index)
++{
++  vlib_main_t *vm = vlib_get_main ();
++  ip4_sv_reass_main_t *rm = &ip4_sv_reass_main;
++  u32 *indices = 0, *index, removed = 0;
++  ASSERT (ip4_reass_fib_retire_ready ());
++  for (u32 ti = 0; ti < vec_len (rm->per_thread_data); ti++)
++    {
++      ip4_sv_reass_per_thread_t *rt = &rm->per_thread_data[ti];
++      u32 pi;
++      clib_spinlock_lock (&rt->lock);
++      vec_reset_length (indices);
++      pool_foreach_index (pi, rt->pool)
++        if (pool_elt_at_index (rt->pool, pi)->key.fib_index == fib_index)
++          vec_add1 (indices, pi);
++      vec_foreach (index, indices)
++        {
++          ip4_sv_reass_free (vm, rm, rt,
++                             pool_elt_at_index (rt->pool, index[0]), true);
++          removed++;
++        }
++      clib_spinlock_unlock (&rt->lock);
++    }
++  vec_free (indices);
++  return removed;
++}
++#endif /* CLIB_MARCH_VARIANT */
+diff --git a/src/vnet/ip/reass/ip4_sv_reass.h b/src/vnet/ip/reass/ip4_sv_reass.h
+index be45f8d..a079b4a 100644
+--- a/src/vnet/ip/reass/ip4_sv_reass.h
++++ b/src/vnet/ip/reass/ip4_sv_reass.h
+@@ -71,4 +71,6 @@ void ip4_sv_reass_extended_unlock (vlib_buffer_t *b);
+ uword ip4_sv_reass_custom_register_next_node (uword node_index);
+ uword ip4_sv_reass_custom_context_register_next_node (uword node_index);
+ 
++/* Experimental FIB-keyed retirement; same barrier/queue guard as full. */
++u32 ip4_sv_reass_purge_fib (u32 fib_index);
+ #endif /* __included_ip4_sv_reass_h__ */

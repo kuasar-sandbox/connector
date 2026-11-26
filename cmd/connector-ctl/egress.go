@@ -16,7 +16,7 @@ func newEgressCommand() *cobra.Command {
 	for _, mode := range []string{"validate", "serve"} {
 		var path string
 		cmd := &cobra.Command{Use: mode, Short: map[string]string{"validate": "Validate gateway configuration", "serve": "Run Egress in the gateway interface network namespace"}[mode], Args: cobra.NoArgs}
-		cmd.Flags().StringVar(&path, "config", "", "Gateway JSON configuration")
+		cmd.Flags().StringVar(&path, "config", "", "Gateway JSON/YAML configuration")
 		_ = cmd.MarkFlagRequired("config")
 		cmd.RunE = func(cmd *cobra.Command, _ []string) error {
 			_, err := egress.LoadConfig(path)

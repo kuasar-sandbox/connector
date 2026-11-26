@@ -23,7 +23,7 @@ The vSwitch provides:
 - GENEVE tunnel encapsulation for external network access
 - Configuration persists after process exits (eBPF programs continue running)
 Egress adds local/remote Area policy, per-session Pool quotas and native NAT;
-its separately built VPP dataplane runs under 'egress serve'.`,
+its fully static connector-vpp dataplane runs under 'egress serve'.`,
 }
 
 var vswitchCmd = &cobra.Command{
