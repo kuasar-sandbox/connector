@@ -126,4 +126,3 @@ extract_tarball() {
     : > "$marker"
     echo "$dest_dir"
 }
-
