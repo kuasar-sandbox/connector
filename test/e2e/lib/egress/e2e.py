@@ -34,7 +34,7 @@ for ip in ('203.0.113.11','203.0.113.12'):
 threading.Event().wait()
 '''
 CLIENT = r'''
-import json,socket,sys
+import json,socket,sys,time,uuid
 sessions={}
 for line in sys.stdin:
  q=json.loads(line);out={}
@@ -45,9 +45,18 @@ for line in sys.stdin:
    s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind(('10.7.0.2',q['source']));s.settimeout(2 if protocol=='tcp' else .4)
    if protocol=='tcp':s.connect((q['target'],q.get('port',18080)))
    sessions[key]=s
-  s=sessions[key];data=q.get('data','probe').encode()
+  s=sessions[key];data=(uuid.uuid4().hex+':'+q.get('data','probe')).encode()
   if protocol=='tcp':s.sendall(data);payload=s.recv(65535);peer=s.getpeername();s.close();del sessions[key]
-  else:s.sendto(data,(q['target'],q.get('port',18080)));payload,peer=s.recvfrom(65535)
+  else:
+   s.sendto(data,(q['target'],q.get('port',18080)))
+   deadline=time.monotonic()+.4
+   # A reply queued during the earlier link failure must not satisfy a later
+   # policy assertion. Only this request's echo counts, within one deadline.
+   while True:
+    remaining=deadline-time.monotonic()
+    if remaining<=0:raise TimeoutError('no matching UDP reply')
+    s.settimeout(remaining);payload,peer=s.recvfrom(65535)
+    if json.loads(payload).get('data')==data.decode():break
   out={'ok':True,'peer':peer,'reply':json.loads(payload)}
  except Exception as e:out={'ok':False,'error':str(e)}
  print(json.dumps(out),flush=True)
