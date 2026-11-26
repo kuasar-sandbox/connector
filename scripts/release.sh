@@ -120,8 +120,8 @@ EOF
     cat >> "$expected_files" <<'EOF'
 bin/connector-egress.bundle
 deploy/connector-egress@.service
-deploy/egress/area7.json
-deploy/egress/gateway.json
+deploy/egress/area7.yaml
+deploy/egress/gateway.yaml
 deploy/egress/link.json
 deploy/egress/switch.json
 EOF
@@ -218,7 +218,7 @@ package_release() {
     install -m 0644 "$bin_dir/connector-egress.bundle" "$STAGE/bin/connector-egress.bundle"
     python3 "$TOOL_ROOT/scripts/egress-bundle.py" validate --arch "$arch" --bundle "$STAGE/bin/connector-egress.bundle" --source "$ROOT/egress"
     copy_file dist/connector-egress@.service deploy/connector-egress@.service
-    for file in area7.json gateway.json link.json switch.json; do
+    for file in area7.yaml gateway.yaml link.json switch.json; do
       copy_file "dist/egress/$file" "deploy/egress/$file"
     done
   fi

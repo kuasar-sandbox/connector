@@ -218,12 +218,14 @@ def backend_process():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.IPPROTO_IP, 10, 0)  # IP_MTU_DISCOVER: permit fragmentation.
     sock.bind(('203.0.113.11', 18080))
+    direct = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    direct.bind(('198.18.1.1', 53))
     listener = socket.socket(); listener.bind(('203.0.113.11', 18080)); listener.listen(32)
     raw = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP)
     errors = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
     other=socket.socket(socket.AF_INET,socket.SOCK_RAW,253);other.bind(('198.18.1.1',0))
     while True:
-        ready, _, _ = select.select([sock, raw, other], [], [])
+        ready, _, _ = select.select([sock, direct, raw, other], [], [])
         if other in ready:
             packet=other.recv(65535);ihl=(packet[0]&15)*4
             if packet[16:20]==socket.inet_aton('198.18.1.1'):
@@ -234,11 +236,12 @@ def backend_process():
                 message = b'\x03\x01\0\0\0\0\0\0' + packet[:ihl+8]
                 message = message[:2]+struct.pack('!H', checksum(message))+message[4:]
                 errors.sendto(message, (socket.inet_ntoa(packet[12:16]), 0))
-        if sock in ready:
-            data, peer = sock.recvfrom(65535)
-            if data[12:13] == b'L':
-                data = data[:12] + b'z'*int.from_bytes(data[13:15], 'big')
-            sock.sendto(data + socket.inet_aton(peer[0]) + struct.pack('!H', peer[1]), peer)
+        for udp in (sock,direct):
+            if udp in ready:
+                data, peer = udp.recvfrom(65535)
+                if data[12:13] == b'L':
+                    data = data[:12] + b'z'*int.from_bytes(data[13:15], 'big')
+                udp.sendto(data + socket.inet_aton(peer[0]) + struct.pack('!H', peer[1]), peer)
 
 
 def main():
@@ -282,9 +285,9 @@ def main():
             except (FileNotFoundError,json.JSONDecodeError):pass
             time.sleep(.05)
         raise AssertionError(('state timeout',st))
-    def reload_config(value, timeout=20):
+    def reload_config(value, timeout=20, yaml=False):
         before=status()['configuration_generation']
-        tmp=config.with_suffix('.next');tmp.write_text(json.dumps(value));tmp.replace(config)
+        tmp=config.with_suffix('.next');tmp.write_text('# Main YAML\n'+''.join(k+': '+json.dumps(v)+'\n' for k,v in value.items()) if yaml else json.dumps(value));tmp.replace(config)
         gateway.send_signal(signal.SIGHUP)
         return wait_status(lambda st: st['configuration_generation']>before,timeout=timeout)
     def reject_reload(value):
@@ -418,6 +421,36 @@ def main():
             check('idle context is reclaimed while another peer continuously exchanges traffic',active['ok'] and active['echoed']>=100,dict(status=observed,traffic=active))
             expire_all()
             cfg['timeouts']=timeouts;reload_config(cfg)
+        # Exercise the original user-facing defaults using YAML main/Area
+        # files and a real SNAT CIDR, not only a parser or native CLI fixture.
+        source=copy.deepcopy(cfg)
+        source['area_files']=['original-area.yaml']
+        policy={'vni':10,'pools':[dict(name='default',interface=tag+'i'+str(len(peer_keys)),
+                    next_hop='192.0.2.2',addresses=['192.0.2.12/31','192.0.2.12-192.0.2.13'])]}
+        area_source=out/'original-area.yaml'
+        def publish_original():
+            area_source.write_text('# Original Area contract\n'+''.join(k+': '+json.dumps(v)+'\n' for k,v in policy.items()))
+            reload_config(source,yaml=True)
+        publish_original()
+        original_default=query(peers[0],slot=12,area=10)['peer']
+        check('YAML omitted ACL and single-Pool omitted routes forward through a CIDR Pool',
+              original_default[0] in ['192.0.2.12','192.0.2.13'],original_default)
+        policy['acl']=[];publish_original()
+        check('empty ACL allows and reload retains the established mapping',
+              query(peers[0],slot=12,area=10)['peer']==original_default)
+        policy['acl']=[dict(destination='203.0.113.0/24',protocol=['tcp','udp'],ports=[53,'8000-8002'],action='deny')]
+        publish_original()
+        check('unmatched nonempty ACL retains default allow',query(peers[0],slot=12,area=10)['peer']==original_default)
+        policy['acl'].insert(0,dict(destination='198.18.1.1',protocol='udp',ports=53,action='deny'))
+        publish_original();query(peers[0],slot=12,area=10,expect=False)
+        check('collection deny revokes an established default-allowed mapping',True)
+        policy['acl']=[dict(action='allow'),dict(action='deny')];policy['routes']=[]
+        publish_original();query(peers[0],slot=12,area=10,flow=1,expect=False)
+        check('explicit empty routes suppress ordinary forwarding',True)
+        policy['dnat']=[dict(destination='198.18.1.1-198.18.1.1',protocol=['tcp','udp'],ports='53-53',pool='default',target='203.0.113.11',target_port=18080)]
+        publish_original();query(peers[0],slot=12,area=10,flow=2)
+        check('DNAT collections still forward with explicit empty ordinary routes',True)
+        reload_config(cfg);expire_all()
         # Aggregate multiple unchanged 4096-slot switch locators. No registration
         # calls and no artificial gateway-wide 4096 limit are used.
         def process_memory():
@@ -446,12 +479,12 @@ def main():
         started=time.monotonic();area_update(low);metrics['policy_update_seconds']=time.monotonic()-started
         check('lower quota retains established public tuple',query(peers[0])['peer']==original)
         query(peers[0],flow=args.flows,expect=False);check('lower quota blocks only new mappings',True)
-        deny=copy.deepcopy(low);deny['acl']=[];area_update(deny)
+        deny=copy.deepcopy(low);deny['acl']=[dict(action='deny')];area_update(deny)
         query(peers[0],expect=False);check('ACL revocation blocks established forward mapping',True)
         query(peers[0],slot=1);check('other Area retains live mapping',True)
         state=wait_status(lambda st: st['connections']==(args.contexts//2)*args.flows)
         check('only revoked Area mappings are released',state['connections']==(args.contexts//2)*args.flows,state['connections'])
-        second=copy.deepcopy(cfg['areas'][1]);second['acl']=[];area_update(second)
+        second=copy.deepcopy(cfg['areas'][1]);second['acl']=[dict(action='deny')];area_update(second)
         state=wait_status(lambda st: st['contexts']==0 and st['connections']==0)
         check('ACL revocation releases contexts and quota automatically',state['reclaimed']>=args.contexts,state)
         area_update(original_area)
@@ -463,7 +496,7 @@ def main():
         cfg['areas'].append(new_area);reload_config(cfg)
         area9=query(peers[0],area=9)['peer']
         check('new Area is usable through the existing ingress without registration',area9!=retained)
-        broken=copy.deepcopy(cfg);broken['areas'][0]['acl']=[];broken['areas'][-1]['routes'][0]['pool']='missing'
+        broken=copy.deepcopy(cfg);broken['areas'][0]['acl']=[dict(action='deny')];broken['areas'][-1]['routes'][0]['pool']='missing'
         rejected=reject_reload(broken)
         check('invalid later Area leaves the whole previous configuration active',
               query(peers[0],generation=2)['peer']==retained and query(peers[0],area=9)['peer']==area9,rejected['reload_error'])
@@ -476,9 +509,9 @@ def main():
         changed_peer=spawn(['ip','netns','exec',namespaces[peer_keys[0]],sys.executable,__file__,'peer',
                            json.dumps({'locator':args.locator,'index':0,'address':'198.18.0.20'})])
         query(changed_peer,expect=False)
-        cfg['attachments'][0]['peer']=['198.18.0.0/24'];reload_config(cfg)
+        cfg['attachments'][0]['peer']='198.18.0.2-198.18.0.20';reload_config(cfg)
         second_source=query(changed_peer)['peer']
-        check('source CIDR admits distinct actual peer identities',second_source!=retained)
+        check('source range admits distinct actual peer identities',second_source!=retained)
         del cfg['attachments'][0]['peer'];reload_config(cfg)
         check('omitted peer preserves the actual peer and return mapping',query(changed_peer)['peer']==second_source)
         cfg['attachments'][0]['peer']=['198.18.0.2','198.18.0.20'];reload_config(cfg)

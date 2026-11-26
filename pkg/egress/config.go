@@ -40,21 +40,23 @@ type Interface struct {
 	MTU     uint32 `json:"mtu"`
 }
 type Attachment struct {
-	Name      string   `json:"name"`
-	Interface string   `json:"interface"`
-	Peer      []string `json:"peer,omitempty"`
-	NextHop   string   `json:"next_hop,omitempty"`
-	Locator   string   `json:"locator,omitempty"`
-	TLVClass  uint32   `json:"tlv_class,omitempty"`
-	TLVType   uint32   `json:"tlv_type,omitempty"`
-	MTU       uint32   `json:"mtu,omitempty"`
-	InnerMTU  uint32   `json:"inner_mtu,omitempty"`
+	Name      string    `json:"name"`
+	Interface string    `json:"interface"`
+	Peer      StringSet `json:"peer,omitempty"`
+	NextHop   string    `json:"next_hop,omitempty"`
+	Locator   string    `json:"locator,omitempty"`
+	TLVClass  uint32    `json:"tlv_class,omitempty"`
+	TLVType   uint32    `json:"tlv_type,omitempty"`
+	MTU       uint32    `json:"mtu,omitempty"`
+	InnerMTU  uint32    `json:"inner_mtu,omitempty"`
 }
+
+// Match is the normalized native rule; Area owns the public set syntax.
 type Match struct {
-	Destination string `json:"destination"`
-	Protocol    string `json:"protocol"`
-	PortFirst   uint16 `json:"port_first,omitempty"`
-	PortLast    uint16 `json:"port_last,omitempty"`
+	Destination string
+	Protocol    string
+	PortFirst   uint16
+	PortLast    uint16
 }
 type ACL struct {
 	Match
@@ -67,15 +69,15 @@ type DNAT struct {
 	TargetPort uint16 `json:"target_port,omitempty"`
 }
 type Route struct {
-	Destination string `json:"destination"`
+	Destination string `json:"destination,omitempty"`
 	Pool        string `json:"pool"`
 }
 type Pool struct {
-	Name           string   `json:"name"`
-	Interface      string   `json:"interface"`
-	NextHop        string   `json:"next_hop"`
-	Addresses      []string `json:"addresses"`
-	MaxConnections uint32   `json:"max_connections"`
+	Name           string    `json:"name"`
+	Interface      string    `json:"interface"`
+	NextHop        string    `json:"next_hop"`
+	Addresses      StringSet `json:"addresses,omitempty"`
+	MaxConnections uint32    `json:"max_connections"`
 }
 type Area struct {
 	VNI    uint32  `json:"vni"`
@@ -98,7 +100,7 @@ func Decode(r io.Reader, value any) error {
 	if err != nil {
 		return err
 	}
-	return decodeJSON(raw, value)
+	return decodeSource(raw, value)
 }
 
 func decodeBounded(r io.Reader, value any, limit int64) error {
@@ -320,6 +322,11 @@ func (c *Config) Validate() error {
 		}
 		interfaces[i.Name] = i
 	}
+	for i := range c.Areas {
+		if err := c.Areas[i].normalize(); err != nil {
+			return fmt.Errorf("Area %d: %w", c.Areas[i].VNI, err)
+		}
+	}
 	areas := map[uint32]bool{}
 	snat := map[string]string{}
 	for _, area := range c.Areas {
@@ -356,12 +363,12 @@ func (c *Config) Validate() error {
 		if _, conflict := snat[addr.Addr().String()]; conflict {
 			return errors.New("Geneve gateway address overlaps a SNAT address")
 		}
-		for j, source := range a.Peer {
-			p, err := peerPrefix(source)
+		if len(a.Peer) != 0 {
+			sources, err := addressPrefixes(a.Peer)
 			if err != nil {
 				return err
 			}
-			a.Peer[j] = p.String()
+			a.Peer = sources
 		}
 		if a.NextHop != "" {
 			hop, err := ipv4(a.NextHop)

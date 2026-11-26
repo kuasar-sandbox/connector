@@ -10,12 +10,12 @@ Egress 是通过文件配置的 IPv4 Geneve 转发网关，提供有序 ACL、TC
 
 按照[构建与验收](../egress/README_zh.md)构建相互匹配的原生运行时和纯 Go 控制程序。可执行文件、运行库与插件须配套。配置中的网关/SNAT 地址归 VPP 所有，Linux 不得在同一接口重复持有这些地址；无关 Linux IPv4 地址可以保留。数据面在转发前处理 AF_PACKET 携带的校验和和 TCP 分段元数据，不要求修改借用设备或外部对端的 offload 设置；本地专用 veth 仍按既有 vSwitch 报文契约准备。
 
-本地部署参考 [link.json](../dist/egress/link.json)、[switch.json](../dist/egress/switch.json)、[gateway.json](../dist/egress/gateway.json) 和 [area7.json](../dist/egress/area7.json)。部署前替换示例地址和资源；ARM64 使用 `aarch64-linux-gnu` 库路径。
+本地部署参考 [link.json](../dist/egress/link.json)、[switch.json](../dist/egress/switch.json)、[gateway.yaml](../dist/egress/gateway.yaml) 和 [area7.yaml](../dist/egress/area7.yaml)。部署前替换示例地址和资源；ARM64 使用 `aarch64-linux-gnu` 库路径。
 
 1. 运行 `connector-ctl egress link prepare --config link.json`。vSwitch 停止时，其接线端保留在稳定 owner namespace，网关端保留在 Egress namespace，并记录 namespace 与设备归属。
 2. 由外部网络所有者将 uplink 放入网关 namespace，配置 MTU 并启用。SNAT 资源必须具有真实外部可达性；主机默认路由不隐式构成 Pool 出口。
-3. 按既有 [vSwitch 运维](vswitch-operations_zh.md)准备 switch 和 port namespace，再运行 `connector-ctl egress validate --config gateway.json`。
-4. 运行 `ip netns exec egress-local connector-ctl egress serve --config gateway.json`。也可安装 [connector-egress@.service](../dist/connector-egress@.service)，把主配置放在 `/etc/connector-egress/egress-local.json`，关联 Area 文件放在旁边，再启动 `connector-egress@egress-local.service`。
+3. 按既有 [vSwitch 运维](vswitch-operations_zh.md)准备 switch 和 port namespace，再运行 `connector-ctl egress validate --config gateway.yaml`。
+4. 运行 `ip netns exec egress-local connector-ctl egress serve --config gateway.yaml`。也可安装 [connector-egress@.service](../dist/connector-egress@.service)，把主配置放在 `/etc/connector-egress/egress-local.yaml`，关联 Area 文件放在旁边，再启动 `connector-egress@egress-local.service`。
 5. 运行 `connector-ctl egress link start --config link.json --switch-config switch.json --mode veth`。默认模式与既有 vSwitch 一样为 `tap`。包装流程从记录的稳定 owner namespace 启动 vSwitch。
 6. 通过既有 vSwitch 接口 Attach 沙箱，并验证所需 Pool 的真实请求与回包。无需调用 Egress 登记接口。
 
@@ -25,7 +25,7 @@ Egress 是通过文件配置的 IPv4 Geneve 转发网关，提供有序 ACL、TC
 
 ## 文件与 reload
 
-主配置采用严格 JSON。`areas` 可包含内联 Area 对象，`area_files` 列出每个包含一个 Area 对象的文件，其相对路径以主配置所在目录解析。两者组成一个完整校验集合。未知字段、重复 JSON 成员、重复 Area、无效引用、尾随值均被拒绝。
+主配置和 Area 文件采用 YAML，同时接受其 JSON 子集。`areas` 可包含内联 Area 对象，`area_files` 列出每个包含一个 Area 对象的文件，其相对路径以主配置所在目录解析。两者组成一个完整校验集合。未知字段、重复成员、重复 Area、无效引用、尾随值均被拒绝。
 
 完成所有文件修改后触发 reload：
 
@@ -51,9 +51,22 @@ reload 支持 Area 增删、ACL/DNAT/路由/Pool、接入来源及 peer 回程�
 | Attachment | `name`、`interface`、可选 `peer` 来源列表、可选回程 `next_hop`、`locator` 及 TLV 解码字段。`locator` 默认 `port`；`inner_mtu` 默认 1500，`mtu` 默认采用接口 MTU。Ether/IP 和 fencing 从报文识别。 |
 | Area | 逻辑 `vni`、有序 `acl`、有序 TCP/UDP `dnat`、最长前缀 `routes` 和 Pool。 |
 | Pool | Area 内唯一的 `name`，直接定义 `interface`、同链路 `next_hop` 和 SNAT `addresses`；路由与 DNAT 按名称引用。`max_connections` 限制每个外层接入在该 Pool 的存活 NAT 映射，零或省略取消业务额度。 |
-| Match | 规范 IPv4 目的前缀和 `any`、`icmp`、`tcp` 或 `udp`；端口仅适用于 TCP/UDP。`any` 也覆盖其他普通 IPv4 协议。 |
+| Match | 目的 IP/CIDR/范围、协议和端口集合，写法见下文；端口仅适用于 TCP/UDP。`any` 也覆盖其他普通 IPv4 协议。 |
 
-ACL 对 DNAT 前的原始目的地址执行 first-match/default-deny。DNAT 命中直接选择其 Pool，否则使用最长前缀路由。无匹配路由、所选 Pool 耗尽或出口不可用时失败，不选择其他 Pool。没有端口的 IPv4 协议在远端地址/协议元组重叠时需要不同公网地址，因为无法用转换端口区分回包。
+ACL 对 DNAT 前的原始目的地址执行 first-match/default-allow。DNAT 命中直接选择其 Pool，否则使用最长前缀路由。单 Pool 省略 `routes` 时作为默认出口；显式 `routes: []` 关闭普通路由，但 DNAT 仍可使用 Pool。多 Pool 必须显式配置 routes；没有 Pool 的 Area 没有出口。`routes: null` 无效。无匹配路由、所选 Pool 耗尽或出口不可用时失败，不选择其他 Pool。没有端口的 IPv4 协议在远端地址/协议元组重叠时需要不同公网地址，因为无法用转换端口区分回包。
+
+地址字段统一使用 Pool 的 `addresses`、规则的 `destination` 和接入的 `peer`，都接受单值或列表：`192.0.2.10`、`192.0.2.0/28`、`192.0.2.10-192.0.2.30`。范围包含首尾地址。Pool CIDR 表示完整单播地址集合，不自动扣除子网首尾地址；部署方须拥有并提供所选地址的回程。重复、重叠集合自动规范化。路由显式 CIDR 的前缀长度保留，用于最长前缀匹配；相同 Pool 的重复路由去重，相同前缀指向不同 Pool 则报错。
+
+`ports` 支持 `443`、`"8000-8100"` 或 `[80, 443, "8000-8100"]`，范围闭合且必须在 1..65535 内。`protocol` 接受 `any`、`icmp`、`tcp`、`udp` 的单值或列表。省略 destination 表示任意地址；省略 protocol 默认 any，有 ports 约束或 DNAT 时默认为 TCP/UDP；省略 ports 表示任意端口。端口约束只适用于 TCP/UDP。空匹配列表和 null 报错，表达任意值应省略字段。ACL 可只写 action；省略或空 ACL 均允许未命中流量，白名单需要显式末尾 `action: deny`。不接受 `cidrs`、`protocols`、`port_first`、`port_last` 别名。
+
+```yaml
+acl:
+  - destination: [203.0.113.0/24, 198.51.100.10-198.51.100.20]
+    protocol: [tcp, udp]
+    ports: [443, "8000-8100"]
+    action: allow
+  - action: deny
+```
 
 | 资源配置 | 默认值与含义 |
 |---|---|

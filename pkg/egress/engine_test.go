@@ -21,19 +21,23 @@ func validConfig() Config {
 
 func TestConfigurationRejectsAmbiguousOrUnsafeRouting(t *testing.T) {
 	for name, change := range map[string]func(*Config){
-		"command injection in address":     func(c *Config) { c.Areas[0].Routes[0].Destination = "0.0.0.0/0\negress-policy commit" },
-		"unknown Pool":                     func(c *Config) { c.Areas[0].Routes[0].Pool = "missing" },
-		"noncanonical prefix":              func(c *Config) { c.Areas[0].Routes[0].Destination = "203.0.113.1/24" },
-		"unknown Pool interface":           func(c *Config) { c.Areas[0].Pools[0].Interface = "missing" },
-		"ambiguous same-prefix routes":     func(c *Config) { c.Areas[0].Routes = append(c.Areas[0].Routes, c.Areas[0].Routes[0]) },
+		"command injection in address": func(c *Config) { c.Areas[0].Routes[0].Destination = "0.0.0.0/0\negress-policy commit" },
+		"unknown Pool":                 func(c *Config) { c.Areas[0].Routes[0].Pool = "missing" },
+		"noncanonical prefix":          func(c *Config) { c.Areas[0].Routes[0].Destination = "203.0.113.1/24" },
+		"unknown Pool interface":       func(c *Config) { c.Areas[0].Pools[0].Interface = "missing" },
+		"ambiguous same-prefix routes": func(c *Config) {
+			p := c.Areas[0].Pools[0]
+			p.Name = "other"
+			c.Areas[0].Pools = append(c.Areas[0].Pools, p)
+			route := c.Areas[0].Routes[0]
+			route.Pool = "other"
+			c.Areas[0].Routes = append(c.Areas[0].Routes, route)
+		},
 		"VNI exceeds wire field":           func(c *Config) { c.Areas[0].VNI = 0x1000000 },
 		"IP domain overlap":                func(c *Config) { c.Attachments[0].Interface = "outside"; c.Attachments[0].Peer = []string{"192.0.2.2"} },
 		"TLV class exceeds wire field":     func(c *Config) { c.Attachments[0].Locator = "tlv"; c.Attachments[0].TLVClass = 65536 },
 		"reserved protocol":                func(c *Config) { c.Areas[0].ACL[0].Protocol = "gre" },
 		"port match on arbitrary protocol": func(c *Config) { c.Areas[0].ACL[0].PortFirst = 1; c.Areas[0].ACL[0].PortLast = 10 },
-		"duplicate SNAT resource": func(c *Config) {
-			c.Areas[0].Pools[0].Addresses = append(c.Areas[0].Pools[0].Addresses, c.Areas[0].Pools[0].Addresses[0])
-		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := validConfig()

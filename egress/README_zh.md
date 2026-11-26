@@ -53,7 +53,7 @@ sudo make test-egress \
 |---|---|
 | `e2e.py` | 真实沙箱 socket → TC/eBPF → Geneve → 原生 VPP/NAT → 外部 socket。覆盖三种 locator、IP/Ether、本地专用 pair 和远端路由 underlay，使用两个 worker。 |
 | 本地生命周期检查 | 重复 prepare、稳定 owner 下两轮 Start/Stop、自动进入与空闲清理、文件 reload、重启读取配置、接口故障隔离、拒绝带活动沙箱修复、排空后修复并重新接入、保留 Pool 资源和安全卸载。 |
-| 策略/出口检查 | 沙箱与 Pool 独立额度、ACL 默认拒绝、LPM、DNAT 元组恢复、TCP/UDP、降低额度、更新失败保留策略、选择性撤销，以及一个出口失败时另一个继续工作。 |
+| 策略/出口检查 | 沙箱与 Pool 独立额度、ACL 默认允许与显式拒绝、LPM、DNAT 元组恢复、TCP/UDP、降低额度、更新失败保留策略、选择性撤销，以及一个出口失败时另一个继续工作。 |
 | `wire.py --locator tlv` | 不同接入上的外层/内层身份重叠、错误 framing 和未知 critical option、opaque 元数据行为、乱序内层和外层重组、分片回程、NAT 前 PMTU、仅引用八个 TCP 字节的 ICMP、普通 IPv4 协议、不可变代次回程和自动计数清理。 |
 | `wire.py --locator port` / `--locator tlv` | 完整报文字段 locator、具名 Pool 引用和重排稳定性、超过旧固定对象上限的配置、额度隔离及配置缩减回收。 |
 | `wire.py --contexts 12288 --flows 16` | 流量在三个既有 4096-slot vSwitch 来源上自动创建 12288 个同时活跃上下文和 196608 条真实双向 NAT 连接。验证公网元组唯一性、文件 reload、按 Area 撤销及自动回收，记录内存和耗时。 |

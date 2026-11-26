@@ -10,22 +10,22 @@ Local and remote deployments use the same Area/Pool configuration and wire contr
 
 Build the matching native runtime and pure-Go control binary using [build and acceptance](../egress/README.md). Keep its executable, libraries and plugins together. VPP owns each configured gateway/SNAT address; Linux must not hold the same address on that interface. Unrelated Linux IPv4 addresses are permitted. The dataplane normalizes AF_PACKET checksum and TCP segmentation metadata before forwarding, without changing borrowed devices or external peers. The dedicated local veth is prepared for the existing vSwitch wire contract.
 
-For a local gateway, use [link.json](../dist/egress/link.json), [switch.json](../dist/egress/switch.json), [gateway.json](../dist/egress/gateway.json) and [area7.json](../dist/egress/area7.json). Replace example addresses and resources before deployment; use `aarch64-linux-gnu` library paths on ARM64.
+For a local gateway, use [link.json](../dist/egress/link.json), [switch.json](../dist/egress/switch.json), [gateway.yaml](../dist/egress/gateway.yaml) and [area7.yaml](../dist/egress/area7.yaml). Replace example addresses and resources before deployment; use `aarch64-linux-gnu` library paths on ARM64.
 
 1. Run `connector-ctl egress link prepare --config link.json`. The stable owner namespace holds the switch endpoint while vSwitch is stopped; the gateway endpoint stays in the Egress namespace. Namespace and device ownership are recorded.
 2. Have the external-network owner place the uplink in the gateway namespace, configure its MTU and bring it up. Provide real external reachability for SNAT resources. The host default route is not an implicit Pool exit.
-3. Prepare switch and port namespaces using existing [vSwitch operations](vswitch-operations.md), then run `connector-ctl egress validate --config gateway.json`.
-4. Run `ip netns exec egress-local connector-ctl egress serve --config gateway.json`. Alternatively install [connector-egress@.service](../dist/connector-egress@.service), place the main configuration at `/etc/connector-egress/egress-local.json` and its referenced Area files beside it, then start `connector-egress@egress-local.service`.
+3. Prepare switch and port namespaces using existing [vSwitch operations](vswitch-operations.md), then run `connector-ctl egress validate --config gateway.yaml`.
+4. Run `ip netns exec egress-local connector-ctl egress serve --config gateway.yaml`. Alternatively install [connector-egress@.service](../dist/connector-egress@.service), place the main configuration at `/etc/connector-egress/egress-local.yaml` and its referenced Area files beside it, then start `connector-egress@egress-local.service`.
 5. Run `connector-ctl egress link start --config link.json --switch-config switch.json --mode veth`. The default is `tap`, as in existing vSwitch. The wrapper starts vSwitch from the recorded stable owner namespace.
 6. Attach sandboxes through existing vSwitch interfaces and verify real request/reply traffic through the required Pools. No Egress registration call is involved.
 
 Repeated prepare verifies and reuses the owned pair. It rejects foreign names, changed namespace identities and damaged installed pairs. Each local vSwitch uses a dedicated pair; multiple pairs may share an Egress instance. Distinct gateway IPs use distinct ingress addresses. The same peer, locator and inner IP may access each gateway independently. Existing vSwitch `transit_dev_mtu:auto` may lower its endpoint below the provisioned gateway MTU; this does not change pair ownership.
 
-Remote deployments use externally owned transit devices. `peer` is an optional array of IPv4 addresses/CIDRs, for example `["198.18.0.2", "203.0.113.0/24"]`; omission or an empty list adds no source filter. The actual peer always comes from the outer source IP. An omitted `next_hop` uses the actual peer as a directly reachable next hop; routed peers require an on-link router. Packet VNI selects a configured Area without per-attachment Area registration. Overlapping source ranges for the same ingress/gateway must agree on decoding, MTU and return routing or the complete candidate is rejected. The same gateway/source range cannot select different return devices; disjoint peer ranges may reuse a gateway address across devices. Remote transit and Pool exits may share an interface when their Geneve gateway and SNAT addresses are distinct; the local dedicated veth remains separate. Geneve and generation MACs are not cryptographic authentication; underlay ownership must prevent sender impersonation.
+Remote deployments use externally owned transit devices. `peer` accepts an IPv4 address, CIDR, inclusive IP range, or a list of these, for example `["198.18.0.2", "203.0.113.0/24"]`; omission or an empty list adds no source filter. The actual peer always comes from the outer source IP. An omitted `next_hop` uses the actual peer as a directly reachable next hop; routed peers require an on-link router. Packet VNI selects a configured Area without per-attachment Area registration. Overlapping source ranges for the same ingress/gateway must agree on decoding, MTU and return routing or the complete candidate is rejected. The same gateway/source range cannot select different return devices; disjoint peer ranges may reuse a gateway address across devices. Remote transit and Pool exits may share an interface when their Geneve gateway and SNAT addresses are distinct; the local dedicated veth remains separate. Geneve and generation MACs are not cryptographic authentication; underlay ownership must prevent sender impersonation.
 
 ## Files and reload
 
-The main configuration is strict JSON. `areas` may contain inline Area objects; `area_files` lists files containing one Area object each, resolved relative to the main file. Both sources form one validated set. Unknown fields, duplicate JSON members, duplicate Areas, invalid references, and trailing values are rejected.
+The main and Area files use YAML, including its JSON subset. `areas` may contain inline Area objects; `area_files` lists files containing one Area object each, resolved relative to the main file. Both sources form one validated set. Unknown fields, duplicate members, duplicate Areas, invalid references, and trailing values are rejected.
 
 Complete all file edits, then trigger reload:
 
@@ -51,9 +51,22 @@ A process restart reads the files again and does not restore NAT state. Subseque
 | Attachment | `name`, `interface`, optional `peer` source list and return `next_hop`, `locator` and TLV decoding fields. The default locator is `port`; `inner_mtu` defaults to 1500 and `mtu` to the interface MTU. Ether/IP and fencing are recognized on the wire. |
 | Area | Logical `vni`, ordered `acl`, ordered TCP/UDP `dnat`, longest-prefix `routes` and Pools. |
 | Pool | Area-local unique `name`, with its own `interface`, on-link `next_hop` and SNAT `addresses`; routes and DNAT refer to its name. `max_connections` limits live NAT mappings for each outer access in that Pool. Zero or omission removes that business quota. |
-| Match | Canonical IPv4 destination prefix and `any`, `icmp`, `tcp` or `udp`; ports require TCP/UDP. `any` also covers other ordinary IPv4 protocols. |
+| Match | Destination IP/CIDR/range sets, protocol values and port sets as described below; ports require TCP/UDP. `any` also covers other ordinary IPv4 protocols. |
 
-ACL first-match/default-deny applies to the original destination before DNAT. A DNAT match selects its Pool directly; otherwise routing uses longest-prefix selection. A missing route, exhausted selected Pool or unavailable exit fails without choosing another Pool. Portless IPv4 protocols require distinct public addresses for overlapping remote/protocol tuples because they have no translated port to disambiguate returns.
+ACL first-match/default-allow applies to the original destination before DNAT. A DNAT match selects its Pool directly; otherwise routing uses longest-prefix selection. A single Pool with omitted `routes` is the default exit. Explicit `routes: []` disables ordinary routing but permits DNAT. Multiple Pools require explicit routes; an Area with no Pools has no exit. `routes: null` is invalid. A missing route, exhausted selected Pool or unavailable exit fails without choosing another Pool. Portless IPv4 protocols require distinct public addresses for overlapping remote/protocol tuples because they have no translated port to disambiguate returns.
+
+Address fields `addresses` (Pool), `destination` (rule) and `peer` accept one value or a list: `192.0.2.10`, `192.0.2.0/28`, or `192.0.2.10-192.0.2.30`. Intervals include both endpoints. Pool ranges contain every supplied unicast address, including CIDR endpoints; they do not silently subtract subnet network/broadcast addresses. The operator must own and route every selected address. Duplicates and overlapping sets are normalized. Explicit route CIDR lengths retain their LPM precedence; duplicate identical routes are removed, conflicting identical prefixes are rejected.
+
+`ports` accepts `443`, `"8000-8100"`, or `[80, 443, "8000-8100"]`; endpoints must be 1..65535. `protocol` accepts one of `any`, `icmp`, `tcp`, `udp`, or a list. Omitted destination matches any address. Omitted protocol means `any`, except a port constraint or DNAT implies TCP/UDP. Omitted ports matches any port; port constraints require TCP/UDP. Empty match lists and null values are rejected; omit the field to express any value. ACLs may contain only `action`. Omitted or empty ACL allows unmatched traffic; add a final `action: deny` for an allowlist. No `cidrs`, `protocols`, `port_first` or `port_last` aliases are accepted.
+
+```yaml
+acl:
+  - destination: [203.0.113.0/24, 198.51.100.10-198.51.100.20]
+    protocol: [tcp, udp]
+    ports: [443, "8000-8100"]
+    action: allow
+  - action: deny
+```
 
 | Resource setting | Default and meaning |
 |---|---|

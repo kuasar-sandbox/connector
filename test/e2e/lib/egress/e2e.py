@@ -199,7 +199,7 @@ def main():
         area={'vni':7,'pools':[{'name':'primary','interface':tag+'x0','next_hop':'192.0.2.2','addresses':['192.0.2.1'],'max_connections':2},
                                {'name':'secondary','interface':tag+'x1','next_hop':'198.19.0.2','addresses':['198.19.0.1'],'max_connections':1}],
               'acl':[{'destination':'203.0.113.0/24','protocol':'any','action':'allow'},
-                     {'destination':'198.18.1.1/32','protocol':'udp','action':'allow'}],
+                     {'destination':'198.18.1.1/32','protocol':'udp','action':'allow'}, {'action':'deny'}],
               'routes':[{'destination':'0.0.0.0/0','pool':'primary'},{'destination':'203.0.113.12/32','pool':'secondary'}],
               'dnat':[{'destination':'198.18.1.1/32','protocol':'udp','pool':'secondary','target':'203.0.113.11','target_port':18080}]}
         bits=4 if args.encap=='ether' and not args.legacy else 0
@@ -209,7 +209,7 @@ def main():
                            {'name':tag+'x0','address':'192.0.2.1/24','mtu':1500},
                            {'name':tag+'x1','address':'198.19.0.1/24','mtu':1500}],
              'attachments':[{'name':'local','interface':gateway,'peer':['198.18.0.2'],'locator':args.locator}],
-             'area_files':['area.json']}
+             'area_files':['area.yaml']}
         if args.locator=='tlv':cfg['attachments'][0].update(tlv_class=258,tlv_type=129)
         if args.remote:
             if args.locator=='vni':del cfg['attachments'][0]['peer']
@@ -218,8 +218,8 @@ def main():
         cpus=sorted(os.sched_getaffinity(0))
         if len(cpus)<args.workers+1:raise RuntimeError('not enough CPUs for requested workers')
         cfg['main_core']=cpus[0];cfg['workers']=cpus[1:args.workers+1]
-        areafile=output/'area.json';write_json(areafile,area)
-        cfgfile=output/'gateway.json';write_json(cfgfile,cfg)
+        areafile=output/'area.yaml';areafile.write_text('# Area policy\n'+''.join(key+': '+json.dumps(value)+'\n' for key,value in area.items()))
+        cfgfile=output/'gateway.yaml';cfgfile.write_text('# Gateway configuration\n'+''.join(key+': '+json.dumps(value)+'\n' for key,value in cfg.items()))
         ctl('egress','validate','--config',cfgfile)
         service=spawn(['ip','netns','exec',names['eg'],args.ctl,'egress','serve','--config',str(cfgfile)],'gateway.log')
         ready=wait_status(lambda st: st['configuration_generation']==1)
@@ -261,7 +261,7 @@ def main():
         check('diagnostics distinguish exit carrier failure',True,state)
         run('ip','-n',names['out'],'link','set',tag+'b0','up')
         denied=call('gb','deny',31200,'203.0.112.11')
-        check('default-deny ACL',not denied['ok'],denied)
+        check('explicit final deny ACL',not denied['ok'],denied)
         dnat=call('gb','dnat',31300,'198.18.1.1',port=53)
         check('DNAT fixes Pool and restores original tuple',dnat.get('ok') and dnat['peer']==['198.18.1.1',53] and dnat['reply']['peer'][0]=='198.19.0.1',dnat)
         tcp=call('gb','tcp',31400,'203.0.113.11',protocol='tcp',response_bytes=1<<20)

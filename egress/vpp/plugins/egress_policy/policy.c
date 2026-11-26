@@ -402,7 +402,7 @@ acl_allows (const area_t *a, u8 proto, ip4_address_t dst, u16 port)
     return 0;
   rule_t *r;
   vec_foreach (r, a->acl) if (matches (r, dst, clib_net_to_host_u16 (port), proto)) return r->allow;
-  return 0;
+  return 1;
 }
 static int
 select_policy (u32 fib, u8 proto, ip4_address_t dst, u16 port, nat44_ed_policy_decision_t *d)
@@ -412,7 +412,7 @@ select_policy (u32 fib, u8 proto, ip4_address_t dst, u16 port, nat44_ed_policy_d
   attachment_t *c = &attachments[fib];
   area_t *a = &areas[access_for (c)->area];
   rule_t *r;
-  u8 allowed = 0, selected = 0;
+  u8 allowed = 1, selected = 0;
   u32 pool = 0, best = 0;
   vec_foreach (r, a->acl) if (matches (r, dst, clib_net_to_host_u16 (port), proto))
   {
