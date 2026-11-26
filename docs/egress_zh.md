@@ -90,7 +90,7 @@ IP 封装和 legacy Ether 不增加新身份字段，既有协议无法区分身
 
 私有运行目录包含 `pid`、`startup.conf`、`owner.lock` 及原子替换的 `status.json`。状态文件报告配置代次、reload 错误、上下文及 NAT 数量、Area/Pool 计数、原生报文错误、原生 PID 和接口/carrier 状态。它只是输出，不会作为配置恢复。服务不暴露 HTTP、Unix CLI、二进制 API、统计监听或命名共享内存 API 传输。管理进程通过匿名父子进程描述符对控制原生进程。
 
-`egress link check --config link.json` 报告 pair 归属、位置和既有 vSwitch 状态。接口 UP 不是就绪证据，须验证每个所需 Pool 的真实双向流量。
+`egress link check --config link.json` 报告 pair 归属、位置和既有 vSwitch 状态。运行时检查覆盖网关进程、配置、部署拥有的接线和接口状态。Geneve 双向转发及 Pool 回程通过受控端到端测试验收。本部署能力不包含外部网络或目标探测、探测目标配置，也不以外部可达性作为启动门槛。
 
 丢失或替换一个物理接口只禁用该接口并等待受控修复，其他路径继续工作；同名新设备不会自动被接纳。本地修复时，停止受影响流量，通过正常 Detach 排空 vSwitch 已分配端口，在更换 Egress 端点前停止 Egress，运行 `egress link repair --config link.json --switch-config switch.json --mode veth`，重新启动 Egress 并验证流量。共享网关重启会丢失其 NAT 状态。修复包装流程拒绝活动端口，不强制删除沙箱。
 
