@@ -11,7 +11,7 @@ import struct
 import tarfile
 
 MANIFEST = 'vpp-runtime.json'
-PLUGINS = {'nat', 'af_packet', 'ping', 'egress_policy', 'egress_geneve', 'egress_packet'}
+BINARY = 'connector-vpp'
 ARCHES = {'x86_64': (62, 'x86_64-linux-gnu'), 'aarch64': (183, 'aarch64-linux-gnu')}
 BASELINES = {'x86_64': 'x86-64-v2', 'aarch64': 'armv8-a+crc'}
 
@@ -27,6 +27,7 @@ def native_inputs(root):
     paths = [root / name for name in (
         'LICENSE', 'native-deps/Makefile', 'native-deps/deps/common.sh',
         'native-deps/deps/build-vpp.sh', 'native-deps/deps/stage-vpp.py',
+        'native-deps/deps/static-libraries.py',
         'native-deps/deps/vpp-source.json', 'scripts/vpp-runtime.py')]
     patches = root / 'native-deps/deps/vpp-patches'
     paths += sorted(path for path in patches.rglob('*')
@@ -69,28 +70,56 @@ def _manifest(data, arch):
             and manifest.get('architecture') == arch, 'runtime identity mismatch')
     require(manifest.get('cpu_baseline') == BASELINES[arch], 'runtime CPU baseline mismatch')
     files = manifest.get('files')
-    require(isinstance(files, dict) and 0 < len(files) < 4096, 'invalid runtime file set')
-    triplet = ARCHES[arch][1]
-    plugins = {'lib/' + triplet + '/vpp_plugins/' + name + '_plugin.so'
-               for name in PLUGINS}
-    require({'vpp'} | plugins <= set(files), 'incomplete native runtime')
+    require(isinstance(files, dict) and set(files) == {BINARY},
+            'native runtime must contain only connector-vpp')
+    require(manifest.get('required_system_libraries') == [],
+            'connector-vpp must not require system shared libraries')
     for name, digest in files.items():
         path = PurePosixPath(name)
         require(not path.is_absolute() and '..' not in path.parts and str(path) == name
                 and '\\' not in name, 'unsafe runtime path: ' + name)
-        require(name == 'vpp' or name in plugins
-                or re.fullmatch(r'lib/' + triplet + r'/lib[A-Za-z0-9_.+-]+\.so(?:\.[0-9.]+)?', name),
-                'undeclared runtime file: ' + name)
         require(isinstance(digest, str) and re.fullmatch('[0-9a-f]{64}', digest),
                 'invalid runtime digest: ' + name)
     return manifest
 
 
+def check_static_elf(data, arch):
+    """Check target identity and the absence of dynamic runtime dependencies."""
+    require(len(data) >= 64 and data[:6] == b'\x7fELF\x02\x01'
+            and struct.unpack_from('<H', data, 18)[0] == ARCHES[arch][0],
+            'wrong native ELF: ' + BINARY)
+    kind = struct.unpack_from('<H', data, 16)[0]
+    phoff = struct.unpack_from('<Q', data, 32)[0]
+    ehsize, phentsize, phnum = struct.unpack_from('<HHH', data, 52)
+    require(kind in (2, 3) and ehsize == 64 and phentsize == 56
+            and 0 < phnum < 0xffff and phoff >= 64
+            and phoff + phnum * phentsize <= len(data),
+            'invalid native ELF program headers')
+    loadable = False
+    for index in range(phnum):
+        entry = phoff + index * phentsize
+        segment_type = struct.unpack_from('<I', data, entry)[0]
+        offset = struct.unpack_from('<Q', data, entry + 8)[0]
+        size = struct.unpack_from('<Q', data, entry + 32)[0]
+        require(offset + size <= len(data), 'native ELF segment exceeds file')
+        require(segment_type != 3, 'connector-vpp contains a dynamic interpreter')
+        loadable |= segment_type == 1
+        if segment_type == 2:
+            require(size % 16 == 0, 'invalid native ELF dynamic table')
+            terminated = False
+            for position in range(offset, offset + size, 16):
+                tag = struct.unpack_from('<q', data, position)[0]
+                require(tag != 1, 'connector-vpp contains a shared-library dependency')
+                if tag == 0:
+                    terminated = True
+                    break
+            require(terminated, 'unterminated native ELF dynamic table')
+    require(loadable, 'native ELF has no loadable segment')
+
+
 def _check_file(name, data, expected, arch):
     require(len(data) <= 256 * 1024 * 1024, 'oversized native file: ' + name)
-    require(len(data) >= 20 and data[:6] == b'\x7fELF\x02\x01'
-            and struct.unpack_from('<H', data, 18)[0] == ARCHES[arch][0],
-            'wrong native ELF: ' + name)
+    check_static_elf(data, arch)
     require(hashlib.sha256(data).hexdigest() == expected, 'runtime digest mismatch: ' + name)
 
 
@@ -110,22 +139,9 @@ def inspect(runtime, arch):
     manifest_file = _regular(runtime, MANIFEST, 0o644)
     require(manifest_file.stat().st_size < 1024 * 1024, 'oversized runtime manifest')
     manifest = _manifest(manifest_file.read_bytes(), arch)
-    triplet = ARCHES[arch][1]
-    lib = runtime / 'lib' / triplet
-    actual = {'vpp'}
-    if lib.exists():
-        require(lib.is_dir() and not lib.is_symlink() and not lib.parent.is_symlink(),
-                'invalid runtime library directory')
-        for path in lib.rglob('*'):
-            require(not path.is_symlink(), 'runtime may not contain links: ' + str(path))
-            if path.is_dir():
-                continue
-            require(path.is_file(), 'runtime contains a special file: ' + str(path))
-            actual.add(path.relative_to(runtime).as_posix())
-    require(actual == set(manifest['files']), 'runtime manifest file set mismatch')
     total = 0
     for name, digest in manifest['files'].items():
-        path = _regular(runtime, name, 0o755 if name == 'vpp' else 0o644)
+        path = _regular(runtime, name, 0o755)
         total += path.stat().st_size
         require(path.stat().st_size <= 256 * 1024 * 1024 and total <= 1024 * 1024 * 1024,
                 'invalid native runtime size')
@@ -153,7 +169,7 @@ def copy(runtime, output, arch):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(runtime / name, target)
             created.append(target)
-            target.chmod(0o755 if name == 'vpp' else 0o644)
+            target.chmod(0o755 if name == BINARY else 0o644)
     except BaseException:
         for path in reversed(created):
             path.unlink(missing_ok=True)
@@ -172,8 +188,7 @@ def inspect_archive(path, arch):
             require(name not in entries, 'duplicate archive path: ' + name)
             entries[name] = item
         manifest_name = 'bin/' + MANIFEST
-        native = {name.removeprefix('bin/') for name in entries
-                  if name == 'bin/vpp' or (name.startswith('bin/lib/') and not entries[name].isdir())}
+        native = {BINARY} if 'bin/' + BINARY in entries else set()
         if manifest_name not in entries:
             require(not native, 'native files without runtime manifest')
             return None
@@ -189,7 +204,7 @@ def inspect_archive(path, arch):
         require(native == set(manifest['files']), 'archive runtime file set mismatch')
         total = 0
         for name, digest in manifest['files'].items():
-            data = read('bin/' + name, 256 * 1024 * 1024, 0o755 if name == 'vpp' else 0o644)
+            data = read('bin/' + name, 256 * 1024 * 1024, 0o755)
             total += len(data)
             require(total <= 1024 * 1024 * 1024, 'invalid native archive size')
             _check_file(name, data, digest, arch)
