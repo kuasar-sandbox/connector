@@ -336,7 +336,17 @@ def main():
         check('reattachment after repair restores real return path',call('ga','repaired',31500,'203.0.113.12')['ok'])
         ctl('vswitch','detach',switch,'--port=1','--from-netns='+names['ga'])
         stop_switch()
-        service.terminate();service.wait(timeout=5)
+        if args.locator=='port' and args.encap=='ether' and not args.legacy:
+            # A stopped native process remains alive but cannot answer the
+            # supervisor's periodic diagnostics. A poisoned stream must make
+            # the supervisor fail and reap that child for service recovery.
+            native_pid=status()['native_pid']
+            os.kill(native_pid,signal.SIGSTOP)
+            service.wait(timeout=40)
+            check('diagnostic stream timeout terminates the supervisor',service.returncode!=0)
+            check('failed supervisor reaps the unresponsive native process',not Path('/proc',str(native_pid)).exists())
+        else:
+            service.terminate();service.wait(timeout=5)
         check('uninstall preserves Pool-owned interfaces',ctl('egress','link','uninstall','--config',link_file,check=False).returncode!=0 and run('ip','-n',names['eg'],'link','show',tag+'x0',check=False).returncode==0)
         for n in [0,1]:run('ip','-n',names['eg'],'link','del',tag+'x'+str(n))
         ctl('egress','link','uninstall','--config',link_file)

@@ -57,3 +57,11 @@ func (p *pipeRunner) Run(ctx context.Context, command string) (string, error) {
 	}
 	return strings.TrimSpace(strings.TrimSuffix(text, "\x00")), nil
 }
+
+// Failure reports a permanently unusable stream, including failures from
+// read-only diagnostics. A later command cannot resynchronize that stream.
+func (p *pipeRunner) Failure() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.failed
+}

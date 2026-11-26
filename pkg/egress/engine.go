@@ -342,7 +342,20 @@ func (e *Engine) Snapshot(ctx context.Context) (map[string]any, error) {
 	state["native_errors"] = errors
 	return state, nil
 }
-func (e *Engine) Failure() error { e.mu.Lock(); defer e.mu.Unlock(); return e.failed }
+
+// Failure includes transport loss during read-only diagnostics. Serve checks
+// this on every tick and after reload so service supervision can restart it.
+func (e *Engine) Failure() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.failed != nil {
+		return e.failed
+	}
+	if runner, ok := e.runner.(interface{ Failure() error }); ok {
+		return runner.Failure()
+	}
+	return nil
+}
 
 // Reload prepares all mutable file configuration before publication. Changes
 // to runtime resources are detected before any native command; support for

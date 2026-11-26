@@ -71,3 +71,71 @@ func TestNativeStreamRejectsInjectedCommand(t *testing.T) {
 		t.Fatal("accepted multiple commands")
 	}
 }
+
+func TestDiagnosticStreamLossReachesSupervisor(t *testing.T) {
+	for _, command := range []string{"show egress-geneve", "egress-policy summary", "show errors"} {
+		for _, failure := range []string{"EOF", "timeout"} {
+			t.Run(command+"/"+failure, func(t *testing.T) {
+				client, server := net.Pipe()
+				defer client.Close()
+				defer server.Close()
+				runner := newPipeRunner(client)
+				engine, err := NewEngine(validConfig(), runner)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				go func() {
+					reader := bufio.NewReader(server)
+					for {
+						line, err := reader.ReadString('\n')
+						if err != nil {
+							return
+						}
+						if strings.TrimSpace(line) == command {
+							if failure == "EOF" {
+								server.Close()
+							}
+							return
+						}
+						reply := "\x00"
+						if strings.TrimSpace(line) == "show egress-geneve" {
+							reply = "{}\x00"
+						}
+						if _, err := io.WriteString(server, reply); err != nil {
+							return
+						}
+					}
+				}()
+				if _, err := engine.Snapshot(ctx); err == nil {
+					t.Fatal("diagnostic stream failure was ignored")
+				}
+				if err := engine.Failure(); err == nil {
+					t.Fatal("supervisor would keep an unusable native process running")
+				}
+			})
+		}
+	}
+}
+
+func TestDiagnosticResponseErrorDoesNotPoisonStream(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	engine, err := NewEngine(validConfig(), newPipeRunner(client))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		if _, err := bufio.NewReader(server).ReadString('\n'); err == nil {
+			_, _ = io.WriteString(server, "invalid counters\x00")
+		}
+	}()
+	if _, err := engine.Snapshot(context.Background()); err == nil {
+		t.Fatal("invalid counters accepted")
+	}
+	if err := engine.Failure(); err != nil {
+		t.Fatalf("diagnostic parsing error poisoned a framed stream: %v", err)
+	}
+}
