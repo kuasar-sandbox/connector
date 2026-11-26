@@ -69,7 +69,9 @@ class EnvironmentTools(unittest.TestCase):
             (root/'Makefile').write_text(
                 "SHELL := /bin/bash\nGO := go\nBUILD_DIR := build\nTARGET_ARCH := x86_64\n"
                 + recursive + "\nrelease:\n" + recipe + "\n.PHONY: build\nbuild:\n"
-                "\t@go env GOWORK > build-env\n\t@go build -o checked .\n")
+                "\t@go env GOWORK > build-env\n\t@go build -o checked .\n"
+                ".PHONY: connector-egress.bundle\nconnector-egress.bundle:\n"
+                "\t@go env GOWORK > native-build-env\n")
             (root/'go.mod').write_text('module example.com/release-fixture\n\ngo 1.20\n')
             (root/'main.go').write_text('package main\nfunc main() {}\n')
             (root/'go.work').write_text('invalid workspace supplied by the caller\n')
@@ -122,6 +124,7 @@ class EnvironmentTools(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     selected = (root/'build-env').read_text().strip()
                     self.assertEqual((root/'package-env').read_text().strip(), selected)
+                    self.assertEqual((root/'native-build-env').read_text().strip(), selected)
                     if '-preview.' in version:
                         work = Path(selected)
                         self.assertFalse(work.exists())
@@ -250,7 +253,7 @@ printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >>
                         self.assertEqual(observed.read_text().splitlines(), [
                             target + "|" + (policy or "unset") + "|" + expected
                             + "|" + str(goenv)
-                            for target in ("test", "vet", "build")])
+                            for target in ("test", "vet", "build connector-egress.bundle")])
                         self.assertFalse(github_env.exists(), "candidate must not change host Go environment")
                         self.assertFalse(github_path.exists(), "candidate must not change host PATH")
 

@@ -8,4 +8,4 @@ lib="${E2E_WORKSPACE:?}/test/e2e/connector/lib/egress"
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 python3 "$lib/bundle.py" extract --arch "${E2E_ARCH:?}" --bundle "$BIN/connector-egress.bundle" --runtime "$work/runtime"
-bash "$lib/run.sh" "$BIN/connector-ctl" "$work/runtime" "$work/acceptance"
+bash "$lib/run.sh" "$BIN/connector-ctl" "$work/runtime" "${OUT:?}/egress"

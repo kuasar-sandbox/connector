@@ -188,7 +188,12 @@ def peer_process(config):
     for line in sys.stdin:
         q = json.loads(line); started = time.monotonic()
         try:
-            if q.get('op') == 'stage':
+            if q.get('op') == 'keepalive':
+                until=time.monotonic()+q['seconds'];count=0
+                while time.monotonic()<until:
+                    exchange({'slot':q['slot']});count+=1
+                result=dict(ok=True,echoed=count)
+            elif q.get('op') == 'stage':
                 count = retries = 0; tuples = set()
                 for slot in range(q['contexts']):
                     for flow in range(q['flows']):
@@ -400,6 +405,17 @@ def main():
             query(peers[0],slot=100,area=7,outer_port=1234)
             check('UDP locators outside the vSwitch port block are accepted and reflected',True)
         empty=expire_all();check('idle forwarding contexts and NAT expire without release',empty['reclaimed']>=3,empty)
+        if args.contexts<=32:
+            timeouts=copy.deepcopy(cfg['timeouts'])
+            cfg['timeouts']={key:2 for key in timeouts};reload_config(cfg)
+            query(peers[0],slot=1)
+            start=status()['reclaimed']
+            peers[1].stdin.write(json.dumps(dict(op='keepalive',slot=1,seconds=15))+'\n');peers[1].stdin.flush()
+            observed=wait_status(lambda st: st['contexts']==1 and st['connections']==1 and st['reclaimed']>start,timeout=12)
+            active=json.loads(peers[1].stdout.readline())
+            check('idle context is reclaimed while another peer continuously exchanges traffic',active['ok'] and active['echoed']>=100,dict(status=observed,traffic=active))
+            expire_all()
+            cfg['timeouts']=timeouts;reload_config(cfg)
         # Aggregate multiple unchanged 4096-slot switch locators. No registration
         # calls and no artificial gateway-wide 4096 limit are used.
         def process_memory():
