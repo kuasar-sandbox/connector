@@ -215,6 +215,8 @@ printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >>
                 path.write_text(source)
                 path.chmod(0o755)
             (module / "go.mod").write_text("module example.com/releasehandoff\n\ngo 1.20\n")
+            version_marker = module / "internal/version/version.go"
+            version_marker.parent.mkdir(parents=True)
             goenv = root / "environment-owned-config"
             goenv.write_text("")
             path = str(tools) + os.pathsep + os.environ.get("PATH", "")
@@ -245,17 +247,24 @@ printf '%s|%s|%s|%s\n' "$*" "${GOTOOLCHAIN-unset}" "${GOROOT-unset}" "$GOENV" >>
                     expected = subprocess.run([real_go, "env", "GOROOT"], cwd=module,
                                               env=probe_env, text=True, capture_output=True,
                                               timeout=10, check=True).stdout.strip()
-                    with self.subTest(goroot=inherited_goroot, policy=policy):
-                        result = subprocess.run([shutil.which("bash"), "-e", "-c", command],
-                                                cwd=root, env=env, text=True,
-                                                capture_output=True, timeout=10)
-                        self.assertEqual(result.returncode, 0, result.stderr)
-                        self.assertEqual(observed.read_text().splitlines(), [
-                            target + "|" + (policy or "unset") + "|" + expected
-                            + "|" + str(goenv)
-                            for target in ("test", "vet", "build connector-egress.bundle")])
-                        self.assertFalse(github_env.exists(), "candidate must not change host Go environment")
-                        self.assertFalse(github_path.exists(), "candidate must not change host PATH")
+                    for versioned in (False, True):
+                        observed.unlink(missing_ok=True)
+                        version_marker.unlink(missing_ok=True)
+                        targets = ["test", "vet", "build connector-egress.bundle BUILD_VERSION=v0.1.1"]
+                        if versioned:
+                            version_marker.touch()
+                            targets.append("check-version BUILD_VERSION=v0.1.1")
+                        with self.subTest(goroot=inherited_goroot, policy=policy, versioned=versioned):
+                            result = subprocess.run([shutil.which("bash"), "-e", "-c", command],
+                                                    cwd=root, env=env, text=True,
+                                                    capture_output=True, timeout=10)
+                            self.assertEqual(result.returncode, 0, result.stderr)
+                            self.assertEqual(observed.read_text().splitlines(), [
+                                target + "|" + (policy or "unset") + "|" + expected
+                                + "|" + str(goenv)
+                                for target in targets])
+                            self.assertFalse(github_env.exists(), "candidate must not change host Go environment")
+                            self.assertFalse(github_path.exists(), "candidate must not change host PATH")
 
             observed = root / "observed"
             observed.unlink(missing_ok=True)
