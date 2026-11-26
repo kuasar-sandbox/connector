@@ -1,7 +1,7 @@
-From b1d90e013abe8575eb8bae34d4f97a62ba97ddbf Mon Sep 17 00:00:00 2001
+From d6750c257346dd5b88a7e4cacbbec369675a0c39 Mon Sep 17 00:00:00 2001
 From: Xiaohui Chen <9959614+fullof-work@users.noreply.github.com>
 Date: Thu, 26 Nov 2026 17:48:54 +0800
-Subject: [PATCH 5/5] ip4: retire FIB reassembly state after queued traffic
+Subject: [PATCH 5/6] ip4: retire FIB reassembly state after queued traffic
  drains
 
 ---

@@ -1,7 +1,7 @@
-From e61e35cbc4d347be911bda228ab2d423226de795 Mon Sep 17 00:00:00 2001
+From 88308803d2d4be09c9f818dfa2615843ce6c8870 Mon Sep 17 00:00:00 2001
 From: Xiaohui Chen <9959614+fullof-work@users.noreply.github.com>
 Date: Thu, 26 Nov 2026 17:48:54 +0800
-Subject: [PATCH 4/5] ip4: allow gateway source admission and ICMP source
+Subject: [PATCH 4/6] ip4: allow gateway source admission and ICMP source
  selection
 
 ---

@@ -1,7 +1,7 @@
-From 080f4909bd2a97c2a9072e72065ccbe77ac86d1f Mon Sep 17 00:00:00 2001
+From 9ef26ebb9bedf4b198f218940937b4209705fa3a Mon Sep 17 00:00:00 2001
 From: Xiaohui Chen <9959614+fullof-work@users.noreply.github.com>
 Date: Thu, 26 Nov 2026 17:48:54 +0800
-Subject: [PATCH 3/5] vpp: support private gateway memory and control endpoints
+Subject: [PATCH 3/6] vpp: support private gateway memory and control endpoints
 
 ---
  src/svm/svm.c               | 8 +++++++-

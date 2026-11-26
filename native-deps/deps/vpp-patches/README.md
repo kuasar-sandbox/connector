@@ -12,6 +12,8 @@ The ordered `git format-patch` series preserves the existing Egress changes:
 3. Keep the owned gateway's memory and control endpoints private.
 4. Support routed-peer admission and ICMP source selection for Egress interfaces.
 5. Retire FIB reassembly state only after pending graph and handoff traffic drains.
+6. Build the fixed Egress modules and libc into one static executable, with typed
+   NAT hooks and no external plugin, driver or crypto-engine loading.
 
 The first-party plugins remain in `egress/vpp/plugins` in the Connector source
 tree. Only modifications to upstream VPP belong in this patch directory.

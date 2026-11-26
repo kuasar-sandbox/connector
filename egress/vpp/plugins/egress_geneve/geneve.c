@@ -3,7 +3,10 @@
  * One immutable network attachment => one RX interface and one inside FIB.
  * NAT's return FIB chooses this interface; no shared current-MAC lookup.
  */
-#include <vlib/unix/plugin.h>
+#include <egress_geneve/geneve.h>
+#include <egress_packet/packet.h>
+#include <egress_policy/policy.h>
+#include <nat/nat44-ed/nat44_ed_policy.h>
 #include <vlib/vlib.h>
 #include <vnet/ethernet/ethernet.h>
 #include <vnet/feature/feature.h>
@@ -87,19 +90,6 @@ typedef struct
 } gp_main_t;
 static gp_main_t gm;
 extern vlib_node_registration_t gp_input_node, gp_output_node;
-static u32 (*policy_live) (u32);
-static void (*nat_timeouts) (u32, u32, u32, u32);
-static int (*gp_nat_bind) (u32, u8);
-static int (*policy_bind) (u32, u32, u32, u32, u32, u32);
-static int (*policy_has_area) (u32);
-static int (*policy_vtep_conflict) (u32);
-static u32 (*policy_access_count) (void);
-static int (*policy_retire) (u32);
-static void (*policy_revoke) (u32);
-static u32 (*policy_flush_revoked) (void);
-static int (*packet_bind) (u32, u8);
-static clib_error_t *(*policy_validate) (void);
-static u32 (*policy_publish) (void);
 static u32 gp_discover (vlib_main_t *, const gp_key_t *, u32, const u8 *);
 
 /* Configured source ranges are a filter, not an identity or a list of
@@ -363,7 +353,7 @@ gp_input_one (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_buffer_t *b)
       || vlib_buffer_length_in_chain (vm, b) < advance + clib_net_to_host_u16 (inner->length)
       || !ip4_header_checksum_is_valid (inner) || !inner->src_address.as_u32)
     goto drop;
-  if ((key.ether && (return_mac[0] & 1)) || !policy_has_area (key.area))
+  if ((key.ether && (return_mac[0] & 1)) || !egress_policy_has_area (key.area))
     goto drop;
   uword *entry = hash_get_mem (gm.by_key, &key);
   u32 ci;
@@ -656,7 +646,7 @@ gp_destroy (vlib_main_t *vm, gp_context_t *c)
 {
   gp_route_ref (c, 0);
   ip4_sw_interface_enable_disable (c->sw_if_index, 0);
-  packet_bind (c->sw_if_index, 0);
+  egress_packet_bind (c->sw_if_index, 0);
   fib_table_flush (c->fib_index, FIB_PROTOCOL_IP4, FIB_SOURCE_CLI);
   vnet_sw_interface_set_flags (vnet_get_main (), c->sw_if_index, 0);
   ip4_full_reass_enable_disable (c->sw_if_index, 0);
@@ -675,7 +665,7 @@ static u32
 gp_discover (vlib_main_t *vm, const gp_key_t *key, u32 rx, const u8 *mac)
 {
   gp_attachment_t *matched = gp_match (rx, key->local_ip, key->peer_ip);
-  if (!matched || !policy_has_area (key->area))
+  if (!matched || !egress_policy_has_area (key->area))
     return ~0;
   gp_attachment_t a = *matched;
   vlib_worker_thread_barrier_sync (vm);
@@ -706,15 +696,15 @@ gp_discover (vlib_main_t *vm, const gp_key_t *key, u32 rx, const u8 *mac)
   ip46_address_t hop = { 0 };
   fib_table_entry_update_one_path (fi, &prefix, FIB_SOURCE_CLI, FIB_ENTRY_FLAG_NONE, DPO_PROTO_IP4,
                                    &hop, c->sw_if_index, 0, 1, 0, FIB_ROUTE_PATH_FLAG_NONE);
-  if (policy_bind (fi, table, key->area, key->peer_ip, key->local_ip, key->slot))
+  if (egress_policy_context_bind (fi, table, key->area, key->peer_ip, key->local_ip, key->slot))
     goto fail;
   policy = 1;
   if (ip4_full_reass_enable_disable (c->sw_if_index, 1))
     goto fail;
-  if (gp_nat_bind (c->sw_if_index, 1))
+  if (nat44_ed_interface_bind (c->sw_if_index, 1))
     goto fail;
   bound = 1;
-  if (packet_bind (c->sw_if_index, 1))
+  if (egress_packet_bind (c->sw_if_index, 1))
     goto fail;
   gp_route_ref (c, 1);
   hash_set_mem_alloc (&gm.by_key, key, ci);
@@ -723,9 +713,9 @@ gp_discover (vlib_main_t *vm, const gp_key_t *key, u32 rx, const u8 *mac)
   return ci;
 fail:
   if (bound)
-    gp_nat_bind (c->sw_if_index, 0);
+    nat44_ed_interface_bind (c->sw_if_index, 0);
   if (policy)
-    policy_retire (fi);
+    egress_policy_context_retire (fi);
   gp_destroy (vm, c);
   vlib_worker_thread_barrier_release (vm);
   return ~0;
@@ -759,20 +749,20 @@ gp_configuration (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd
     {
       vlib_worker_thread_barrier_sync (vm);
       gp_attachment_t *candidate;
-      vec_foreach (candidate, gm.pending) if (policy_vtep_conflict (candidate->profile.key.local))
+      vec_foreach (candidate, gm.pending) if (egress_policy_vtep_conflict (candidate->profile.key.local))
       {
         vlib_worker_thread_barrier_release (vm);
         return clib_error_return (0,
                                   "Geneve gateway address is retained by an existing SNAT mapping");
       }
-      clib_error_t *err = policy_validate ();
+      clib_error_t *err = egress_policy_batch_validate ();
       if (err)
         {
           vlib_worker_thread_barrier_release (vm);
           return err;
         }
-      u32 removed = policy_publish ();
-      nat_timeouts (gm.timeouts[0], gm.timeouts[1], gm.timeouts[2], gm.timeouts[3]);
+      u32 removed = egress_policy_batch_publish ();
+      nat44_ed_policy_timeouts (gm.timeouts[0], gm.timeouts[1], gm.timeouts[2], gm.timeouts[3]);
       gp_attachment_t *old = gm.attachments;
       gm.attachments = gm.pending;
       gm.pending = 0;
@@ -807,13 +797,13 @@ gp_configuration (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd
       {
         a = gp_match (c->rx_if, c->key.local_ip, c->key.peer_ip);
         u32 hop = a ? (a->next_hop.as_u32 ? a->next_hop.as_u32 : c->key.peer_ip) : 0;
-        if (!a || !policy_has_area (c->key.area) || a->profile.locator != c->locator
+        if (!a || !egress_policy_has_area (c->key.area) || a->profile.locator != c->locator
             || hop != c->next_hop.as_u32
             || (c->locator == 2
                 && (a->profile.tlv_class != c->tlv_class || a->profile.tlv_type != c->tlv_type)))
           {
             gp_retire (c);
-            policy_revoke (c->fib_index);
+            egress_policy_context_revoke (c->fib_index);
           }
         else if (!c->retired)
           {
@@ -822,7 +812,7 @@ gp_configuration (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd
             vnet_sw_interface_set_mtu (vnet_get_main (), c->sw_if_index, c->inner_mtu);
           }
       }
-      removed += policy_flush_revoked ();
+      removed += egress_policy_flush_revoked ();
       vec_free (old);
       vlib_worker_thread_barrier_release (vm);
       vlib_cli_output (vm, "{\"committed\":true,\"terminated\":%u}", removed);
@@ -920,7 +910,7 @@ gp_reaper (vlib_main_t *vm, vlib_node_runtime_t *rt, vlib_frame_t *f)
       {
         if (!c->retired)
           {
-            if (policy_live (c->fib_index))
+            if (egress_policy_context_live (c->fib_index))
               c->idle_since = 0;
             else if (!c->idle_since)
               c->idle_since = now;
@@ -929,19 +919,19 @@ gp_reaper (vlib_main_t *vm, vlib_node_runtime_t *rt, vlib_frame_t *f)
           }
         if (c->retired)
           {
-            policy_revoke (c->fib_index);
+            egress_policy_context_revoke (c->fib_index);
             any = 1;
           }
       }
       if (any)
-        policy_flush_revoked ();
+        egress_policy_flush_revoked ();
       if (any && ip4_reass_fib_retire_ready ())
         {
-          pool_foreach (c, gm.contexts) if (c->retired && !policy_live (c->fib_index))
+          pool_foreach (c, gm.contexts) if (c->retired && !egress_policy_context_live (c->fib_index))
           {
             ip4_full_reass_purge_fib (c->fib_index);
             ip4_sv_reass_purge_fib (c->fib_index);
-            if (!policy_retire (c->fib_index) && !gp_nat_bind (c->sw_if_index, 0))
+            if (!egress_policy_context_retire (c->fib_index) && !nat44_ed_interface_bind (c->sw_if_index, 0))
               vec_add1 (expired, (u32)(c - gm.contexts));
           }
           vec_foreach (i, expired) gp_destroy (vm, pool_elt_at_index (gm.contexts, *i));
@@ -964,12 +954,12 @@ gp_show_cli (vlib_main_t *vm, unformat_input_t *in, vlib_cli_command_t *cmd)
   {
     count++;
     retiring += !!c->retired;
-    live += policy_live (c->fib_index);
+    live += egress_policy_context_live (c->fib_index);
   }
   vlib_cli_output (vm,
                    "{\"contexts\":%u,\"retiring\":%u,\"connections\":%llu,\"created\":%llu,"
                    "\"reclaimed\":%llu,\"accesses\":%u}",
-                   count, retiring, live, gm.created, gm.reclaimed, policy_access_count ());
+                   count, retiring, live, gm.created, gm.reclaimed, egress_policy_access_count ());
   vlib_worker_thread_barrier_release (vm);
   return 0;
 }
@@ -989,30 +979,6 @@ gp_init (vlib_main_t *vm)
   gm.next_table = 1;
   gm.discover_queue = vlib_handoff_alloc_queues (
       &(vlib_handoff_alloc_queues_args_t){ .node_index = gp_input_node.index, .queue_size = 4096 });
-  policy_live = vlib_get_plugin_symbol ("egress_policy_plugin.so", "egress_policy_context_live");
-  policy_validate
-      = vlib_get_plugin_symbol ("egress_policy_plugin.so", "egress_policy_batch_validate");
-  policy_publish
-      = vlib_get_plugin_symbol ("egress_policy_plugin.so", "egress_policy_batch_publish");
-  nat_timeouts = vlib_get_plugin_symbol ("nat_plugin.so", "nat44_ed_policy_timeouts");
-  gp_nat_bind = vlib_get_plugin_symbol ("nat_plugin.so", "nat44_ed_interface_bind");
-  policy_vtep_conflict
-      = vlib_get_plugin_symbol ("egress_policy_plugin.so", "egress_policy_vtep_conflict");
-  policy_has_area = vlib_get_plugin_symbol ("egress_policy_plugin.so", "egress_policy_has_area");
-  policy_access_count
-      = vlib_get_plugin_symbol ("egress_policy_plugin.so", "egress_policy_access_count");
-  policy_bind = vlib_get_plugin_symbol ("egress_policy_plugin.so", "egress_policy_context_bind");
-  policy_retire
-      = vlib_get_plugin_symbol ("egress_policy_plugin.so", "egress_policy_context_retire");
-  policy_revoke
-      = vlib_get_plugin_symbol ("egress_policy_plugin.so", "egress_policy_context_revoke");
-  policy_flush_revoked
-      = vlib_get_plugin_symbol ("egress_policy_plugin.so", "egress_policy_flush_revoked");
-  packet_bind = vlib_get_plugin_symbol ("egress_packet_plugin.so", "egress_packet_bind");
-  if (!nat_timeouts || !policy_live || !policy_validate || !policy_publish || !gp_nat_bind
-      || !policy_vtep_conflict || !policy_bind || !policy_has_area || !policy_access_count
-      || !policy_retire || !policy_revoke || !policy_flush_revoked || !packet_bind)
-    return clib_error_return (0, "pinned NAT/policy hooks unavailable");
   return 0;
 }
 VLIB_INIT_FUNCTION (gp_init);

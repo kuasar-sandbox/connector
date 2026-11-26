@@ -1,7 +1,7 @@
-From 1693cc25167444ac93c0184d86de5da0a6311c97 Mon Sep 17 00:00:00 2001
+From 4df19d8301720d04c3411c7fa07763071bce8913 Mon Sep 17 00:00:00 2001
 From: Xiaohui Chen <9959614+fullof-work@users.noreply.github.com>
 Date: Thu, 26 Nov 2026 17:48:54 +0800
-Subject: [PATCH 2/5] nat44-ed: expose policy admission and session lifecycle
+Subject: [PATCH 2/6] nat44-ed: expose policy admission and session lifecycle
  hooks
 
 ---

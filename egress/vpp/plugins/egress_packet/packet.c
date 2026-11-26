@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Connector Egress: pre-NAT PMTU with native ICMP generation. */
+#include <egress_packet/packet.h>
 #include <vlib/vlib.h>
 #include <vnet/feature/feature.h>
 #include <vnet/gso/gso.h>

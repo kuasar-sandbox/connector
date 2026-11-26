@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish the built VPP files into the shared architecture output directory."""
+"""Publish static connector-vpp into the shared architecture output directory."""
 import argparse
 import hashlib
 import importlib.util
@@ -10,13 +10,13 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location('vpp_runtime', ROOT/'scripts/vpp-runtime.py')
 RUNTIME = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RUNTIME)
-PLUGINS = ('nat', 'af_packet', 'ping', 'egress_policy', 'egress_geneve', 'egress_packet')
 
 
 def licenses(source, output):
@@ -69,6 +69,8 @@ def stage(build, source, output, arch):
     cache = (build/'obj/CMakeCache.txt').read_text()
     if not re.search(r'^VPP_BUILD_NATIVE_ARCH:[^=]+='+re.escape(baseline)+r'$', cache, re.M):
         raise SystemExit('VPP must use the documented portable CPU baseline')
+    if not re.search(r'^VPP_STATIC_EGRESS:BOOL=ON$', cache, re.M):
+        raise SystemExit('connector-vpp must use the fixed static Egress build')
     check_output_path(output)
     output.mkdir(parents=True, exist_ok=True)
     staged = Path(tempfile.mkdtemp(prefix='.vpp-', dir=output.parent))
@@ -77,12 +79,7 @@ def stage(build, source, output, arch):
         manifest = dict(product='connector-egress-native-runtime', schema=1,
                         architecture=arch, cpu_baseline=baseline, vpp=metadata,
                         native_build_inputs=built_inputs, files={})
-        inputs = [(build/'obj/vpp', Path('vpp'))]
-        lib = build/'obj/lib'/triplet
-        inputs += [(path, Path('lib')/triplet/path.name) for path in sorted(lib.glob('lib*.so*'))]
-        inputs += [(lib/'vpp_plugins'/(name+'_plugin.so'),
-                    Path('lib')/triplet/'vpp_plugins'/(name+'_plugin.so')) for name in PLUGINS]
-        required = set()
+        inputs = [(build/'obj/connector-vpp', Path('connector-vpp'))]
         for path, relative in inputs:
             content = path.read_bytes()
             if len(content) < 20 or content[:6] != b'\x7fELF\x02\x01' or struct.unpack_from('<H', content, 18)[0] != machine:
@@ -90,18 +87,21 @@ def stage(build, source, output, arch):
             dest = staged/relative
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(content)
-            dest.chmod(0o755 if relative == Path('vpp') else 0o644)
-            needed = subprocess.check_output(['readelf', '-d', str(path)], text=True)
-            required.update(re.findall(r'\(NEEDED\).*\[([^]]+)\]', needed))
+            dest.chmod(0o755)
             manifest['files'][relative.as_posix()] = hashlib.sha256(content).hexdigest()
-        shipped = {relative.name for _, relative in inputs}
-        manifest['required_system_libraries'] = sorted(required-shipped)
+        manifest['required_system_libraries'] = []
         (staged/'vpp-runtime.json').write_text(json.dumps(manifest, indent=2)+'\n')
         (staged/'vpp-runtime.json').chmod(0o644)
         RUNTIME.inspect(staged, arch)
         # License materials follow the existing native dependency convention:
         # retain them with build outputs; the release package owns share/licenses.
         licenses(source, license_stage/'licenses')
+        subprocess.run([
+            sys.executable, str(ROOT/'native-deps/deps/static-libraries.py'),
+            '--link-map', str(build/'obj/connector-vpp.map'),
+            '--build-root', str(build/'obj'),
+            '--output', str(license_stage/'licenses/system'),
+            '--record', str(build/'static-libraries.json')], check=True)
         old = output/'vpp-runtime.json'
         check_output_path(output, Path('vpp-runtime.json'))
         previous = json.loads(old.read_text()) if old.is_file() else {'files': {}}
@@ -111,7 +111,7 @@ def stage(build, source, output, arch):
         for name in old_files:
             path = Path(name)
             if (path.is_absolute() or '..' in path.parts or
-                    (name != 'vpp' and not name.startswith('lib/'+triplet+'/'))):
+                    (name not in ('connector-vpp', 'vpp') and not name.startswith('lib/'+triplet+'/'))):
                 raise SystemExit('Existing VPP manifest contains a path outside its owned files')
         for name in old_files.keys() | manifest['files'].keys():
             check_output_path(output, Path(name))

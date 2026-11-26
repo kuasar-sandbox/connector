@@ -52,11 +52,10 @@ test:
 # Keep the imported source and download cache, including any developer work.
 clean:
 	rm -rf "$(VPP_BUILD_OUT)"
-	rm -f "$(BINDIR)/vpp" "$(BINDIR)/vpp-runtime.json"
-	rm -rf "$(BINDIR)/lib/$(TARGET_ARCH)-linux-gnu"
+	rm -f "$(BINDIR)/connector-vpp" "$(BINDIR)/vpp-runtime.json"
 
 help:
-	@echo 'vpp                 Fetch, apply patches, build and populate ../bin/<arch>'
+	@echo 'vpp                 Build static connector-vpp in ../bin/<arch>'
 	@echo 'vpp-fetch           Fetch and verify the pinned source archive'
 	@echo 'vpp-patches-apply   Apply the maintained git-format patch series'
 	@echo 'vpp-patches-format Export committed source changes as patches'
