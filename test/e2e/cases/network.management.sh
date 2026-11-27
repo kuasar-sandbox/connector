@@ -12,7 +12,7 @@
 #   2. sandbox2 → mgmt service (169.254.169.254): PASS (SNAT via floating IP)
 #   3. mgmt service → sandbox1 (via floating IP):  PASS (DNAT to inner_ip)
 #   4. mgmt service → sandbox2 (via floating IP):  PASS (DNAT to inner_ip)
-#   5. sandbox1 → sandbox2 (169.254.1.1):          FAIL (no forwarding path)
+#   5. sandbox1 → sandbox2 (169.254.2.1):          FAIL (no forwarding path)
 #   6. sandbox1 → floating_ip of sandbox2:          FAIL (no forwarding path)
 #   7. sandbox1 → VIP:80 (--mgmt-service):          PASS (DNAT to 127.0.0.1:18080
 #                                                    + reverse SNAT back to VIP:80)
@@ -24,6 +24,9 @@
 # without the reverse rewrite, the SYN-ACK source would not match the sandbox's
 # connection tuple and the handshake would be RST. The loopback backend requires
 # route_localnet=1 on the mgmt device, which this test sets (the tool does not).
+# Tests 1–4 retain the overlapping inner IPs. Before testing isolation, sandbox2
+# gets a distinct inner IP and must remain reachable through its floating IP;
+# otherwise pinging 169.254.1.1 from sandbox1 would only test its own local route.
 
 set -euo pipefail
 
@@ -53,6 +56,7 @@ fail() {
 SW_NAME="sw1"
 FLOATING_IP_BASE="100.100.96.0"
 MGMT_IP="169.254.169.254"
+ISOLATION_INNER_IP="169.254.2.1"
 
 # --mgmt-service test parameters: sandbox connects to ${SVC_VIP}:${SVC_VPORT},
 # which is translated to a backend on ${SVC_TARGET}:${SVC_TARGET_PORT} in mgmt_ns.
@@ -187,8 +191,27 @@ run_tests() {
         fail "mgmt service cannot reach sandbox2 via floating IP"
     fi
 
-    echo "[5/7] sandbox1 -> sandbox2 inner IP (169.254.1.1) [expect blocked]"
-    if ip netns exec sandbox1 ping -c 2 -W 2 169.254.1.1 &>/dev/null; then
+    echo "==> Giving sandbox2 a distinct isolation-test address (${ISOLATION_INNER_IP})..."
+    ${SWITCH_BIN} detach ${SW_NAME} --port=2 --skip-device > /dev/null
+    ${SWITCH_BIN} attach ${SW_NAME} --port=2 --inner-ip="${ISOLATION_INNER_IP}" --skip-device > /dev/null
+    ip netns exec sandbox2 ip addr del 169.254.1.1/32 dev sw1-p2
+    ip netns exec sandbox2 ip addr add "${ISOLATION_INNER_IP}/32" dev sw1-p2
+    ip netns exec sandbox2 ip route replace default dev sw1-p2
+    local isolation_route
+    isolation_route="$(ip netns exec sandbox1 ip -4 route get "${ISOLATION_INNER_IP}")"
+    if [[ "$isolation_route" == local\ * || "$isolation_route" != *"dev sw1-p1"* ]]; then
+        fail "isolation target does not leave sandbox1 through its switch port: $isolation_route"
+        return 1
+    fi
+    if ip netns exec mgmt_ns ping -c 1 -W 2 100.100.96.1 &>/dev/null; then
+        pass "sandbox2 isolation target is reachable through its floating IP"
+    else
+        fail "sandbox2 isolation target is not reachable through its floating IP"
+        return 1
+    fi
+
+    echo "[5/7] sandbox1 -> sandbox2 inner IP (${ISOLATION_INNER_IP}) [expect blocked]"
+    if ip netns exec sandbox1 ping -c 2 -W 2 "${ISOLATION_INNER_IP}" &>/dev/null; then
         fail "sandbox1 can reach sandbox2 inner IP (isolation broken!)"
     else
         pass "sandbox1 cannot reach sandbox2 (isolation OK)"
