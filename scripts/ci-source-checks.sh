@@ -4,7 +4,11 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 echo "==> connector source/helper regressions"
 bash scripts/test-notify-helpers.sh
+python3 -B scripts/test-provision-assertions.py
 python3 -B scripts/test-vpp-runtime.py
+python3 -B scripts/test-management-ready.py
+python3 -B scripts/test-egress-wire.py
+python3 -B scripts/test-geneve-readiness.py
 make -C native-deps test
 
 echo "==> connector source unit, race and real BPF stats regressions"

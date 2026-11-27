@@ -163,7 +163,7 @@ journalctl -u connector-egress@egress-local.service -n 100 --no-pager
 /opt/connector/bin/connector-ctl egress status --runtime-dir /var/lib/connector-egress/egress-local
 ```
 
-reload 后确认 `snapshot.configuration_generation` 增长、`snapshot.reload_error` 为空，再验证受影响流量。`systemctl reload` 成功只表示已发送信号，不表示候选配置已被接受。node-infra 在节点容器内运行 `systemctl reload connector-egress`，并用 `connector-ctl egress status --runtime-dir /run/connector-egress/local` 检查其快照。
+请求 reload 前记录 `snapshot.configuration_generation` 和 `updated_at`。`systemctl reload` 成功只表示已发送信号，配置接受过程是异步的。重复执行状态命令，等待更新的快照报告代次增长且 `snapshot.reload_error` 为空，再验证受影响流量。reload 错误非空表示候选配置未被接受，应先诊断所报告的配置或接口错误，再重试。仅凭代次或时间戳未变化不能证明配置已被接受。如果始终没有结果，检查服务和日志。node-infra 在节点容器内运行 `systemctl reload connector-egress`，并用 `connector-ctl egress status --runtime-dir /run/connector-egress/local` 检查其快照。
 
 ### 通过 CLI 读取保存的快照
 

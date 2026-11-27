@@ -163,7 +163,7 @@ journalctl -u connector-egress@egress-local.service -n 100 --no-pager
 /opt/connector/bin/connector-ctl egress status --runtime-dir /var/lib/connector-egress/egress-local
 ```
 
-After reload, confirm `snapshot.configuration_generation` advanced and `snapshot.reload_error` is empty, then test affected traffic. A successful `systemctl reload` means the signal was delivered, not that the candidate was accepted. For node-infra, run `systemctl reload connector-egress` inside the node container and inspect its snapshot with `connector-ctl egress status --runtime-dir /run/connector-egress/local`.
+Before requesting reload, record `snapshot.configuration_generation` and `updated_at`. A successful `systemctl reload` means the signal was delivered; acceptance is asynchronous. Repeat the status command and wait for a newer snapshot that reports an advanced generation with an empty `snapshot.reload_error`, then test affected traffic. A nonempty reload error means the candidate was not accepted; diagnose the reported configuration or interface error before retrying. An unchanged generation or timestamp alone is not proof of acceptance. If no result appears, inspect the service and journal. For node-infra, run `systemctl reload connector-egress` inside the node container and inspect its snapshot with `connector-ctl egress status --runtime-dir /run/connector-egress/local`.
 
 ### Read a saved snapshot with the CLI
 

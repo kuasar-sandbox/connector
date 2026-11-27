@@ -181,7 +181,7 @@ PY
 
     # --- Test 2: sandbox1 → sandbox2 ---
     echo "[2/4] sandbox1 → sandbox2 (10.1.0.2) via IP-over-GENEVE"
-    if ip netns exec sandbox1 ping -c 2 -W 2 10.1.0.2 &>/dev/null; then
+    if ip netns exec sandbox1 ping -c 2 -i 0.1 -W 2 10.1.0.2 &>/dev/null; then
         pass "sandbox1 can reach sandbox2 via IP-over-GENEVE"
     else
         fail "sandbox1 cannot reach sandbox2 via IP-over-GENEVE"
@@ -189,7 +189,7 @@ PY
 
     # --- Test 3: sandbox2 → sandbox1 ---
     echo "[3/4] sandbox2 → sandbox1 (10.1.0.1) via IP-over-GENEVE"
-    if ip netns exec sandbox2 ping -c 2 -W 2 10.1.0.1 &>/dev/null; then
+    if ip netns exec sandbox2 ping -c 2 -i 0.1 -W 2 10.1.0.1 &>/dev/null; then
         pass "sandbox2 can reach sandbox1 via IP-over-GENEVE"
     else
         fail "sandbox2 cannot reach sandbox1 via IP-over-GENEVE"

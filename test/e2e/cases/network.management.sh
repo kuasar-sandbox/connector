@@ -12,7 +12,7 @@
 #   2. sandbox2 → mgmt service (169.254.169.254): PASS (SNAT via floating IP)
 #   3. mgmt service → sandbox1 (via floating IP):  PASS (DNAT to inner_ip)
 #   4. mgmt service → sandbox2 (via floating IP):  PASS (DNAT to inner_ip)
-#   5. sandbox1 → sandbox2 (169.254.1.1):          FAIL (no forwarding path)
+#   5. sandbox1 → sandbox2 (169.254.2.1):          FAIL (no forwarding path)
 #   6. sandbox1 → floating_ip of sandbox2:          FAIL (no forwarding path)
 #   7. sandbox1 → VIP:80 (--mgmt-service):          PASS (DNAT to 127.0.0.1:18080
 #                                                    + reverse SNAT back to VIP:80)
@@ -24,10 +24,14 @@
 # without the reverse rewrite, the SYN-ACK source would not match the sandbox's
 # connection tuple and the handshake would be RST. The loopback backend requires
 # route_localnet=1 on the mgmt device, which this test sets (the tool does not).
+# Tests 1–4 retain the overlapping inner IPs. Before testing isolation, sandbox2
+# gets a distinct inner IP and must remain reachable through its floating IP;
+# otherwise pinging 169.254.1.1 from sandbox1 would only test its own local route.
 
 set -euo pipefail
 
 source "${E2E_LIB:?E2E_LIB is required}/common.sh"
+source "${E2E_LIB}/connector/notify_helpers.sh"
 require_root
 require_command ip
 require_command python3
@@ -53,6 +57,7 @@ fail() {
 SW_NAME="sw1"
 FLOATING_IP_BASE="100.100.96.0"
 MGMT_IP="169.254.169.254"
+ISOLATION_INNER_IP="169.254.2.1"
 
 # --mgmt-service test parameters: sandbox connects to ${SVC_VIP}:${SVC_VPORT},
 # which is translated to a backend on ${SVC_TARGET}:${SVC_TARGET_PORT} in mgmt_ns.
@@ -62,7 +67,34 @@ SVC_VPORT="80"
 SVC_TARGET="127.0.0.1"
 SVC_TARGET_PORT="18080"
 SVC_MGMT_DEV="eth0"
-SVC_PIDFILE="/tmp/mgmt_svc_test_server.pid"
+SVC_PID=""
+SVC_TMP_DIR=""
+
+start_service_backend() {
+    SVC_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/connector-management.XXXXXX")
+    local ready_path="$SVC_TMP_DIR/ready"
+    ip netns exec mgmt_ns python3 - "$SVC_TARGET" "$SVC_TARGET_PORT" "$ready_path" <<'PY' &
+import socket
+import sys
+
+host, port, ready_path = sys.argv[1:]
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind((host, int(port)))
+    listener.listen(8)
+    with open(ready_path, "x"):
+        pass
+    while True:
+        connection, _ = listener.accept()
+        with connection:
+            connection.sendall(b"OK\n")
+PY
+    SVC_PID=$!
+    if ! wait_notify_receiver_ready "$ready_path" "$SVC_PID" 5; then
+        echo "ERROR: management backend exited or did not listen within its startup bound" >&2
+        return 1
+    fi
+}
 
 setup() {
     echo "==> Creating network namespaces..."
@@ -125,21 +157,7 @@ setup() {
     ip netns exec mgmt_ns sysctl -qw "net.ipv4.conf.all.route_localnet=1"
 
     echo "==> Starting --mgmt-service backend (${SVC_TARGET}:${SVC_TARGET_PORT} in mgmt_ns)..."
-    ip netns exec mgmt_ns python3 -c '
-import socket
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(("'"${SVC_TARGET}"'", '"${SVC_TARGET_PORT}"'))
-s.listen(8)
-while True:
-    c, _ = s.accept()
-    try:
-        c.sendall(b"OK\n")
-    finally:
-        c.close()
-' &
-    echo $! > "${SVC_PIDFILE}"
-    sleep 0.5
+    start_service_backend
 
     echo ""
     echo "==> Setup complete."
@@ -187,8 +205,27 @@ run_tests() {
         fail "mgmt service cannot reach sandbox2 via floating IP"
     fi
 
-    echo "[5/7] sandbox1 -> sandbox2 inner IP (169.254.1.1) [expect blocked]"
-    if ip netns exec sandbox1 ping -c 2 -W 2 169.254.1.1 &>/dev/null; then
+    echo "==> Giving sandbox2 a distinct isolation-test address (${ISOLATION_INNER_IP})..."
+    ${SWITCH_BIN} detach ${SW_NAME} --port=2 --skip-device > /dev/null
+    ${SWITCH_BIN} attach ${SW_NAME} --port=2 --inner-ip="${ISOLATION_INNER_IP}" --skip-device > /dev/null
+    ip netns exec sandbox2 ip addr del 169.254.1.1/32 dev sw1-p2
+    ip netns exec sandbox2 ip addr add "${ISOLATION_INNER_IP}/32" dev sw1-p2
+    ip netns exec sandbox2 ip route replace default dev sw1-p2
+    local isolation_route
+    isolation_route="$(ip netns exec sandbox1 ip -4 route get "${ISOLATION_INNER_IP}")"
+    if [[ "$isolation_route" == local\ * || "$isolation_route" != *"dev sw1-p1"* ]]; then
+        fail "isolation target does not leave sandbox1 through its switch port: $isolation_route"
+        return 1
+    fi
+    if ip netns exec mgmt_ns ping -c 1 -W 2 100.100.96.1 &>/dev/null; then
+        pass "sandbox2 isolation target is reachable through its floating IP"
+    else
+        fail "sandbox2 isolation target is not reachable through its floating IP"
+        return 1
+    fi
+
+    echo "[5/7] sandbox1 -> sandbox2 inner IP (${ISOLATION_INNER_IP}) [expect blocked]"
+    if ip netns exec sandbox1 ping -c 2 -W 2 "${ISOLATION_INNER_IP}" &>/dev/null; then
         fail "sandbox1 can reach sandbox2 inner IP (isolation broken!)"
     else
         pass "sandbox1 cannot reach sandbox2 (isolation OK)"
@@ -231,10 +268,16 @@ run_tests() {
 }
 
 teardown() {
+    local exit_status=$?
     echo "==> Stopping --mgmt-service backend..."
-    if [ -f "${SVC_PIDFILE}" ]; then
-        kill "$(cat "${SVC_PIDFILE}")" 2>/dev/null || true
-        rm -f "${SVC_PIDFILE}"
+    if ! stop_owned_process "${SVC_PID:-}"; then
+        echo "ERROR: management backend did not exit cleanly within its shutdown bound" >&2
+        [ "$exit_status" -ne 0 ] || exit_status=1
+    fi
+    SVC_PID=""
+    if [ -n "${SVC_TMP_DIR:-}" ]; then
+        rm -rf "$SVC_TMP_DIR"
+        SVC_TMP_DIR=""
     fi
 
     echo "==> Stopping connector-ctl vswitch..."
@@ -246,6 +289,7 @@ teardown() {
     done
 
     echo "==> Teardown complete."
+    exit "$exit_status"
 }
 
 trap teardown EXIT
