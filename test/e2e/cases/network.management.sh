@@ -31,6 +31,7 @@
 set -euo pipefail
 
 source "${E2E_LIB:?E2E_LIB is required}/common.sh"
+source "${E2E_LIB}/connector/notify_helpers.sh"
 require_root
 require_command ip
 require_command python3
@@ -66,7 +67,34 @@ SVC_VPORT="80"
 SVC_TARGET="127.0.0.1"
 SVC_TARGET_PORT="18080"
 SVC_MGMT_DEV="eth0"
-SVC_PIDFILE="/tmp/mgmt_svc_test_server.pid"
+SVC_PID=""
+SVC_TMP_DIR=""
+
+start_service_backend() {
+    SVC_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/connector-management.XXXXXX")
+    local ready_path="$SVC_TMP_DIR/ready"
+    ip netns exec mgmt_ns python3 - "$SVC_TARGET" "$SVC_TARGET_PORT" "$ready_path" <<'PY' &
+import socket
+import sys
+
+host, port, ready_path = sys.argv[1:]
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind((host, int(port)))
+    listener.listen(8)
+    with open(ready_path, "x"):
+        pass
+    while True:
+        connection, _ = listener.accept()
+        with connection:
+            connection.sendall(b"OK\n")
+PY
+    SVC_PID=$!
+    if ! wait_notify_receiver_ready "$ready_path" "$SVC_PID" 5; then
+        echo "ERROR: management backend exited or did not listen within its startup bound" >&2
+        return 1
+    fi
+}
 
 setup() {
     echo "==> Creating network namespaces..."
@@ -129,21 +157,7 @@ setup() {
     ip netns exec mgmt_ns sysctl -qw "net.ipv4.conf.all.route_localnet=1"
 
     echo "==> Starting --mgmt-service backend (${SVC_TARGET}:${SVC_TARGET_PORT} in mgmt_ns)..."
-    ip netns exec mgmt_ns python3 -c '
-import socket
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(("'"${SVC_TARGET}"'", '"${SVC_TARGET_PORT}"'))
-s.listen(8)
-while True:
-    c, _ = s.accept()
-    try:
-        c.sendall(b"OK\n")
-    finally:
-        c.close()
-' &
-    echo $! > "${SVC_PIDFILE}"
-    sleep 0.5
+    start_service_backend
 
     echo ""
     echo "==> Setup complete."
@@ -254,10 +268,16 @@ run_tests() {
 }
 
 teardown() {
+    local exit_status=$?
     echo "==> Stopping --mgmt-service backend..."
-    if [ -f "${SVC_PIDFILE}" ]; then
-        kill "$(cat "${SVC_PIDFILE}")" 2>/dev/null || true
-        rm -f "${SVC_PIDFILE}"
+    if ! stop_owned_process "${SVC_PID:-}"; then
+        echo "ERROR: management backend did not exit cleanly within its shutdown bound" >&2
+        [ "$exit_status" -ne 0 ] || exit_status=1
+    fi
+    SVC_PID=""
+    if [ -n "${SVC_TMP_DIR:-}" ]; then
+        rm -rf "$SVC_TMP_DIR"
+        SVC_TMP_DIR=""
     fi
 
     echo "==> Stopping connector-ctl vswitch..."
@@ -269,6 +289,7 @@ teardown() {
     done
 
     echo "==> Teardown complete."
+    exit "$exit_status"
 }
 
 trap teardown EXIT
