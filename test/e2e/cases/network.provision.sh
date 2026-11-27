@@ -513,10 +513,12 @@ test_c4_reserve_missing_port() {
     echo "[C4] reserve without --port fails"
     start_switch 4
 
-    if ${SWITCH_BIN} reserve ${SW_NAME} &>/dev/null; then
-        fail "C4: reserve without --port should fail"
+    local output status=0
+    output=$(${SWITCH_BIN} reserve ${SW_NAME} 2>&1) || status=$?
+    if [ "$status" -eq 1 ] && [[ "$output" == *"--port is required"* ]]; then
+        pass "C4: reserve without --port returned its required-port error"
     else
-        pass "C4: reserve without --port correctly refused"
+        fail "C4: expected exit 1 and --port is required, got exit ${status}: ${output}"
     fi
 
     stop_switch
@@ -536,11 +538,13 @@ test_d1_normal_stop() {
         fail "D1: stop failed"
     fi
 
-    # status should exit 3 (not running)
-    if ${SWITCH_BIN} status ${SW_NAME} &>/dev/null; then
-        fail "D1: status should fail after stop"
+    # Distinguish the documented missing-switch result from general errors.
+    local output status=0
+    output=$(${SWITCH_BIN} status ${SW_NAME} 2>&1) || status=$?
+    if [ "$status" -eq 3 ]; then
+        pass "D1: status returned exit 3 (not running)"
     else
-        pass "D1: status correctly reports not running"
+        fail "D1: expected status exit 3 after stop, got exit ${status}: ${output}"
     fi
 
 }
@@ -679,8 +683,8 @@ test_a1_serve_lifecycle() {
     NOTIFY_TMP_DIR=""
 }
 
-test_a2_serve_start_equivalence() {
-    echo "[A2] serve and start produce equivalent config"
+test_a2_serve_start_shared_fields() {
+    echo "[A2] serve and start match port count, MAC and floating-IP base"
 
     # Round 1: start
     start_switch 4
@@ -714,7 +718,7 @@ test_a2_serve_start_equivalence() {
     local serve_config
     serve_config=$(${SWITCH_BIN} show config ${SW_NAME})
 
-    # Compare configs (extract key fields that should match)
+    # Compare only these three shared fields, not the complete configurations.
     local start_ports serve_ports start_mac serve_mac start_fip serve_fip
     start_ports=$(json_field "$start_config" "n_ports")
     serve_ports=$(json_field "$serve_config" "n_ports")
@@ -726,7 +730,7 @@ test_a2_serve_start_equivalence() {
     if [ "$start_ports" = "$serve_ports" ] && \
        [ "$start_mac" = "$serve_mac" ] && \
        [ "$start_fip" = "$serve_fip" ]; then
-        pass "A2: start and serve configs match"
+        pass "A2: start and serve port count, MAC and floating-IP base match"
     else
         fail "A2: config mismatch (start: ports=${start_ports} mac=${start_mac} fip=${start_fip}, serve: ports=${serve_ports} mac=${serve_mac} fip=${serve_fip})"
     fi
@@ -782,7 +786,7 @@ run_tests() {
     test_a1_serve_lifecycle
     # Recreate namespaces for A2
     recreate_namespaces
-    test_a2_serve_start_equivalence
+    test_a2_serve_start_shared_fields
 
     # --- Summary ---
     echo ""
