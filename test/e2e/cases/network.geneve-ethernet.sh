@@ -66,6 +66,7 @@ require_command ip
 require_command python3
 require_binary connector-ctl
 SWITCH_BIN="$BIN/connector-ctl vswitch"
+GENEVE_READINESS="$E2E_LIB/connector/geneve_readiness.py"
 
 
 PASS=0
@@ -145,12 +146,7 @@ setup() {
             --gateway=${GW_IP} \
             --lease-time=1h &
         DHCP_PID=$!
-        sleep 1
-
-        if ! kill -0 "$DHCP_PID" 2>/dev/null; then
-            echo "ERROR: DHCP server failed to start"
-            exit 1
-        fi
+        python3 -B "$GENEVE_READINESS" udp-bound --pid "$DHCP_PID" --port 67
         echo "  DHCP server started (PID: $DHCP_PID)"
     fi
 
@@ -213,7 +209,7 @@ run_tests() {
 
     # --- Test 1: sandbox1 → sandbox2 via IPv4 GENEVE ---
     echo "[1/6] sandbox1 → sandbox2 (10.1.0.2) via IPv4 GENEVE"
-    if ip netns exec sandbox1 ping -c 2 -W 2 10.1.0.2 &>/dev/null; then
+    if ip netns exec sandbox1 ping -c 2 -i 0.1 -W 2 10.1.0.2 &>/dev/null; then
         pass "sandbox1 can reach sandbox2 via IPv4 GENEVE"
     else
         fail "sandbox1 cannot reach sandbox2 via IPv4 GENEVE"
@@ -221,7 +217,7 @@ run_tests() {
 
     # --- Test 2: sandbox2 → sandbox1 via IPv4 GENEVE ---
     echo "[2/6] sandbox2 → sandbox1 (10.1.0.1) via IPv4 GENEVE"
-    if ip netns exec sandbox2 ping -c 2 -W 2 10.1.0.1 &>/dev/null; then
+    if ip netns exec sandbox2 ping -c 2 -i 0.1 -W 2 10.1.0.1 &>/dev/null; then
         pass "sandbox2 can reach sandbox1 via IPv4 GENEVE"
     else
         fail "sandbox2 cannot reach sandbox1 via IPv4 GENEVE"
@@ -229,7 +225,7 @@ run_tests() {
 
     # --- Test 3: sandbox1 → sandbox2 via IPv6 GENEVE ---
     echo "[3/6] sandbox1 → sandbox2 (fd00::2) via IPv6 GENEVE"
-    if ip netns exec sandbox1 ping -6 -c 2 -W 2 fd00::2 &>/dev/null; then
+    if ip netns exec sandbox1 ping -6 -c 2 -i 0.1 -W 2 fd00::2 &>/dev/null; then
         pass "sandbox1 can reach sandbox2 via IPv6 GENEVE"
     else
         fail "sandbox1 cannot reach sandbox2 via IPv6 GENEVE"
@@ -237,7 +233,7 @@ run_tests() {
 
     # --- Test 4: sandbox2 → sandbox1 via IPv6 GENEVE ---
     echo "[4/6] sandbox2 → sandbox1 (fd00::1) via IPv6 GENEVE"
-    if ip netns exec sandbox2 ping -6 -c 2 -W 2 fd00::1 &>/dev/null; then
+    if ip netns exec sandbox2 ping -6 -c 2 -i 0.1 -W 2 fd00::1 &>/dev/null; then
         pass "sandbox2 can reach sandbox1 via IPv6 GENEVE"
     else
         fail "sandbox2 cannot reach sandbox1 via IPv6 GENEVE"
@@ -245,79 +241,23 @@ run_tests() {
 
     # --- Test 5: sandbox1 → sandbox2 TCP data transfer ---
     echo "[5/6] sandbox1 → sandbox2 TCP (10.1.0.2:9000) via GENEVE"
-    EXPECT_DATA="hello-from-sandbox1-$(date +%s)"
-    # Start TCP listener in sandbox2 using Python
-    ip netns exec sandbox2 python3 -c "
-import socket, sys
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.settimeout(5)
-s.bind(('0.0.0.0', 9000))
-s.listen(1)
-try:
-    conn, _ = s.accept()
-    data = conn.recv(4096)
-    open('/tmp/tcp_test5.out', 'wb').write(data)
-    conn.close()
-except: pass
-s.close()
-" &
-    sleep 0.3
-    # Send data from sandbox1
-    ip netns exec sandbox1 python3 -c "
-import socket
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.settimeout(3)
-try:
-    s.connect(('10.1.0.2', 9000))
-    s.sendall(b'${EXPECT_DATA}\n')
-except: pass
-s.close()
-" || true
-    sleep 0.5
-    if [ -f /tmp/tcp_test5.out ] && grep -q "${EXPECT_DATA}" /tmp/tcp_test5.out 2>/dev/null; then
+    if python3 -B "$GENEVE_READINESS" tcp \
+        --source-netns sandbox1 --target-netns sandbox2 --target-ip 10.1.0.2 \
+        --port 9000 --payload "hello-from-sandbox1-$(date +%s%N)"; then
         pass "sandbox1 → sandbox2 TCP data transfer via GENEVE"
     else
         fail "sandbox1 → sandbox2 TCP data transfer via GENEVE"
     fi
-    rm -f /tmp/tcp_test5.out
 
     # --- Test 6: sandbox2 → sandbox1 TCP data transfer ---
     echo "[6/6] sandbox2 → sandbox1 TCP (10.1.0.1:9000) via GENEVE"
-    EXPECT_DATA="hello-from-sandbox2-$(date +%s)"
-    ip netns exec sandbox1 python3 -c "
-import socket, sys
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.settimeout(5)
-s.bind(('0.0.0.0', 9000))
-s.listen(1)
-try:
-    conn, _ = s.accept()
-    data = conn.recv(4096)
-    open('/tmp/tcp_test6.out', 'wb').write(data)
-    conn.close()
-except: pass
-s.close()
-" &
-    sleep 0.3
-    ip netns exec sandbox2 python3 -c "
-import socket
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.settimeout(3)
-try:
-    s.connect(('10.1.0.1', 9000))
-    s.sendall(b'${EXPECT_DATA}\n')
-except: pass
-s.close()
-" || true
-    sleep 0.5
-    if [ -f /tmp/tcp_test6.out ] && grep -q "${EXPECT_DATA}" /tmp/tcp_test6.out 2>/dev/null; then
+    if python3 -B "$GENEVE_READINESS" tcp \
+        --source-netns sandbox2 --target-netns sandbox1 --target-ip 10.1.0.1 \
+        --port 9000 --payload "hello-from-sandbox2-$(date +%s%N)"; then
         pass "sandbox2 → sandbox1 TCP data transfer via GENEVE"
     else
         fail "sandbox2 → sandbox1 TCP data transfer via GENEVE"
     fi
-    rm -f /tmp/tcp_test6.out
 
     # --- Port stats ---
     echo ""

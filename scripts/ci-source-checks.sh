@@ -6,6 +6,7 @@ echo "==> connector source/helper regressions"
 bash scripts/test-notify-helpers.sh
 python3 -B scripts/test-vpp-runtime.py
 python3 -B scripts/test-egress-wire.py
+python3 -B scripts/test-geneve-readiness.py
 make -C native-deps test
 
 echo "==> connector source unit, race and real BPF stats regressions"
