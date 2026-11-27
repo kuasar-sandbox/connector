@@ -16,7 +16,7 @@ Local and remote deployments use the same Area/Pool configuration and wire contr
 | Independently deployed vSwitch with local Egress | The standalone sequence below | `connector-ctl egress link` owns the dedicated pair and wraps switch start/stop. |
 | Remote Egress shared by nodes | The remote deployment section below | Deployment owner supplies the routed underlay; no local-pair wrapper. |
 
-Use a release that actually includes native Egress: matching `bin/connector-ctl`, `bin/connector-vpp`, `bin/vpp-runtime.json` and Egress deployment templates. For node-infra, select an aggregate whose image includes these binaries and `connector-egress.service`; adding a new configuration to an older image does not add that service. Follow [platform installation](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/installation.md) to select and verify the assets. The quickstart profile is not the custom local-Egress deployment profile. [Source build and acceptance](../egress/README.md) is for producing or changing the component.
+An independent Egress deployment uses the matching `bin/connector-ctl`, `bin/connector-vpp`, `bin/vpp-runtime.json` and Egress templates from one Connector release. The node-infra image includes these binaries and `connector-egress.service`; configure a site deployment with its local-Egress example. Follow [platform installation](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/installation.md) to select and verify matching assets and guides. [Source build and acceptance](../egress/README.md) is for producing or changing the component.
 
 Install both executables from the same component version. The default `connector-vpp` lookup is beside the actual `connector-ctl` executable, after resolving its symlink; neither the working directory nor `PATH` determines the dataplane path. Keep the complete `bin/` directory. The optional `vpp` field provides an absolute override. The static dataplane needs no separate VPP package, shared-library directory or externally loaded plugin set.
 
@@ -47,7 +47,7 @@ Use [link.json](../dist/egress/link.json), [switch.json](../dist/egress/switch.j
      --config /etc/connector-egress/link.json \
      --switch-config /etc/connector-egress/switch.json --mode tap
    /opt/connector/bin/connector-ctl egress link check --config /etc/connector-egress/link.json
-   cat /var/lib/connector-egress/egress-local/status.json
+   /opt/connector/bin/connector-ctl egress status --runtime-dir /var/lib/connector-egress/egress-local
    ```
 
    `tap` is also the default and is the MicroVM path. Choose `veth` only for a consumer that deliberately uses namespace ports. If directly supervising Egress instead of systemd, run `ip netns exec egress-local /opt/connector/bin/connector-ctl egress serve --config /etc/connector-egress/egress-local.yaml` in its own foreground service or terminal before starting the switch.
@@ -155,19 +155,19 @@ Return encapsulation respects the smaller of the configured outer budget and inn
 
 The private runtime directory contains `pid`, `startup.conf`, `owner.lock` and an atomically replaced `status.json`. The status file reports configuration generation, reload error, outer accesses (`accesses`), internal return versions (`contexts`), NAT counts, named Area/Pool counters, native packet errors, native PID and interface/carrier state. It is output only and is never restored as configuration. No HTTP, Unix CLI, binary API, statistics listener or named shared-memory API transport is exposed. The supervisor uses an unnamed parent/child descriptor pair.
 
-For the standalone unit, inspect both the unit and the current output file:
+For the standalone unit, inspect both the service and the saved gateway snapshot:
 
 ```bash
 systemctl status connector-egress@egress-local.service
 journalctl -u connector-egress@egress-local.service -n 100 --no-pager
-cat /var/lib/connector-egress/egress-local/status.json
+/opt/connector/bin/connector-ctl egress status --runtime-dir /var/lib/connector-egress/egress-local
 ```
 
-After reload, confirm `configuration_generation` advanced and `reload_error` is empty, then test affected traffic. A successful `systemctl reload` means the signal was delivered, not that the candidate was accepted. For node-infra, use `connector-egress.service`, `systemctl reload connector-egress`, and `/run/connector-egress/local/status.json` inside the node container. The file-reading CLI described next is available in current source; the published `v0.2.0-preview.20261127` control binary uses these file commands.
+After reload, confirm `snapshot.configuration_generation` advanced and `snapshot.reload_error` is empty, then test affected traffic. A successful `systemctl reload` means the signal was delivered, not that the candidate was accepted. For node-infra, run `systemctl reload connector-egress` inside the node container and inspect its snapshot with `connector-ctl egress status --runtime-dir /run/connector-egress/local`.
 
 ### Read a saved snapshot with the CLI
 
-Current source adds `egress status`; use a build/release containing this change. It is a read-only convenience over the existing file, not a management API or health probe:
+`egress status` reads the saved snapshot and reports its age. It does not contact the gateway or act as a health probe:
 
 ```bash
 connector-ctl egress status --config /etc/connector-egress/egress-local.yaml

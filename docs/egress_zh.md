@@ -16,7 +16,7 @@ Egress 是通过文件配置的 IPv4 Geneve 转发网关，提供有序 ACL、TC
 | 独立 vSwitch 使用本地 Egress | 下文独立部署流程 | `connector-ctl egress link` 管理专用 pair 并包装交换机启停。 |
 | 多节点共用远端 Egress | 下文远端部署 | 部署方提供路由 underlay，不使用本地 pair 包装流程。 |
 
-选择实际包含原生 Egress 的发行物：匹配的 `bin/connector-ctl`、`bin/connector-vpp`、`bin/vpp-runtime.json` 和 Egress 部署模板。使用 node-infra 时，聚合版本的镜像须已包含这些程序及 `connector-egress.service`；给旧镜像挂载新配置不会增加服务。按[平台安装](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/installation_zh.md)选择并校验资产。quickstart profile 不是自定义本地 Egress 部署 profile。[源码构建与验收](../egress/README_zh.md)用于生产或修改组件。
+独立 Egress 部署使用同一 Connector 发行版配套的 `bin/connector-ctl`、`bin/connector-vpp`、`bin/vpp-runtime.json` 和 Egress 模板。node-infra 镜像包含这些程序及 `connector-egress.service`，使用其本地 Egress 示例配置站点部署。按[平台安装](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/installation_zh.md)选择并校验配套资产和指南。[源码构建与验收](../egress/README_zh.md)用于生产或修改组件。
 
 安装同一组件版本的两个可执行文件。默认先解析 `connector-ctl` 的符号链接，再在实际可执行文件所在目录定位 `connector-vpp`，工作目录和 `PATH` 均不决定数据面路径。保留完整 `bin/` 目录；可选 `vpp` 字段提供绝对路径覆盖。全静态数据面无需另装 VPP 包、共享库目录或外部插件集合。
 
@@ -47,7 +47,7 @@ Egress 是通过文件配置的 IPv4 Geneve 转发网关，提供有序 ACL、TC
      --config /etc/connector-egress/link.json \
      --switch-config /etc/connector-egress/switch.json --mode tap
    /opt/connector/bin/connector-ctl egress link check --config /etc/connector-egress/link.json
-   cat /var/lib/connector-egress/egress-local/status.json
+   /opt/connector/bin/connector-ctl egress status --runtime-dir /var/lib/connector-egress/egress-local
    ```
 
    `tap` 也是默认值，适用于 MicroVM；只有明确使用 namespace 端口的消费者才选 `veth`。不用 systemd 时，在独立前台服务或终端运行 `ip netns exec egress-local /opt/connector/bin/connector-ctl egress serve --config /etc/connector-egress/egress-local.yaml`，再启动交换机。
@@ -155,19 +155,19 @@ IP 封装和 legacy Ether 不增加新身份字段，既有协议无法区分身
 
 私有运行目录包含 `pid`、`startup.conf`、`owner.lock` 及原子替换的 `status.json`。状态文件报告配置代次、reload 错误、外层接入数（`accesses`）、内部回程版本数（`contexts`）、NAT 数量及按名称标识的 Area/Pool 计数、原生报文错误、原生 PID 和接口/carrier 状态。它只是输出，不会作为配置恢复。服务不暴露 HTTP、Unix CLI、二进制 API、统计监听或命名共享内存 API 传输。管理进程通过匿名父子进程描述符对控制原生进程。
 
-独立 unit 同时检查服务和当前输出文件：
+独立 unit 同时检查服务和保存的网关快照：
 
 ```bash
 systemctl status connector-egress@egress-local.service
 journalctl -u connector-egress@egress-local.service -n 100 --no-pager
-cat /var/lib/connector-egress/egress-local/status.json
+/opt/connector/bin/connector-ctl egress status --runtime-dir /var/lib/connector-egress/egress-local
 ```
 
-reload 后确认 `configuration_generation` 增长、`reload_error` 为空，再验证受影响流量。`systemctl reload` 成功只表示已发送信号，不表示候选配置已被接受。node-infra 在节点容器内使用 `connector-egress.service`、`systemctl reload connector-egress` 和 `/run/connector-egress/local/status.json`。下文读取文件的 CLI 已加入当前源码；已发布的 `v0.2.0-preview.20261127` 控制程序使用上述文件命令。
+reload 后确认 `snapshot.configuration_generation` 增长、`snapshot.reload_error` 为空，再验证受影响流量。`systemctl reload` 成功只表示已发送信号，不表示候选配置已被接受。node-infra 在节点容器内运行 `systemctl reload connector-egress`，并用 `connector-ctl egress status --runtime-dir /run/connector-egress/local` 检查其快照。
 
 ### 通过 CLI 读取保存的快照
 
-当前源码新增 `egress status`，需使用包含本修改的构建/发行版。它只便捷读取既有文件，不是管理 API 或健康探针：
+`egress status` 读取保存的快照并报告其时间间隔，不连接网关，也不执行健康探测：
 
 ```bash
 connector-ctl egress status --config /etc/connector-egress/egress-local.yaml

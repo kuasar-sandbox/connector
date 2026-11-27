@@ -2,9 +2,9 @@
 
 # connector
 
-首次启动沙箱，请从项目[快速开始](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/quickstart_zh.md)使用已发布的 node-infra 镜像及配套聚合版本。部署持久节点或集群时，继续阅读平台部署指南并提供明确的站点配置。quickstart profile 用于首次体验，不应通过任意挂载生产配置来扩展。
+首次启动沙箱，请按项目[快速开始](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/quickstart_zh.md)，用 `docker pull` 拉取 node-infra 镜像、`docker run` 启动节点，再在 Guest 中执行命令。部署持久节点或集群时，继续阅读平台部署指南并提供明确的站点配置。quickstart profile 使用专用数据卷；自定义工作负载使用已完成站点配置的实例。
 
-独立部署组件或接入其他 runtime 时，再使用本仓指南。架构与能力以所选发布版的实际资产为准；当前源码文档可能包含旧 Stable 归档尚未提供的功能。[Workbench](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/workbench/README_zh.md)用于源码开发、演示和集成验证。
+独立部署组件或接入其他 runtime 时，再使用本仓指南。使用所选版本及架构配套的二进制、配置示例和指南。[Workbench](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/workbench/README_zh.md)用于源码开发、演示和集成验证。
 
 `connector` 是 [Kuasar Sandbox](https://github.com/kuasar-sandbox/kuasar-sandbox) 面向 MicroVM 的高密度 eBPF 网络组件。
 
