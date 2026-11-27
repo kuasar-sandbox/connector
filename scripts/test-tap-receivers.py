@@ -37,6 +37,29 @@ FUNCTIONS = "\n".join(function(name) for name in (
     "test_t4_open_port_scm_rights", "test_t7_attach_open_port_combined",
     "test_t11_tap_connectivity",
 ))
+# A canary must initialize its TERM disposition before the parent tests
+# graceful shutdown. Keep SIG_DFL so the real stop helper accepts exit 143.
+CANARY_FUNCTIONS = r"""
+spawn_ready_canary() {
+    local ready="$1"
+    [ ! -e "$ready" ] || return 1
+    python3 - "$ready" <<'PY' &
+import pathlib, signal, sys
+signal.signal(signal.SIGTERM, signal.SIG_DFL)
+with pathlib.Path(sys.argv[1]).open("x"):
+    pass
+signal.pause()
+PY
+    CANARY_PID=$!
+    if ! wait_notify_receiver_ready "$ready" "$CANARY_PID" 5; then
+        stop_owned_process "$CANARY_PID" || true
+        CANARY_PID=""
+        return 1
+    fi
+}
+"""
+
+
 CASES = (
     ("test_t4_open_port_scm_rights", "spawn_fd_receiver",
      "tap_name=swtap-t1 is_tap=True has_vnet_hdr=True meta_port=1 "
@@ -61,6 +84,7 @@ class TapReceiverTests(unittest.TestCase):
 source {shlex.quote(str(HELPERS))}
 TAP_TMP_DIR={shlex.quote(str(self.root))}
 TAP_RECEIVER_PID=""
+CANARY_PID=""
 SW_NAME=swtap
 SWITCH_BIN=true
 PASS=0
@@ -68,7 +92,8 @@ FAIL=0
 pass() {{ printf 'PASS: %s\\n' "$1"; PASS=$((PASS + 1)); }}
 fail() {{ printf 'FAIL: %s\\n' "$1"; FAIL=$((FAIL + 1)); }}
 {FUNCTIONS}
-trap 'stop_tap_receiver >/dev/null 2>&1 || true' EXIT
+{CANARY_FUNCTIONS}
+trap 'stop_tap_receiver >/dev/null 2>&1 || true; [ -z "$CANARY_PID" ] || stop_owned_process "$CANARY_PID" >/dev/null 2>&1 || true' EXIT
 """
         process = subprocess.Popen(
             ["bash", "-c", bootstrap + body], text=True,
@@ -202,13 +227,17 @@ if {spawn} "$TAP_TMP_DIR/receiver.sock" "$TAP_TMP_DIR/result"; then exit 84; fi
                     self.assertEqual(stale.read_text(), "owned canary\n")
                     stale.unlink()
         self.shell("""
-sleep 30 &
-TAP_RECEIVER_PID=$!
+spawn_ready_canary "$TAP_TMP_DIR/active.ready"
+TAP_RECEIVER_PID=$CANARY_PID
+CANARY_PID=""
 pid=$TAP_RECEIVER_PID
 if spawn_fd_receiver "$TAP_TMP_DIR/receiver.sock" "$TAP_TMP_DIR/result"; then exit 85; fi
 [ "$TAP_RECEIVER_PID" = "$pid" ]
 kill -0 "$pid"
 stop_tap_receiver
+status=0
+wait "$pid" 2>/dev/null || status=$?
+[ "$status" -eq 143 ]
 """)
 
     def test_cases_require_exit_and_original_payload_assertions(self) -> None:
@@ -231,8 +260,9 @@ stop_tap_receiver
             with self.subTest(case=case):
                 self.shell(f"""
 {spawn}() {{
-    sleep 30 &
-    TAP_RECEIVER_PID=$!
+    spawn_ready_canary "$TAP_TMP_DIR/{case}.ready"
+    TAP_RECEIVER_PID=$CANARY_PID
+    CANARY_PID=""
     RECEIVER_PID=$TAP_RECEIVER_PID
 }}
 SWITCH_BIN=false
@@ -244,8 +274,8 @@ SWITCH_BIN=false
 
     def test_forced_cleanup_fails_and_leaves_unrelated_child_alive(self) -> None:
         self.shell("""
-sleep 30 &
-canary=$!
+spawn_ready_canary "$TAP_TMP_DIR/unrelated.ready"
+canary=$CANARY_PID
 python3 - "$TAP_TMP_DIR/ignoring-term" <<'PY' &
 import pathlib, signal, sys, time
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -259,8 +289,8 @@ actual=0
 stop_tap_receiver || actual=$?
 alive=0
 kill -0 "$canary" || alive=$?
-kill -TERM "$canary"
-wait "$canary" 2>/dev/null || true
+stop_owned_process "$canary"
+CANARY_PID=""
 [ "$actual" -ne 0 ] && [ "$alive" -eq 0 ]
 [ -z "$TAP_RECEIVER_PID" ]
 ! kill -0 "$pid" 2>/dev/null
