@@ -16,10 +16,12 @@
 #   T2. provision wrote slot.mode=tap and created <sw>-tX in switch-netns
 #   T3. attach succeeds; mode=tap surfaces in output JSON
 #   T4. open-port sends the tap fd via SCM_RIGHTS; fd carries IFF_VNET_HDR
-#   T5. Re-provision in veth mode (slot must be Reserved); device kind switches
-#   T6. attach on unprovisioned tap slot is rejected with ErrPortNotProvisioned
+#   T5. Tap re-provision is idempotent; veth provision requires port-netns
 #   T7. attach --open-port combined op delivers fd in one call
 #   T11. tap-mode connectivity: ARP round-trip through the handed-off vnet_hdr fd
+#
+# The Free/tap/ifindex=0 admission guard has no CLI setup path. Its error and
+# rollback are checked by TestAttachTapUnprovisioned in pkg/vswitch/attach_tap_test.go.
 #
 # Run from the platform release after preparation:
 #   sudo test/e2e/e2e run --workdir /path/to/prepared --include network.tap.sh
@@ -318,7 +320,7 @@ test_t4_open_port_scm_rights() {
 
 # ----- T5 -----
 test_t5_mode_switch_provision() {
-    echo "[T5] re-provision Reserved slot in opposite mode swaps the device"
+    echo "[T5] tap re-provision is idempotent; veth provision requires port-netns"
 
     # Need to also set up port-netns for veth provisioning later.
     ip netns add port_ns 2>/dev/null || true
@@ -344,24 +346,10 @@ test_t5_mode_switch_provision() {
         else
             fail "T5: provision --mode=veth should have failed (no port-netns)"
         fi
+    else
+        fail "T5: could not reserve slot 2 for the veth provision rejection check"
+        return 1
     fi
-}
-
-# ----- T6 -----
-test_t6_attach_unprovisioned_tap_rejected() {
-    echo "[T6] attach on unprovisioned tap slot is rejected"
-    # Reserve a fresh slot first so it has no device.
-    ${SWITCH_BIN} reserve ${SW_NAME} --port=3 --force > /dev/null
-    # Slot 3 is now Reserved with ifindex=0 — attach should refuse.
-    # First we must transition Reserved → Free without provisioning. The CLI doesn't
-    # expose that directly; the cleanest equivalent is: provision with --mode=tap
-    # actually creates a device. So instead test: a fresh slot with the slot's old
-    # mode but no device — we simulate by force-reserving (which doesn't delete the
-    # existing device), then deleting the device manually, then attach.
-    # The pure validation test is therefore: deliberately delete the tap device, then
-    # attach. The slot still has ifindex set, but the device is gone — that triggers
-    # a different error path. Skipping rigorous T6: covered by unit tests.
-    pass "T6: covered by unit tests (TestAttachTapUnprovisioned)"
 }
 
 # ----- T7 -----
@@ -503,7 +491,12 @@ test_t10_open_port_gating() {
 
     # Slot 3 is tap-mode (provisioned by T1's start --mode=tap) and not attached
     # (Free state). open-port must refuse without touching socket or tap.
-    local err
+    local err state
+    state=$(${SWITCH_BIN} show slots ${SW_NAME} 2 | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['state'])")
+    if [ "$state" != "free" ]; then
+        fail "T10: slot 3 state=$state before Free-slot rejection check"
+        return 1
+    fi
     if err=$(TAPFD_SOCKET=/tmp/never_listened.sock ${SWITCH_BIN} open-port ${SW_NAME} --port=3 2>&1); then
         fail "T10: open-port on unattached (Free) slot 3 unexpectedly succeeded"
     else
@@ -522,6 +515,11 @@ test_t10_open_port_gating() {
     fi
 
     # Reserved slot (slot 2 from T5) must also be rejected, same way.
+    state=$(${SWITCH_BIN} show slots ${SW_NAME} 1 | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['state'])")
+    if [ "$state" != "reserved" ]; then
+        fail "T10: slot 2 state=$state before Reserved-slot rejection check"
+        return 1
+    fi
     if err=$(TAPFD_SOCKET=/tmp/never_listened.sock ${SWITCH_BIN} open-port ${SW_NAME} --port=2 2>&1); then
         fail "T10: open-port on Reserved slot 2 unexpectedly succeeded"
     else
@@ -579,7 +577,6 @@ run_tests() {
     test_t3_attach_tap_mode_in_output
     test_t4_open_port_scm_rights
     test_t5_mode_switch_provision
-    test_t6_attach_unprovisioned_tap_rejected
     test_t7_attach_open_port_combined
     test_t11_tap_connectivity
     test_t10_open_port_gating
