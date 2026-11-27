@@ -63,6 +63,22 @@ def decode_wire(data):
                 fragment=int.from_bytes(inner[6:8], 'big'), protocol=inner[9])
 
 
+def keepalive_until_observed(exchange, slot, seconds, stop_file):
+    """Keep traffic active until idle reclamation and at least 100 real echoes."""
+    stop_file = Path(stop_file)
+    if stop_file.exists():
+        raise ValueError('keepalive observation signal already exists')
+    until = time.monotonic() + seconds
+    count = 0
+    while time.monotonic() < until:
+        if stop_file.exists() and count >= 100:
+            return dict(ok=True, echoed=count, observation_confirmed=True)
+        # An exchange failure propagates; this loop does not retry it.
+        exchange({'slot': slot})
+        count += 1
+    raise TimeoutError('idle reclamation observation and 100 real echoes were not both completed')
+
+
 def peer_process(config):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 << 20)
@@ -195,10 +211,7 @@ def peer_process(config):
         q = json.loads(line); started = time.monotonic()
         try:
             if q.get('op') == 'keepalive':
-                until=time.monotonic()+q['seconds'];count=0
-                while time.monotonic()<until:
-                    exchange({'slot':q['slot']});count+=1
-                result=dict(ok=True,echoed=count)
+                result=keepalive_until_observed(exchange,q['slot'],q['seconds'],q['stop_file'])
             elif q.get('op') == 'stage':
                 count = retries = 0; tuples = set()
                 for slot in range(q['contexts']):
@@ -434,10 +447,18 @@ def main():
             cfg['timeouts']={key:2 for key in timeouts};reload_config(cfg)
             query(peers[0],slot=1)
             start=status()['reclaimed']
-            peers[1].stdin.write(json.dumps(dict(op='keepalive',slot=1,seconds=15))+'\n');peers[1].stdin.flush()
+            keepalive_stop=out/'keepalive-observed'
+            peers[1].stdin.write(json.dumps(dict(op='keepalive',slot=1,seconds=15,
+                                               stop_file=str(keepalive_stop)))+'\n');peers[1].stdin.flush()
             observed=wait_status(lambda st: st['contexts']==1 and st['connections']==1 and st['reclaimed']>start,timeout=12)
+            # The peer continues to exchange real packets until this exact
+            # diagnostic observation and at least 100 successful exchanges.
+            # Do not wait out the remaining 15s limit.
+            keepalive_stop.touch(exist_ok=False)
             active=json.loads(peers[1].stdout.readline())
-            check('idle context is reclaimed while another peer continuously exchanges traffic',active['ok'] and active['echoed']>=100,dict(status=observed,traffic=active))
+            check('idle context is reclaimed while another peer continuously exchanges traffic',
+                  active['ok'] and active.get('observation_confirmed') and active['echoed']>=100,
+                  dict(status=observed,traffic=active))
             expire_all()
             cfg['timeouts']=timeouts;reload_config(cfg)
         # Exercise the original user-facing defaults using YAML main/Area
