@@ -8,20 +8,69 @@ Egress 是通过文件配置的 IPv4 Geneve 转发网关，提供有序 ACL、TC
 
 ## 部署和归属
 
-按照[构建与验收](../egress/README_zh.md)构建相互匹配的全静态 `connector-vpp` 数据面和纯 Go `connector-ctl`，安装同一组件版本的两个可执行文件。配置中的网关/SNAT 地址归 VPP 所有，Linux 不得在同一接口重复持有这些地址；无关 Linux IPv4 地址可以保留。数据面在转发前处理 AF_PACKET 携带的校验和和 TCP 分段元数据，不要求修改借用设备或外部对端的 offload 设置；本地专用 veth 仍按既有 vSwitch 报文契约准备。
+### 选择部署所有者
 
-本地部署参考 [link.json](../dist/egress/link.json)、[switch.json](../dist/egress/switch.json)、[gateway.yaml](../dist/egress/gateway.yaml) 和 [area7.yaml](../dist/egress/area7.yaml)。将选定组件归档解压至 `/opt/connector`，保留完整的 `bin/` 目录；服务模板和网关示例采用此前缀。以下命令使用 `/opt/connector/bin/connector-ctl`，也可先将该目录加入 `PATH`。`vpp` 是可选的绝对路径覆盖项；省略时，`connector-ctl` 在自身可执行文件所在目录定位 `connector-vpp`，先解析控制程序的符号链接，查找不受工作目录或 `PATH` 影响。部署前替换示例地址和资源。
+| 部署方式 | 入口 | 交换机/transit 生命周期所有者 |
+|---|---|---|
+| 平台节点使用本地 Egress | [node-infra 部署](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/node-infra_zh.md)及其 `examples/local-egress` 文件 | node-infra 准备流程和常规 vSwitch 服务；Egress 使用独立 unit。 |
+| 独立 vSwitch 使用本地 Egress | 下文独立部署流程 | `connector-ctl egress link` 管理专用 pair 并包装交换机启停。 |
+| 多节点共用远端 Egress | 下文远端部署 | 部署方提供路由 underlay，不使用本地 pair 包装流程。 |
 
-1. 运行 `connector-ctl egress link prepare --config link.json`。vSwitch 停止时，其接线端保留在稳定 owner namespace，网关端保留在 Egress namespace，并记录 namespace 与设备归属。
-2. 由外部网络所有者将 uplink 放入网关 namespace，配置 MTU 并启用。SNAT 资源必须具有真实外部可达性；主机默认路由不隐式构成 Pool 出口。
-3. 按既有 [vSwitch 运维](vswitch-operations_zh.md)准备 switch 和 port namespace，再运行 `connector-ctl egress validate --config gateway.yaml`。
-4. 运行 `ip netns exec egress-local connector-ctl egress serve --config gateway.yaml`。也可安装 [connector-egress@.service](../dist/connector-egress@.service)，把主配置放在 `/etc/connector-egress/egress-local.yaml`，关联 Area 文件放在旁边，再启动 `connector-egress@egress-local.service`。
-5. 运行 `connector-ctl egress link start --config link.json --switch-config switch.json --mode veth`。默认模式与既有 vSwitch 一样为 `tap`。包装流程从记录的稳定 owner namespace 启动 vSwitch。
-6. 通过既有 vSwitch 接口 Attach 沙箱，并验证所需 Pool 的真实请求与回包。无需调用 Egress 登记接口。
+选择实际包含原生 Egress 的发行物：匹配的 `bin/connector-ctl`、`bin/connector-vpp`、`bin/vpp-runtime.json` 和 Egress 部署模板。使用 node-infra 时，聚合版本的镜像须已包含这些程序及 `connector-egress.service`；给旧镜像挂载新配置不会增加服务。按[平台安装](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/installation_zh.md)选择并校验资产。quickstart profile 不是自定义本地 Egress 部署 profile。[源码构建与验收](../egress/README_zh.md)用于生产或修改组件。
+
+安装同一组件版本的两个可执行文件。默认先解析 `connector-ctl` 的符号链接，再在实际可执行文件所在目录定位 `connector-vpp`，工作目录和 `PATH` 均不决定数据面路径。保留完整 `bin/` 目录；可选 `vpp` 字段提供绝对路径覆盖。全静态数据面无需另装 VPP 包、共享库目录或外部插件集合。
+
+配置中的网关/SNAT 地址归 VPP 所有，Linux 不得在同一接口重复持有这些地址；无关 Linux IPv4 地址可以保留。外部网络所有者负责 uplink、MTU、UP 状态、可达下一跳和所选 SNAT 地址的回程。主机默认路由不隐式构成 Pool 出口。数据面处理 AF_PACKET 校验和和 TCP 分段元数据，无需改变借用设备或外部对端。
+
+### 独立本地网关
+
+将 [link.json](../dist/egress/link.json)、[switch.json](../dist/egress/switch.json)、[gateway.yaml](../dist/egress/gateway.yaml) 和 [area7.yaml](../dist/egress/area7.yaml) 作为一套配置。示例使用文档地址，部署前替换为实际拥有的地址和设备。本流程假定全新部署，`egress-owner`、`egress-local`、`switch`、`ports` 和 `sw0` 均未使用。特权命令以 root 运行。
+
+1. 将组件归档解压至 `/opt/connector`。把示例复制至 `/etc/connector-egress`，按服务模板将网关文件命名为 `egress-local.yaml`，相对 `area_files` 放在旁边。将 [connector-egress@.service](../dist/connector-egress@.service) 安装到 `/etc/systemd/system/`。
+2. 启动前修改整套配置，校验策略并准备自有 pair：
+
+   ```bash
+   /opt/connector/bin/connector-ctl egress validate --config /etc/connector-egress/egress-local.yaml
+   /opt/connector/bin/connector-ctl egress link prepare --config /etc/connector-egress/link.json
+   ip netns add switch
+   ip netns add ports
+   ```
+
+   配置有效时 `validate` 输出 `{"valid":true}`，不检查物理可达性。`prepare` 创建或核验 owner/gateway namespace 并记录 pair 归属；switch 与 port namespace 需要单独准备。
+3. 由外部网络所有者将 `egress-uplink` 放入 `egress-local`，设置配置中的 MTU 并启用，提供同链路 Pool 下一跳及每个所选 SNAT 地址的回程。不要把 VPP 拥有的地址赋给 Linux。这一步是站点网络准备，不要求运行 Docker 网关或增加一层主机 NAT。
+4. 启动网关与 TAP 交换机，检查状态：
+
+   ```bash
+   systemctl daemon-reload
+   systemctl start connector-egress@egress-local.service
+   /opt/connector/bin/connector-ctl egress link start \
+     --config /etc/connector-egress/link.json \
+     --switch-config /etc/connector-egress/switch.json --mode tap
+   /opt/connector/bin/connector-ctl egress link check --config /etc/connector-egress/link.json
+   cat /var/lib/connector-egress/egress-local/status.json
+   ```
+
+   `tap` 也是默认值，适用于 MicroVM；只有明确使用 namespace 端口的消费者才选 `veth`。不用 systemd 时，在独立前台服务或终端运行 `ip netns exec egress-local /opt/connector/bin/connector-ctl egress serve --config /etc/connector-egress/egress-local.yaml`，再启动交换机。
+5. 通过所属 runtime 或 [vSwitch/TAPFD 流程](vswitch-operations_zh.md) Attach，设置与网关匹配的 transit gateway 和逻辑 VNI，随后验证每个预期 Pool 的真实请求与回包。无需 Egress 登记。
+
+配套示例的匹配关系如下：
+
+| 配置侧 | 值 | 含义 |
+|---|---|---|
+| vSwitch `transit_dev_addr` | `198.18.0.2/24:198.18.0.1` | 交换机 underlay 地址及下一跳。 |
+| 网关 interface / attachment | `198.18.0.1/24`、`peer: 198.18.0.2`、`locator: port` | 网关入口及允许的交换机来源。 |
+| 每个沙箱 attachment | `transit_gateway_ip: 198.18.0.1`、`transit_geneve_vni: 7` | 选择该网关及 `vni: 7` 的 Area；不是 Guest 默认路由地址或子网。 |
+| vSwitch | `generation_bits: 4`、`geneve_encap_eth: true` | 在 Ether Geneve 上启用既有 generation MAC fencing；调用方在身份重用时推进 attachment generation。 |
+
+没有交换机级默认 Area/VNI，也没有独立的 `TransitMACFencing` 配置项。CLI 消费者向 `vswitch attach` 传入 `--transit-gateway-ip` 和 `--transit-geneve-vni`；TAPFD 消费者使用对应的下划线字段。Orchestrator 从 Create/Build 的 network 规格或继承模板提供这些值，见[请求配置](https://github.com/kuasar-sandbox/orchestrator/blob/main/docs/sandbox-lifecycle_zh.md)和 [Build 客户端流程](https://github.com/kuasar-sandbox/orchestrator/blob/main/docs/node-build_zh.md)。仅在网关定义 Area 7 不会让沙箱选择它。不要向 Egress attachment 增加 `generation_bits` 或封装字段。
 
 重复 prepare 核验并复用自有 pair，拒绝外部同名设备、变化的 namespace 身份和已损坏的已安装 pair。每个本地 vSwitch 使用独立 pair，多个 pair 可以共用 Egress 实例。不同 gatewayIP 使用不同的接收地址；相同 peer、locator 和内层地址可以分别接入这些 gatewayIP，而不串用状态。既有 vSwitch `transit_dev_mtu:auto` 可以将其端点 MTU 调低至网关预留 MTU 以下，这不改变 pair 归属。
 
-远端部署使用外部拥有的 transit 设备。`peer` 可填写单个 IPv4 地址、CIDR 网段、包含首尾的 IP 范围，或它们的列表，例如 `["198.18.0.2", "203.0.113.0/24"]`；省略或空列表不额外限制来源，实际 peer 从外层源 IP 获取。`next_hop` 省略时对实际 peer 按直连回程处理，路由接入应指定同链路路由器。报文 VNI 直接选择已配置 Area，不按 attachment 重复登记 Area。同一入口和外层网关地址的来源范围重叠时，解码、MTU 和回程约定必须一致，否则整批拒绝。同一网关/来源范围不能指向不同回程设备；不同 peer 范围可以跨设备复用网关地址。远端 transit 与 Pool 可以共用接口，但 Geneve 网关地址必须与 SNAT 地址分离；本地专用 veth 保持独立。Geneve 接入字段和不透明回程 MAC 不提供密码学认证，underlay 资源归属必须防止发送方伪造。
+### 远端网关
+
+使用外部拥有的 transit 设备，不运行 `egress link prepare/start`。将每个交换机的外层源地址路由到 Egress 入口，用 attachment 准入该来源，并按上表设置沙箱 gateway/VNI。Pool 出口与回到交换机的路径分别配置。
+
+`peer` 可填写单个 IPv4 地址、CIDR 网段、包含首尾的 IP 范围，或它们的列表，例如 `["198.18.0.2", "203.0.113.0/24"]`；省略或空列表不额外限制来源，实际 peer 从外层源 IP 获取。`next_hop` 省略时对实际 peer 按直连回程处理，路由接入应指定同链路路由器。报文 VNI 直接选择已配置 Area，不按 attachment 重复登记 Area。同一入口和外层网关地址的来源范围重叠时，解码、MTU 和回程约定必须一致，否则整批拒绝。同一网关/来源范围不能指向不同回程设备；不同 peer 范围可以跨设备复用网关地址。远端 transit 与 Pool 可以共用接口，但 Geneve 网关地址必须与 SNAT 地址分离；本地专用 veth 保持独立。Geneve 接入字段和不透明回程 MAC 不提供密码学认证，underlay 资源归属必须防止发送方伪造。
 
 ## 文件与 reload
 
@@ -80,7 +129,7 @@ acl:
 
 主配置不提供 `max_contexts` 或 `max_connections`，内部也不设置等效的独立接入/连接数门槛；初始内存分配不是准入上限。`main_core` 和 `workers` 选择互不重复且可用的 CPU；不指定 worker 时使用原生单线程模式。Area、attachment、Pool、地址和规则按实际资源动态存储。原生统计段没有监听接口，但内存规划仍需包含转发状态计数。实际内存、CPU、地址和端口资源有限；Pool 不限额不等于资源无限。
 
-验收目标为跨多个 vSwitch 来源的 12288 个同时活跃上下文和 196608 条双向 NAT 映射，使用两个原生 worker。应查看具体候选版本的验收清单和内存实测，不据此推导吞吐或时延承诺。
+按实测并发接入、映射数、报文速率和驻留内存为网关定容。开发者[验收矩阵](../egress/README_zh.md#原生验收)在两个 worker 下测试 12288 个活跃上下文和 196608 条双向映射；这些是验证负载，不是部署默认值或吞吐/延迟保证。
 
 ## 线协议身份与 MTU
 
@@ -106,9 +155,33 @@ IP 封装和 legacy Ether 不增加新身份字段，既有协议无法区分身
 
 私有运行目录包含 `pid`、`startup.conf`、`owner.lock` 及原子替换的 `status.json`。状态文件报告配置代次、reload 错误、外层接入数（`accesses`）、内部回程版本数（`contexts`）、NAT 数量及按名称标识的 Area/Pool 计数、原生报文错误、原生 PID 和接口/carrier 状态。它只是输出，不会作为配置恢复。服务不暴露 HTTP、Unix CLI、二进制 API、统计监听或命名共享内存 API 传输。管理进程通过匿名父子进程描述符对控制原生进程。
 
+独立 unit 同时检查服务和当前输出文件：
+
+```bash
+systemctl status connector-egress@egress-local.service
+journalctl -u connector-egress@egress-local.service -n 100 --no-pager
+cat /var/lib/connector-egress/egress-local/status.json
+```
+
+reload 后确认 `configuration_generation` 增长、`reload_error` 为空，再验证受影响流量。`systemctl reload` 成功只表示已发送信号，不表示候选配置已被接受。node-infra 在节点容器内使用 `connector-egress.service`、`systemctl reload connector-egress` 和 `/run/connector-egress/local/status.json`。下文读取文件的 CLI 已加入当前源码；已发布的 `v0.2.0-preview.20261127` 控制程序使用上述文件命令。
+
+### 通过 CLI 读取保存的快照
+
+当前源码新增 `egress status`，需使用包含本修改的构建/发行版。它只便捷读取既有文件，不是管理 API 或健康探针：
+
+```bash
+connector-ctl egress status --config /etc/connector-egress/egress-local.yaml
+# 即使编辑中的文件无效，也能检查之前运行配置保留的快照：
+connector-ctl egress status --runtime-dir /var/lib/connector-egress/egress-local
+```
+
+必须提供且仅提供一个非空选择项。`--config` 加载整套候选文件以取得 `runtime_dir`，`--runtime-dir` 直接读取指定目录。JSON 将未修改的原生对象置于 `snapshot`，另附绝对 `path`、UTC 文件修改时间 `updated_at` 和 `age_seconds`。时间来自文件元数据，不是独立验证的采集时间。保留或复制的文件可能比网关进程存活更久；命令不连接或发送信号，也不声称进程仍在运行。文件缺失、不可读或格式错误时返回错误。实际运行状态仍通过上文 unit 和真实流量检查。
+
+### 接线与修复
+
 `egress link check --config link.json` 报告 pair 归属、位置和既有 vSwitch 状态。运行时检查覆盖网关进程、配置、部署拥有的接线和接口状态。Geneve 双向转发及 Pool 回程通过受控端到端测试验收。本部署能力不包含外部网络或目标探测、探测目标配置，也不以外部可达性作为启动门槛。
 
-丢失或替换一个物理接口只禁用该接口并等待受控修复，其他路径继续工作；同名新设备不会自动被接纳。本地修复时，停止受影响流量，通过正常 Detach 排空 vSwitch 已分配端口，在更换 Egress 端点前停止 Egress，运行 `egress link repair --config link.json --switch-config switch.json --mode veth`，重新启动 Egress 并验证流量。共享网关重启会丢失其 NAT 状态。修复包装流程拒绝活动端口，不强制删除沙箱。
+丢失或替换一个物理接口只禁用该接口并等待受控修复，其他路径继续工作；同名新设备不会自动被接纳。本地修复时，停止受影响流量，通过正常 Detach 排空 vSwitch 已分配端口，在更换 Egress 端点前停止 Egress，运行 `egress link repair --config link.json --switch-config switch.json --mode tap`（或原来的 `veth` 模式），重新启动 Egress 并验证流量。共享网关重启会丢失其 NAT 状态。修复包装流程拒绝活动端口，不强制删除沙箱。
 
 普通 `link stop` 将 switch 端点归还稳定 owner 并保留 pair。显式卸载应在 Detach 和停止两端后运行 `egress link uninstall --config link.json`。仅删除自有资源，保留借用 namespace 和 Pool 接口。仍有进程或其他设备的 namespace 保留供重试。这些操作不向 Egress 发送沙箱级通知。
 
@@ -118,4 +191,4 @@ IP 封装和 legacy Ether 不增加新身份字段，既有协议无法区分身
 
 同版本 Connector 发行包将 `connector-ctl`、`connector-vpp` 和 `vpp-runtime.json` 直接放在 `bin/` 下。数据面将 VPP、六个内建插件及 libc 静态链接到一个可执行文件。归档同时包含原生许可证材料、`deploy/connector-egress@.service` 和 `deploy/egress` 示例。安装或复制组件时保留完整目录。node-infra 中这些文件位于 `/opt/node-infra/bin`，网关使用 `/opt/node-infra/bin/connector-vpp`。
 
-本地网关将主配置、Area 文件和 `link.json` 挂载到 `/etc/connector-egress`，参考平台 `node-infra/examples/local-egress`。现有节点准备流程管理共享链路；`owner_netns: ""` 表示节点流程保留的主网络命名空间，每次操作均核对其 inode。vSwitch 继续通过原有节点服务启停。Egress 仅运行转发进程，通过 SIGHUP reload，不接收沙箱生命周期通知。普通服务停止保留 pair；最终 owner 卸载在网关与 vSwitch 停止后清理 pair。借用的网关 namespace 和 Pool 接口由外部所有者保留。
+本地网关将主配置、Area 文件和 `link.json` 挂载到 `/etc/connector-egress`，参考平台 `node-infra/examples/local-egress`。现有节点准备流程管理共享链路；`owner_netns: ""` 表示节点流程保留的主网络命名空间，每次操作均核对其 inode。vSwitch 继续通过原有节点服务启停，不要对该交换机另外运行独立部署的 `egress link start/stop`。Egress 仅运行转发进程，通过 SIGHUP reload，不接收沙箱生命周期通知。普通服务停止保留 pair；最终 owner 卸载在网关与 vSwitch 停止后清理 pair。借用的网关 namespace 和 Pool 接口由外部所有者保留。

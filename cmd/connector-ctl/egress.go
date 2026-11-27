@@ -32,6 +32,7 @@ func newEgressCommand() *cobra.Command {
 		}
 		root.AddCommand(cmd)
 	}
+	root.AddCommand(newEgressStatusCommand())
 	links := &cobra.Command{Use: "link", Short: "Own local veth wiring and stable vSwitch namespace handoff"}
 	for _, operation := range []string{"prepare", "check", "start", "stop", "repair", "uninstall"} {
 		var config, switchConfig, mode string

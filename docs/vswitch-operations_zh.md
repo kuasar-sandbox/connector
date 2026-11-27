@@ -4,6 +4,14 @@
 
 本手册覆盖交换机部署、沙箱端口分配、TAP queue 交付、流量检查与自有资源恢复。[网络契约](vswitch_zh.md)定义身份、转发、ABI 与并发；[TAPFD](tapfd_zh.md)定义可独立实现的 provider/consumer 协议。源码构建与验证策略见[贡献指南](../CONTRIBUTING_zh.md)。
 
+## 启动前确定所有者
+
+平台节点使用 [node-infra 部署](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/node-infra_zh.md)，由其准备 namespace 并管理交换机服务。把 Connector 集成到其他 runtime 时，使用下文独立部署流程。避免另一个服务或手工命令同时启停同一受管交换机。
+
+运行中的交换机提供沙箱 attachment 以及配置的管理/transit 路径。外部访问还需要可达网关和每个 attachment 的 transit 参数。原生本地或远端 IPv4 NAT/ACL 见 [Egress 运维](egress_zh.md)，其中本地 link 包装流程负责 pair 移动。本文后面的手工交换机示例仍适用于已提供 underlay 或自定义网关的场景。
+
+部署后，由 runtime 管理 attach/detach 与 TAPFD queue 生命周期；通过状态/统计观测，在破坏性清理前也通过同一 runtime 排空。
+
 ## 部署与前置条件
 
 ### 系统要求
@@ -13,9 +21,6 @@
 - bpffs 挂载在 `/sys/fs/bpf`(`mount -t bpf bpf /sys/fs/bpf`)。
 - 特权路径以具有所需能力的 root 运行;能力裁剪条件见 [所需权限](vswitch_zh.md#所需权限)。
 - 需要 network namespace、TAP、veth、路由与 TC 支持。运行预构建二进制不需要 Go 或 Clang；源码工具链见[贡献指南](../CONTRIBUTING_zh.md#build-and-validation)。
-
-
-延迟发布在 AMD64/ARM64 上使用普通 BPF 读取和显式地址依赖,不使用 fetch-atomic 指令或 `-mcpu=v3`,保持原 Linux 5.10 基线。生成指令及内核重写后的指令必须保留 up 到读取地址的依赖,并在 up 后重新读取 InnerIP;通过特权报文与 TAP-FD 测试验证实际行为。
 
 ### 获取匹配的二进制
 

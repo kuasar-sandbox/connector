@@ -2,10 +2,9 @@
 
 # connector
 
-首次运行跨组件沙箱或 Demo，推荐从项目[快速开始](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/quickstart_zh.md)
-使用匹配聚合版本的 [workbench](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/workbench/README_zh.md)。
-本组件仍可独立构建和部署，workbench 不是生产运行的强制依赖。预构建架构以所选
-发布版的实际资产为准；源码支持某架构不意味着所有历史版本都提供该架构制品。
+首次启动沙箱，请从项目[快速开始](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/quickstart_zh.md)使用已发布的 node-infra 镜像及配套聚合版本。部署持久节点或集群时，继续阅读平台部署指南并提供明确的站点配置。quickstart profile 用于首次体验，不应通过任意挂载生产配置来扩展。
+
+独立部署组件或接入其他 runtime 时，再使用本仓指南。架构与能力以所选发布版的实际资产为准；当前源码文档可能包含旧 Stable 归档尚未提供的功能。[Workbench](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/workbench/README_zh.md)用于源码开发、演示和集成验证。
 
 `connector` 是 [Kuasar Sandbox](https://github.com/kuasar-sandbox/kuasar-sandbox) 面向 MicroVM 的高密度 eBPF 网络组件。
 
@@ -17,6 +16,7 @@
 
 | 任务 | 文档 |
 |---|---|
+| 通过本地或远端网关提供沙箱 IPv4 出口 | [Egress 运维](docs/egress_zh.md) |
 | 部署、分配端口、观测流量或恢复交换机 | [vSwitch 运维](docs/vswitch-operations_zh.md) |
 | 对接网关，审查隔离、身份与 ABI | [网络架构与契约](docs/vswitch_zh.md) |
 | 实现 TAP provider 或 consumer | [TAPFD 协议](docs/tapfd_zh.md) |
@@ -35,15 +35,18 @@
 - 通过 `connector-ctl` 检查统计与生命周期;
 - 向 VMM/runtime 交接 TAP 与 network namespace 文件描述符。
 
-组件目的不是某一种 Slot、VNI、UDP port 或 TLV 编码。这些机制让部署为各沙箱分配独立隧道面身份,并向外部策略网关携带可信的沙箱元数据。网关可据此实施沙箱级公网、私网、DNS、代理、审计和流量治理规则,不必将应用策略嵌入基础交换机。
+沙箱的隧道身份让网关依据平台分配的身份选择网络策略。vSwitch 提供转发和身份，部署方选择网关及策略。仅启动 vSwitch 不会自动提供 Internet 访问。
 
-[Geneve Egress 网关](docs/egress_zh.md) 为本地和远端部署提供同一套 Area/Pool 策略与原生 NAT 服务。本地部署管理专用 transit veth 及其 namespace 交接。固定版本的全静态 `connector-vpp` 数据面通过 `native-deps` 构建，与纯 Go 控制程序统一输出到 `bin/<arch>`，参见 [Egress 构建与验收](egress/README_zh.md)。该功能实现了取代 #9 的[提案 #117](https://github.com/kuasar-sandbox/connector/issues/117)。
+[Geneve Egress 网关](docs/egress_zh.md)提供 IPv4 路由、有序 ACL、DNAT 和原生 NAT，本地与远端部署使用同一套 Area/Pool 配置，有效流量自动创建状态。可选择 node-infra 管理的本地网关、独立交换机的专用本地接线，或通过自有 underlay 访问远端网关。DNS/域名策略和应用代理由网关之外的服务提供。
+
+从同一组件版本安装匹配的 `connector-ctl` 和全静态 `connector-vpp`，保留在同一 `bin/` 目录中，无需另装 VPP、插件目录或沙箱登记服务。源码构建与原生验收见 [Egress 构建与验收](egress/README_zh.md)。
 
 ## 主要接口
 
 | 路径 | 用途 |
 | --- | --- |
 | `cmd/connector-ctl` | start/serve/stop vSwitch;attach/detach、reserve/provision、open-port、状态/统计及 DHCP |
+| `pkg/egress` | 文件配置/reload、网关进程管理和自有本地链路生命周期 |
 | `pkg/vswitch` | Go vSwitch 生命周期与端口管理 |
 | `pkg/tapfd` | 经 Unix socket 交接 TAP 和 network namespace fd 的公共 provider/consumer SDK |
 | `pkg/netlink`、`pkg/netns`、`pkg/dhcp`、`pkg/daemon` | Linux 网络、namespace、DHCP 与服务辅助能力 |

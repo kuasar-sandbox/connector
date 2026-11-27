@@ -2,13 +2,9 @@
 
 # connector
 
-For the first cross-component sandbox or Demo, follow the project
-[Quick Start](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/quickstart.md)
-with the matching aggregate release and
-[workbench](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/workbench/README.md).
-This component can still be built/deployed independently; workbench is not a
-production runtime dependency. Published architectures are specific to the
-selected release; source support does not imply all historical assets exist.
+For a first sandbox, follow the project's [Quick Start](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/quickstart.md) using a published node-infra image and its matching aggregate release. For a persistent node or cluster, continue with the platform deployment guides and explicit site configuration. The quickstart profile is a first-run environment, not a base to extend by mounting arbitrary production configuration.
+
+Use this repository's guides when deploying this component independently or integrating it with another runtime. Select the architecture and capabilities actually present in the chosen release; current source documentation can describe features absent from an older stable archive. [Workbench](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/workbench/README.md) is for source development, demonstrations and integration validation.
 
 `connector` is the **high-density eBPF networking component** for MicroVMs in [Kuasar Sandbox](https://github.com/kuasar-sandbox/kuasar-sandbox).
 
@@ -20,6 +16,7 @@ The repository can be used as part of the full Kuasar Sandbox platform or integr
 
 | Task | Guide |
 |---|---|
+| Provide sandbox IPv4 egress through a local or remote gateway | [Egress operations](docs/egress.md) |
 | Deploy, allocate a port, observe traffic or recover a switch | [vSwitch operations](docs/vswitch-operations.md) |
 | Integrate a gateway or review isolation, identity and ABI | [Network architecture and contracts](docs/vswitch.md) |
 | Implement a TAP provider or consumer | [TAPFD protocol](docs/tapfd.md) |
@@ -38,15 +35,18 @@ The base vSwitch provides:
 - statistics and lifecycle inspection through `connector-ctl`;
 - TAP and network-namespace file-descriptor handoff to the VMM/runtime.
 
-The top-level purpose is not a particular Slot, VNI, UDP-port, or TLV encoding. Those mechanisms let a deployment assign each sandbox an independent tunnel-plane identity and carry trusted sandbox metadata to an external policy gateway. The gateway can then apply sandbox-level public-network, private-network, DNS, proxy, audit, and traffic-governance rules without embedding application policy in the base switch.
+A sandbox's tunnel identity lets the gateway select its network policy independently of the guest's self-reported address. The vSwitch supplies forwarding and identity; deployment owners choose the gateway and its policy. Starting a vSwitch alone does not provide Internet access.
 
-The [Geneve Egress gateway](docs/egress.md) adds the same Area/Pool policy and native NAT service to local and remote deployments. Local deployment owns a dedicated transit veth and its namespace handoff. Build its fully static `connector-vpp` dataplane through `native-deps`, alongside the pure-Go control binary in `bin/<arch>`; see [Egress build and acceptance](egress/README.md). This implements [proposal #117](https://github.com/kuasar-sandbox/connector/issues/117), which supersedes #9.
+The [Geneve Egress gateway](docs/egress.md) supplies IPv4 routing, ordered ACLs, DNAT and native NAT with the same Area/Pool configuration for local and remote deployment. Valid traffic creates state automatically. Use a managed local gateway with node-infra, a dedicated local pair for an independent switch, or a remote gateway reached through an owned underlay. DNS/domain policy and application proxies require services outside this gateway.
+
+Install the matching `connector-ctl` and fully static `connector-vpp` from one component release, keeping them together in `bin/`. A separate VPP installation, plugin directory or sandbox-registration service is unnecessary. Source builds and native acceptance belong to [Egress build and acceptance](egress/README.md).
 
 ## Main interfaces
 
 | Path | Purpose |
 | --- | --- |
 | `cmd/connector-ctl` | Start/serve/stop a vSwitch; attach/detach, reserve/provision, open a port, inspect status/statistics, and provide DHCP support |
+| `pkg/egress` | File configuration/reload, gateway process supervision and owned local-link lifecycle |
 | `pkg/vswitch` | Programmatic vSwitch lifecycle and port management |
 | `pkg/tapfd` | Public provider/consumer SDK for passing TAP and network-namespace file descriptors over Unix sockets |
 | `pkg/netlink`, `pkg/netns`, `pkg/dhcp`, `pkg/daemon` | Linux network, namespace, DHCP, and service helpers |

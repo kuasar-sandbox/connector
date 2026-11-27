@@ -235,7 +235,7 @@ GOWORK=off go test -tags=integration -exec 'sudo -n env REQUIRE_CONNECTOR_STATS=
 | `pkg/tapfd/` | Public protocol reference: PortMetadata, OpenTap, SendFd, RecvFd, RecvFds, RecvFdsWithNetns, ConnectUnix and UnixConnFromFd. |
 | `pkg/vswitch/` | Public lifecycle API: context/Open, lifecycle/Start/StartReserved, provision, stop, Attach/Detach/Reserve, Status/Stats, Config/FileConfig, metadata, flock and exported helpers. |
 | `pkg/netlink/` | Public veth/TAP/TC and batched netlink operations. |
-| `pkg/egress/` | Gateway configuration, leased session control, policy persistence and owned local-link lifecycle. |
+| `pkg/egress/` | Gateway file configuration/reload, traffic-driven forwarding lifecycle and owned local-link lifecycle. |
 | `egress/` | Pinned native dataplane, runtime staging and privileged packet/capacity acceptance executors. |
 | `pkg/netns/` | Public namespace enter/move/exec. |
 | `pkg/dhcp/` | Public embedded DHCP client/server. |
@@ -294,7 +294,7 @@ and license identity, including the project license scope and GPL text.
 Validation rejects unexpected payloads, unsafe paths, links, ownership or modes,
 and materials outside the component namespace. License directories include the Connector project, its embedded eBPF, and the Go toolchain and versioned third-party Go dependencies used by `connector-ctl`.
 
-`connector` publishes independent component versions named `vX.Y.Z`. Each published native-architecture component archive contains `bin/connector-ctl`, the matching fully static `bin/connector-vpp`, its `bin/vpp-runtime.json` manifest, deployment files, and the operational helpers selected by the component release contract. The aggregate platform archive carries selected user guides and canonical E2E runtime inputs from its explicit documentation/test selections. The selected guide includes the operations, network and TAPFD contracts; contributor instructions and source-only tests remain linked to the selected source revision.
+`connector` publishes independent component versions named `vX.Y.Z`. Each published native-architecture component archive contains `bin/connector-ctl`, the matching fully static `bin/connector-vpp`, its `bin/vpp-runtime.json` manifest, deployment files, and the operational helpers selected by the component release contract. The aggregate platform archive carries selected user guides and canonical E2E runtime inputs from its explicit documentation/test selections. The selected guide includes the vSwitch/Egress operations, network and TAPFD contracts; contributor instructions and source-only tests remain linked to the selected source revision.
 Use `make release VERSION=vX.Y.Z` to build and validate the local release directory. Native files retain the same relative layout as `bin/<arch>` in a source build; the release's `bin/` directory is ready to install as a whole.
 
 The project repository publishes aggregate versions named `release-vX.Y.Z`, selecting an exact `connector` tag together with the other release units and validating the combined platform. Component and aggregate version numbers are independent.
