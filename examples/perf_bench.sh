@@ -1,7 +1,7 @@
 #!/bin/bash
 # connector-ctl vswitch Performance Benchmark
 #
-# Topology (same as geneve_eth_test.sh):
+# Topology (disposable local benchmark fixture):
 #   sandbox1 (10.1.0.1) ──veth──> sw_ns (eBPF switch sw1)
 #   sandbox2 (10.1.0.2) ──veth──>        │
 #                                    sw-transit (10.0.0.1/24)
@@ -22,6 +22,9 @@
 #   sudo bash examples/perf_bench.sh teardown             # cleanup only
 #
 # Requirements: iperf3, netperf (optional), bpftool (optional)
+
+# Run on a disposable host: setup/cleanup use the fixed names below.
+# These benchmark fixtures are not an Egress deployment procedure.
 
 set -euo pipefail
 

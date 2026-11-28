@@ -4,6 +4,14 @@
 
 Deploy a switch, allocate a sandbox port, hand off its TAP queue, inspect traffic and recover owned resources. The [network contract](vswitch.md) defines identity, forwarding, ABI and concurrency; [TAPFD](tapfd.md) defines the independently implementable provider/consumer protocol. Source builds and validation strategy belong to [Contributing](../CONTRIBUTING.md).
 
+## Choose the owner before starting
+
+For a platform node, use the [node-infra deployment](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/node-infra.md), which prepares namespaces and owns the switch service. Use the independent setup below when integrating Connector with another runtime. Avoid a second service or manual start/stop acting on the same managed switch.
+
+A running switch provides sandbox attachment and the configured management/transit paths. External access also needs a reachable gateway and per-attachment transit settings. For native local or remote IPv4 NAT/ACLs, follow [Egress operations](egress.md); its local link wrapper replaces manual pair movement. The manual switch example later in this guide remains useful for an already provided underlay or a custom gateway.
+
+After deployment, let the runtime own attach/detach and TAPFD queue lifetime. Use status/statistics for observation; drain through that same runtime before destructive cleanup.
+
 ## Deployment and prerequisites
 
 ### System requirements
@@ -12,9 +20,6 @@ Deploy a switch, allocate a sandbox port, hand off its TAP queue, inspect traffi
 - bpffs mounted at `/sys/fs/bpf`, for example `mount -t bpf bpf /sys/fs/bpf`.
 - Root execution for the privileged BPF/network/namespace paths, with capability requirements discussed in [required privileges](vswitch.md#required-privileges).
 - Network namespaces, TAP, veth, routing and TC support. Running a prebuilt binary does not require Go or Clang; source toolchains are covered by [Contributing](../CONTRIBUTING.md#build-and-validation).
-
-
-Deferred publication uses ordinary BPF loads and an explicit address dependency on AMD64/ARM64, not fetch-atomic instructions or `-mcpu=v3`. The documented Linux 5.10 baseline is unchanged. The generated and kernel-rewritten instructions must retain the flag-to-address dependency and the post-up InnerIP load; privileged packet and TAP-FD tests verify the resulting behavior.
 
 ### Obtain a matching binary
 
