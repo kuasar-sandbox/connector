@@ -179,7 +179,7 @@ GOWORK=off go test -tags=integration -exec 'sudo -n env REQUIRE_CONNECTOR_STATS=
 | pkg/tapfd/ | 公开协议参考:PortMetadata、OpenTap、SendFd、RecvFd、RecvFds、RecvFdsWithNetns、ConnectUnix、UnixConnFromFd。 |
 | pkg/vswitch/ | 公开生命周期 API:context/Open、lifecycle/Start/StartReserved、provision、stop、Attach/Detach/Reserve、Status/Stats、Config/FileConfig、metadata、flock 和 exports。 |
 | pkg/netlink/ | 公开 veth/TAP/TC 与批量 netlink 操作。 |
-| pkg/egress/ | 网关配置、租约会话控制、策略持久化与归属明确的本地链路生命周期。 |
+| pkg/egress/ | 网关文件配置/reload、由流量驱动的转发生命周期与归属明确的本地链路生命周期。 |
 | egress/ | 固定版本原生数据面、运行时暂存和特权报文/容量验收执行器。 |
 | pkg/netns/ | 公开 namespace enter/move/exec。 |
 | pkg/dhcp/ | 公开 DHCP 客户端/服务端。 |
@@ -236,7 +236,7 @@ Connector module。部署文件和运维辅助脚本取自所选源码树。归�
 路径、链接、错误属主或权限,以及组件命名空间以外的材料。
 许可目录包含 Connector 项目、其内嵌 eBPF，以及 `connector-ctl` 使用的 Go 工具链和版本化第三方 Go 依赖。
 
-`connector` 独立发布 `vX.Y.Z` 组件版本。原生架构组件归档包含 `bin/connector-ctl`、配套的全静态 `bin/connector-vpp`、`bin/vpp-runtime.json` 清单、部署文件和组件发行合同选定的运维辅助脚本。聚合 platform 包按显式文档/测试选择携带用户指南与规范 E2E 运行输入，选定 guide 包含操作、网络与 TAPFD 契约；贡献说明与源码专用测试链接到所选源码版本。用 `make release VERSION=vX.Y.Z` 构建并验证本地发布目录。原生文件保留源码构建中 `bin/<arch>` 的相对布局，发行包的 `bin/` 可作为完整目录直接安装。
+`connector` 独立发布 `vX.Y.Z` 组件版本。原生架构组件归档包含 `bin/connector-ctl`、配套的全静态 `bin/connector-vpp`、`bin/vpp-runtime.json` 清单、部署文件和组件发行合同选定的运维辅助脚本。聚合 platform 包按显式文档/测试选择携带用户指南与规范 E2E 运行输入，选定 guide 包含 vSwitch/Egress 操作、网络与 TAPFD 契约；贡献说明与源码专用测试链接到所选源码版本。用 `make release VERSION=vX.Y.Z` 构建并验证本地发布目录。原生文件保留源码构建中 `bin/<arch>` 的相对布局，发行包的 `bin/` 可作为完整目录直接安装。
 
 项目主仓独立发布 `release-vX.Y.Z` 聚合版本,选择精确的 Connector Tag 与其他发行单元,并验证组合后的平台。组件与聚合版本号相互独立。
 

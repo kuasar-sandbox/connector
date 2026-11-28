@@ -5,10 +5,13 @@
 # Tests the batch netns optimization effectiveness.
 #
 # Usage:
-#   sudo bash examples/start_perf_test.sh
-#   sudo bash examples/start_perf_test.sh --ports 128,256,512,1024
+#   sudo bash examples/start_perf_bench.sh
+#   sudo bash examples/start_perf_bench.sh --ports 128,256,512,1024
 #
 # Requirements: root privileges, network namespaces support
+
+# Run on a disposable host: setup/cleanup use the fixed names below.
+# These benchmark fixtures are not an Egress deployment procedure.
 
 set -euo pipefail
 

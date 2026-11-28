@@ -8,20 +8,69 @@ Local and remote deployments use the same Area/Pool configuration and wire contr
 
 ## Deployment and ownership
 
-Build the matching fully static `connector-vpp` dataplane and pure-Go `connector-ctl` using [build and acceptance](../egress/README.md). Install both executables from the same component version. VPP owns each configured gateway/SNAT address; Linux must not hold the same address on that interface. Unrelated Linux IPv4 addresses are permitted. The dataplane normalizes AF_PACKET checksum and TCP segmentation metadata before forwarding, without changing borrowed devices or external peers. The dedicated local veth is prepared for the existing vSwitch wire contract.
+### Choose the deployment owner
 
-For a local gateway, use [link.json](../dist/egress/link.json), [switch.json](../dist/egress/switch.json), [gateway.yaml](../dist/egress/gateway.yaml) and [area7.yaml](../dist/egress/area7.yaml). Extract the selected component archive into `/opt/connector`, preserving its complete `bin/` directory; the service template and gateway example use this prefix. Use `/opt/connector/bin/connector-ctl` for the commands below, or add that directory to `PATH`. The optional `vpp` configuration field overrides the dataplane executable with an absolute path. When omitted, `connector-ctl` locates `connector-vpp` beside its own executable, resolving the control executable's symlink first; the working directory and `PATH` do not affect this lookup. Replace example addresses and resources before deployment.
+| Deployment | Start here | Owner of switch/transit lifecycle |
+|---|---|---|
+| Platform node with local Egress | [node-infra deployment](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/node-infra.md) and its `examples/local-egress` files | node-infra preparation and normal vSwitch service; Egress has its own unit. |
+| Independently deployed vSwitch with local Egress | The standalone sequence below | `connector-ctl egress link` owns the dedicated pair and wraps switch start/stop. |
+| Remote Egress shared by nodes | The remote deployment section below | Deployment owner supplies the routed underlay; no local-pair wrapper. |
 
-1. Run `connector-ctl egress link prepare --config link.json`. The stable owner namespace holds the switch endpoint while vSwitch is stopped; the gateway endpoint stays in the Egress namespace. Namespace and device ownership are recorded.
-2. Have the external-network owner place the uplink in the gateway namespace, configure its MTU and bring it up. Provide real external reachability for SNAT resources. The host default route is not an implicit Pool exit.
-3. Prepare switch and port namespaces using existing [vSwitch operations](vswitch-operations.md), then run `connector-ctl egress validate --config gateway.yaml`.
-4. Run `ip netns exec egress-local connector-ctl egress serve --config gateway.yaml`. Alternatively install [connector-egress@.service](../dist/connector-egress@.service), place the main configuration at `/etc/connector-egress/egress-local.yaml` and its referenced Area files beside it, then start `connector-egress@egress-local.service`.
-5. Run `connector-ctl egress link start --config link.json --switch-config switch.json --mode veth`. The default is `tap`, as in existing vSwitch. The wrapper starts vSwitch from the recorded stable owner namespace.
-6. Attach sandboxes through existing vSwitch interfaces and verify real request/reply traffic through the required Pools. No Egress registration call is involved.
+An independent Egress deployment uses the matching `bin/connector-ctl`, `bin/connector-vpp`, `bin/vpp-runtime.json` and Egress templates from one Connector release. The node-infra image includes these binaries and `connector-egress.service`; configure a site deployment with its local-Egress example. Follow [platform installation](https://github.com/kuasar-sandbox/kuasar-sandbox/blob/main/docs/installation.md) to select and verify matching assets and guides. [Source build and acceptance](../egress/README.md) is for producing or changing the component.
+
+Install both executables from the same component version. The default `connector-vpp` lookup is beside the actual `connector-ctl` executable, after resolving its symlink; neither the working directory nor `PATH` determines the dataplane path. Keep the complete `bin/` directory. The optional `vpp` field provides an absolute override. The static dataplane needs no separate VPP package, shared-library directory or externally loaded plugin set.
+
+VPP owns each configured gateway/SNAT address; Linux must not hold the same address on that interface. Unrelated Linux IPv4 addresses are permitted. The external-network owner provides the uplink, MTU, UP state, reachable next hop and return routing for the selected SNAT addresses. The host default route is not an implicit Pool exit. The dataplane normalizes AF_PACKET checksum and TCP segmentation metadata without changing borrowed devices or external peers.
+
+### Standalone local gateway
+
+Use [link.json](../dist/egress/link.json), [switch.json](../dist/egress/switch.json), [gateway.yaml](../dist/egress/gateway.yaml) and [area7.yaml](../dist/egress/area7.yaml) as one configuration set. Example addresses are documentation ranges; replace them with the addresses and devices owned by your deployment. This procedure assumes a fresh deployment with unused `egress-owner`, `egress-local`, `switch`, `ports` and `sw0` names. Run privileged commands as root.
+
+1. Extract the component archive into `/opt/connector`. Copy the examples to `/etc/connector-egress`, naming the gateway file `egress-local.yaml` for the service template. Keep its relative `area_files` next to it. Install [connector-egress@.service](../dist/connector-egress@.service) under `/etc/systemd/system/`.
+2. Edit the whole set before starting. Validate policy and prepare the owned pair:
+
+   ```bash
+   /opt/connector/bin/connector-ctl egress validate --config /etc/connector-egress/egress-local.yaml
+   /opt/connector/bin/connector-ctl egress link prepare --config /etc/connector-egress/link.json
+   ip netns add switch
+   ip netns add ports
+   ```
+
+   `validate` prints `{"valid":true}` for a valid file set; it does not check physical reachability. `prepare` creates or verifies the owner/gateway namespaces and records pair ownership. The switch and port namespaces are separate prerequisites.
+3. Have the external-network owner place `egress-uplink` in `egress-local`, set its configured MTU and bring it UP. Provide an on-link Pool next hop and return routing for every selected SNAT address. Do not assign VPP-owned addresses to Linux. This is site-specific network provisioning, not a requirement to run a Docker gateway or add a second host NAT layer.
+4. Start the gateway and the TAP switch, then inspect their state:
+
+   ```bash
+   systemctl daemon-reload
+   systemctl start connector-egress@egress-local.service
+   /opt/connector/bin/connector-ctl egress link start \
+     --config /etc/connector-egress/link.json \
+     --switch-config /etc/connector-egress/switch.json --mode tap
+   /opt/connector/bin/connector-ctl egress link check --config /etc/connector-egress/link.json
+   /opt/connector/bin/connector-ctl egress status --runtime-dir /var/lib/connector-egress/egress-local
+   ```
+
+   `tap` is also the default and is the MicroVM path. Choose `veth` only for a consumer that deliberately uses namespace ports. If directly supervising Egress instead of systemd, run `ip netns exec egress-local /opt/connector/bin/connector-ctl egress serve --config /etc/connector-egress/egress-local.yaml` in its own foreground service or terminal before starting the switch.
+5. Attach through the owning runtime or [vSwitch/TAPFD workflow](vswitch-operations.md). Set the attachment's transit gateway and logical VNI to match the gateway configuration, then verify real request/reply traffic through each intended Pool. No Egress registration is involved.
+
+The bundled example has the following matching fields:
+
+| Side | Value | Meaning |
+|---|---|---|
+| vSwitch `transit_dev_addr` | `198.18.0.2/24:198.18.0.1` | Switch underlay address and next hop. |
+| Gateway interface / attachment | `198.18.0.1/24`, `peer: 198.18.0.2`, `locator: port` | Gateway ingress and admitted switch source. |
+| Each sandbox attachment | `transit_gateway_ip: 198.18.0.1`, `transit_geneve_vni: 7` | Select this gateway and Area `vni: 7`; these are not the Guest's default-router address or subnet. |
+| vSwitch | `generation_bits: 4`, `geneve_encap_eth: true` | Enable the existing generation MAC fencing on Ether Geneve. The caller advances attachment generation on identity reuse. |
+
+There is no switch-wide default Area/VNI or separate `TransitMACFencing` setting. CLI consumers pass `--transit-gateway-ip` and `--transit-geneve-vni` to `vswitch attach`; TAPFD consumers use the corresponding underscore fields. Orchestrator supplies these through the Create/Build network specification or an inherited template; see [request configuration](https://github.com/kuasar-sandbox/orchestrator/blob/main/docs/sandbox-lifecycle.md#request-configuration) and the [Build client workflow](https://github.com/kuasar-sandbox/orchestrator/blob/main/docs/node-build.md#client-workflow). Merely defining Area 7 at the gateway does not select it for a sandbox. Do not add `generation_bits` or encapsulation fields to an Egress attachment.
 
 Repeated prepare verifies and reuses the owned pair. It rejects foreign names, changed namespace identities and damaged installed pairs. Each local vSwitch uses a dedicated pair; multiple pairs may share an Egress instance. Distinct gateway IPs use distinct ingress addresses. The same peer, locator and inner IP may access each gateway independently. Existing vSwitch `transit_dev_mtu:auto` may lower its endpoint below the provisioned gateway MTU; this does not change pair ownership.
 
-Remote deployments use externally owned transit devices. `peer` accepts an IPv4 address, CIDR, inclusive IP range, or a list of these, for example `["198.18.0.2", "203.0.113.0/24"]`; omission or an empty list adds no source filter. The actual peer always comes from the outer source IP. An omitted `next_hop` uses the actual peer as a directly reachable next hop; routed peers require an on-link router. Packet VNI selects a configured Area without per-attachment Area registration. Overlapping source ranges for the same ingress/gateway must agree on decoding, MTU and return routing or the complete candidate is rejected. The same gateway/source range cannot select different return devices; disjoint peer ranges may reuse a gateway address across devices. Remote transit and Pool exits may share an interface when their Geneve gateway and SNAT addresses are distinct; the local dedicated veth remains separate. Geneve access fields and the opaque return MAC are not cryptographic authentication; underlay ownership must prevent sender impersonation.
+### Remote gateway
+
+Use externally owned transit devices instead of `egress link prepare/start`. Route each switch's outer source to the configured Egress ingress address, admit that source with an attachment, and set the sandbox gateway/VNI as above. Configure each Pool's exit separately from the return path to switches.
+
+`peer` accepts an IPv4 address, CIDR, inclusive IP range, or a list of these, for example `["198.18.0.2", "203.0.113.0/24"]`; omission or an empty list adds no source filter. The actual peer always comes from the outer source IP. An omitted `next_hop` uses the actual peer as a directly reachable next hop; routed peers require an on-link router. Packet VNI selects a configured Area without per-attachment Area registration. Overlapping source ranges for the same ingress/gateway must agree on decoding, MTU and return routing or the complete candidate is rejected. The same gateway/source range cannot select different return devices; disjoint peer ranges may reuse a gateway address across devices. Remote transit and Pool exits may share an interface when their Geneve gateway and SNAT addresses are distinct; the local dedicated veth remains separate. Geneve access fields and the opaque return MAC are not cryptographic authentication; underlay ownership must prevent sender impersonation.
 
 ## Files and reload
 
@@ -80,7 +129,7 @@ acl:
 
 The main configuration has no `max_contexts` or `max_connections`, and the dataplane has no hidden equivalent independent admission ceiling. Initial memory allocation does not cap admission. `main_core` and `workers` select distinct available CPUs; omitting workers uses native single-thread mode. Areas, attachments, Pools, addresses and rules use dynamic storage. The native statistics segment has no listener but still needs memory for forwarding state counters. Available memory, CPU, addresses and ports remain finite; an unlimited Pool quota does not make gateway resources unlimited.
 
-The acceptance target is 12288 simultaneous active contexts and 196608 bidirectional NAT mappings across multiple switch sources, with two native workers. Consult the candidate's acceptance manifest and measured memory rather than inferring a throughput or latency guarantee.
+Size each gateway from measured concurrent accesses, mappings, packet rate and resident memory. The developer [acceptance matrix](../egress/README.md#native-acceptance) tests 12288 active contexts and 196608 bidirectional mappings with two workers; those are validation workloads, not deployment defaults or throughput/latency guarantees.
 
 ## Wire identity and MTU
 
@@ -106,9 +155,33 @@ Return encapsulation respects the smaller of the configured outer budget and inn
 
 The private runtime directory contains `pid`, `startup.conf`, `owner.lock` and an atomically replaced `status.json`. The status file reports configuration generation, reload error, outer accesses (`accesses`), internal return versions (`contexts`), NAT counts, named Area/Pool counters, native packet errors, native PID and interface/carrier state. It is output only and is never restored as configuration. No HTTP, Unix CLI, binary API, statistics listener or named shared-memory API transport is exposed. The supervisor uses an unnamed parent/child descriptor pair.
 
+For the standalone unit, inspect both the service and the saved gateway snapshot:
+
+```bash
+systemctl status connector-egress@egress-local.service
+journalctl -u connector-egress@egress-local.service -n 100 --no-pager
+/opt/connector/bin/connector-ctl egress status --runtime-dir /var/lib/connector-egress/egress-local
+```
+
+Before requesting reload, record `snapshot.configuration_generation` and `updated_at`. A successful `systemctl reload` means the signal was delivered; acceptance is asynchronous. Repeat the status command and wait for a newer snapshot that reports an advanced generation with an empty `snapshot.reload_error`, then test affected traffic. A nonempty reload error means the candidate was not accepted; diagnose the reported configuration or interface error before retrying. An unchanged generation or timestamp alone is not proof of acceptance. If no result appears, inspect the service and journal. For node-infra, run `systemctl reload connector-egress` inside the node container and inspect its snapshot with `connector-ctl egress status --runtime-dir /run/connector-egress/local`.
+
+### Read a saved snapshot with the CLI
+
+`egress status` reads the saved snapshot and reports its age. It does not contact the gateway or act as a health probe:
+
+```bash
+connector-ctl egress status --config /etc/connector-egress/egress-local.yaml
+# Inspect the retained running configuration's snapshot even if edited files are invalid:
+connector-ctl egress status --runtime-dir /var/lib/connector-egress/egress-local
+```
+
+Provide exactly one nonempty selector. `--config` loads the whole candidate file set to locate `runtime_dir`; `--runtime-dir` reads that directory directly. JSON output wraps the unchanged native object in `snapshot` and adds its absolute `path`, UTC file modification time `updated_at`, and `age_seconds`. The timestamp is the file's metadata, not an independently verified collection time. Retained or copied files can outlive a gateway; the command neither contacts nor signals a process and does not claim it is running. Missing, unreadable or malformed snapshots return an error. Use the unit and real traffic checks above to assess operation.
+
+### Wiring and repair
+
 `egress link check --config link.json` reports pair ownership/placement and existing vSwitch conditions. Runtime checks cover the gateway process, configuration, deployment-owned wiring and interface state. Controlled end-to-end tests verify bidirectional Geneve forwarding and Pool return. External network/target probes, probe-target configuration and external-reachability startup gates are outside this deployment capability.
 
-Losing or replacing one physical interface disables that interface pending controlled repair; unrelated paths continue. A same-name replacement is not adopted automatically. For local repair, stop affected traffic, drain allocated vSwitch ports through normal Detach, stop Egress before replacing its endpoint, run `egress link repair --config link.json --switch-config switch.json --mode veth`, restart Egress and verify traffic. A shared gateway restart loses its NAT state. The repair wrapper refuses active ports and does not force-delete sandboxes.
+Losing or replacing one physical interface disables that interface pending controlled repair; unrelated paths continue. A same-name replacement is not adopted automatically. For local repair, stop affected traffic, drain allocated vSwitch ports through normal Detach, stop Egress before replacing its endpoint, run `egress link repair --config link.json --switch-config switch.json --mode tap` (or the original `veth` mode), restart Egress and verify traffic. A shared gateway restart loses its NAT state. The repair wrapper refuses active ports and does not force-delete sandboxes.
 
 Normal `link stop` returns the switch endpoint to its stable owner and keeps the pair. Explicit uninstall follows Detach and stopping both sides, then `egress link uninstall --config link.json`. Only owned resources are removed; borrowed namespaces and Pool interfaces are retained. A namespace still containing processes or other devices is retained for a retry. No sandbox-specific notification is sent to Egress during these operations.
 
@@ -118,4 +191,4 @@ Use the file model and bundled examples above. The main file has no `exits`; Poo
 
 The same-version Connector release places `connector-ctl`, `connector-vpp`, and `vpp-runtime.json` directly under `bin/`. The dataplane includes VPP, its six built-in plugins and libc in one fully static executable. The archive also includes native license materials, `deploy/connector-egress@.service`, and `deploy/egress` examples. Keep the complete directory when installing or copying the component. In node-infra these files are under `/opt/node-infra/bin`; the gateway uses `/opt/node-infra/bin/connector-vpp`.
 
-For a managed local gateway, mount the main/Area files and `link.json` at `/etc/connector-egress`, and use the platform's `node-infra/examples/local-egress` example. The existing node preparation owns the shared link; `owner_netns: ""` refers to its retained primary network namespace, whose inode is checked on every operation. vSwitch still starts and stops through its unchanged node service. Egress has a separate forwarding process unit and SIGHUP reload, with no sandbox lifecycle coupling. Ordinary service stops retain the pair; final owner cleanup removes it only after the gateway and switch stop. Borrowed gateway namespaces and Pool interfaces remain with their external owner.
+For a managed local gateway, mount the main/Area files and `link.json` at `/etc/connector-egress`, and use the platform's `node-infra/examples/local-egress` example. The existing node preparation owns the shared link; `owner_netns: ""` refers to its retained primary network namespace, whose inode is checked on every operation. vSwitch still starts and stops through its unchanged node service. Do not also run standalone `egress link start/stop` against that managed switch. Egress has a separate forwarding process unit and SIGHUP reload, with no sandbox lifecycle coupling. Ordinary service stops retain the pair; final owner cleanup removes it only after the gateway and switch stop. Borrowed gateway namespaces and Pool interfaces remain with their external owner.
