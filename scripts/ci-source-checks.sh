@@ -8,6 +8,7 @@ python3 -B scripts/test-provision-assertions.py
 python3 -B scripts/test-vpp-runtime.py
 python3 -B scripts/test-management-ready.py
 python3 -B scripts/test-egress-wire.py
+python3 -B scripts/test-tap-receivers.py
 python3 -B scripts/test-geneve-readiness.py
 make -C native-deps test
 

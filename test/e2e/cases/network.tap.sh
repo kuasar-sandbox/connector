@@ -29,6 +29,7 @@
 set -euo pipefail
 
 source "${E2E_LIB:?E2E_LIB is required}/common.sh"
+source "${E2E_LIB}/connector/notify_helpers.sh"
 require_root
 require_command ip
 require_command python3
@@ -45,8 +46,45 @@ fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); ERRORS="${ERRORS}\n  - $1"; }
 
 SW_NAME="swtap"
 FLOATING_IP_BASE="100.100.96.0"
+TAP_TMP_DIR=""
+TAP_RECEIVER_PID=""
+
+stop_tap_receiver() {
+    local pid="${TAP_RECEIVER_PID:-}" status=0
+    [ -n "$pid" ] || return 0
+    stop_owned_process "$pid" || status=$?
+    TAP_RECEIVER_PID=""
+    return "$status"
+}
+
+wait_tap_receiver_ready() {
+    if ! wait_notify_receiver_ready "$1" "$TAP_RECEIVER_PID" 5; then
+        stop_tap_receiver || true
+        return 1
+    fi
+}
+
+# Observe the child exit, not merely a partially written result file. The Python
+# accept/recv bounds are five seconds each; the ARP probe retains its two-second
+# data-plane deadline. This wait starts after the CLI has sent the descriptor.
+join_tap_receiver() {
+    local pid="${TAP_RECEIVER_PID:-}" status=0
+    local deadline=$((SECONDS + 9))
+    [ -n "$pid" ] || return 1
+    while kill -0 "$pid" 2>/dev/null; do
+        if ((SECONDS >= deadline)); then
+            stop_tap_receiver || true
+            return 1
+        fi
+        sleep 0.02
+    done
+    wait "$pid" 2>/dev/null || status=$?
+    TAP_RECEIVER_PID=""
+    [ "$status" -eq 0 ]
+}
 
 setup() {
+    TAP_TMP_DIR=$(mktemp -d /tmp/connector-tap.XXXXXXXX)
     echo "==> Creating network namespaces..."
     for ns in sw_ns mgmt_ns; do
         ip netns add "$ns" 2>/dev/null || true
@@ -54,14 +92,23 @@ setup() {
 }
 
 teardown() {
+    local exit_status=$?
     echo "==> Teardown..."
+    if ! stop_tap_receiver; then
+        echo "ERROR: tap receiver did not exit within its shutdown bound" >&2
+        [ "$exit_status" -ne 0 ] || exit_status=1
+    fi
     ${SWITCH_BIN} stop ${SW_NAME} --force --force-clean 2>/dev/null || true
     ${SWITCH_BIN} stop swmix --force --force-clean 2>/dev/null || true
     for ns in sw_ns mgmt_ns port_ns; do
         ip netns del "$ns" 2>/dev/null || true
     done
-    rm -f /tmp/tap_test_recv_*.sock /tmp/tap_test_fdfile
+    if [ -n "${TAP_TMP_DIR:-}" ]; then
+        rm -rf "$TAP_TMP_DIR"
+        TAP_TMP_DIR=""
+    fi
     echo "==> Teardown complete."
+    exit "$exit_status"
 }
 
 # ----- python fd-receiver: listens on a unix socket, recv's a fd + metadata
@@ -71,14 +118,20 @@ teardown() {
 spawn_fd_receiver() {
     local sock_path="$1"
     local out_file="$2"
-    rm -f "$sock_path" "$out_file"
-    python3 - "$sock_path" "$out_file" <<'PYEOF' &
+    local ready_file="$out_file.ready"
+    [ -z "$TAP_RECEIVER_PID" ] && [ ! -e "$sock_path" ] &&
+        [ ! -e "$out_file" ] && [ ! -e "$ready_file" ] || return 1
+    python3 - "$sock_path" "$out_file" "$ready_file" <<'PYEOF' &
 import fcntl, os, socket, struct, sys
-sock_path, out_file = sys.argv[1], sys.argv[2]
+sock_path, out_file, ready_file = sys.argv[1:]
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.bind(sock_path)
 s.listen(1)
+s.settimeout(5)
+with open(ready_file, 'x'):
+    pass
 conn, _ = s.accept()
+conn.settimeout(5)
 # Generous buffer so the entire NUL-terminated metadata + SCM_RIGHTS arrive
 # in one recvmsg call.
 msg, anc, flags, _ = conn.recvmsg(512, socket.CMSG_LEN(struct.calcsize('i') * 4))
@@ -94,7 +147,7 @@ try:
     if fd < 0:
         with open(out_file, 'w') as f:
             f.write("ERR no_fd_received")
-        sys.exit(0)
+        sys.exit(1)
     # Parse the metadata line (everything before the first NUL byte).
     nul = msg.find(b'\x00')
     if nul < 0:
@@ -125,15 +178,12 @@ try:
 except Exception as e:
     with open(out_file, 'w') as f:
         f.write(f"ERR {e!r}")
+    sys.exit(1)
 conn.close()
 s.close()
 PYEOF
-    # Give the listener a moment to bind.
-    for _ in {1..20}; do
-        if [ -S "$sock_path" ]; then return 0; fi
-        sleep 0.05
-    done
-    return 1
+    TAP_RECEIVER_PID=$!
+    wait_tap_receiver_ready "$ready_file"
 }
 
 # ----- python connectivity probe: receives the tap fd, then drives REAL
@@ -147,19 +197,25 @@ PYEOF
 spawn_connectivity_probe() {
     local sock_path="$1"
     local out_file="$2"
-    rm -f "$sock_path" "$out_file"
-    python3 - "$sock_path" "$out_file" <<'PYEOF' &
+    local ready_file="$out_file.ready"
+    [ -z "$TAP_RECEIVER_PID" ] && [ ! -e "$sock_path" ] &&
+        [ ! -e "$out_file" ] && [ ! -e "$ready_file" ] || return 1
+    python3 - "$sock_path" "$out_file" "$ready_file" <<'PYEOF' &
 import fcntl, os, select, socket, struct, sys, time
-sock_path, out_file = sys.argv[1], sys.argv[2]
+sock_path, out_file, ready_file = sys.argv[1:]
 
 def done(msg):
     with open(out_file, 'w') as f:
         f.write(msg)
-    sys.exit(0)
+    sys.exit(0 if msg.startswith("connectivity=OK ") else 1)
 
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.bind(sock_path); s.listen(1)
+s.settimeout(5)
+with open(ready_file, 'x'):
+    pass
 conn, _ = s.accept()
+conn.settimeout(5)
 msg, anc, _, _ = conn.recvmsg(512, socket.CMSG_LEN(struct.calcsize('i') * 4))
 fd = -1
 for level, ctype, data in anc:
@@ -222,11 +278,8 @@ try:
 except Exception as e:
     done("ERR %r" % (e,))
 PYEOF
-    for _ in {1..20}; do
-        if [ -S "$sock_path" ]; then return 0; fi
-        sleep 0.05
-    done
-    return 1
+    TAP_RECEIVER_PID=$!
+    wait_tap_receiver_ready "$ready_file"
 }
 
 # ----- T1 -----
@@ -287,23 +340,24 @@ test_t3_attach_tap_mode_in_output() {
 # ----- T4 -----
 test_t4_open_port_scm_rights() {
     echo "[T4] open-port transfers tap fd via SCM_RIGHTS"
-    local sock_path=/tmp/tap_test_recv_t4.sock
-    local out_file=/tmp/tap_test_fdfile
+    local sock_path="$TAP_TMP_DIR/recv-t4.sock"
+    local out_file="$TAP_TMP_DIR/fd-t4.txt"
     spawn_fd_receiver "$sock_path" "$out_file" || { fail "T4: failed to spawn receiver"; return; }
 
     if TAPFD_SOCKET="$sock_path" ${SWITCH_BIN} open-port ${SW_NAME} --port=1 > /dev/null; then
         pass "T4: open-port returned success"
     else
         fail "T4: open-port failed"
+        stop_tap_receiver || true
         return
     fi
 
-    # Wait for receiver to verify the fd is a tap.
-    for _ in {1..20}; do
-        if [ -s "$out_file" ]; then break; fi
-        sleep 0.05
-    done
     local got
+    if ! join_tap_receiver; then
+        got=$(cat "$out_file" 2>/dev/null || echo "NONE")
+        fail "T4: fd receiver failed or did not finish within its bound ($got)"
+        return
+    fi
     got=$(cat "$out_file" 2>/dev/null || echo "NONE")
     # Expect: fd is the right tap AND metadata fields are populated correctly.
     if [[ "$got" == *"tap_name=${SW_NAME}-t1 is_tap=True"* ]] && \
@@ -355,8 +409,8 @@ test_t5_mode_switch_provision() {
 # ----- T7 -----
 test_t7_attach_open_port_combined() {
     echo "[T7] attach --open-port combines slot + fd transfer"
-    local sock_path=/tmp/tap_test_recv_t7.sock
-    local out_file=/tmp/tap_test_fdfile
+    local sock_path="$TAP_TMP_DIR/recv-t7.sock"
+    local out_file="$TAP_TMP_DIR/fd-t7.txt"
     spawn_fd_receiver "$sock_path" "$out_file" || { fail "T7: failed to spawn receiver"; return; }
 
     # Slot 0 is currently allocated (T3); use slot 4 which is still Free post-setup.
@@ -365,14 +419,16 @@ test_t7_attach_open_port_combined() {
         pass "T7: attach --open-port succeeded"
     else
         fail "T7: attach --open-port failed"
+        stop_tap_receiver || true
         return
     fi
 
-    for _ in {1..20}; do
-        if [ -s "$out_file" ]; then break; fi
-        sleep 0.05
-    done
     local got
+    if ! join_tap_receiver; then
+        got=$(cat "$out_file" 2>/dev/null || echo "NONE")
+        fail "T7: fd receiver failed or did not finish within its bound ($got)"
+        return
+    fi
     got=$(cat "$out_file" 2>/dev/null || echo "NONE")
     # Default --port-mac-addr=fixed makes all ports share the same MAC ending
     # in :01 (PortMACFixed = PortMAC(switch_mac, 1)); per-port unique MACs
@@ -391,8 +447,8 @@ test_t7_attach_open_port_combined() {
 # ----- T11: tap-mode network connectivity through the handed-off fd -----
 test_t11_tap_connectivity() {
     echo "[T11] tap-mode connectivity: ARP round-trip through the vnet_hdr fd"
-    local sock_path=/tmp/tap_test_recv_t11.sock
-    local out_file=/tmp/tap_test_fdfile_t11
+    local sock_path="$TAP_TMP_DIR/recv-t11.sock"
+    local out_file="$TAP_TMP_DIR/fd-t11.txt"
     spawn_connectivity_probe "$sock_path" "$out_file" || { fail "T11: failed to spawn probe"; return; }
 
     # Port 4 is attached (T7); hand its tap fd to the probe, which then drives an
@@ -400,14 +456,16 @@ test_t11_tap_connectivity() {
     # fd would actually have working L2/L3 connectivity with vnet_hdr framing.
     if ! TAPFD_SOCKET="$sock_path" ${SWITCH_BIN} open-port ${SW_NAME} --port=4 > /dev/null; then
         fail "T11: open-port failed"
+        stop_tap_receiver || true
         return
     fi
 
-    for _ in {1..40}; do
-        if [ -s "$out_file" ]; then break; fi
-        sleep 0.05
-    done
     local got
+    if ! join_tap_receiver; then
+        got=$(cat "$out_file" 2>/dev/null || echo "NONE")
+        fail "T11: connectivity probe failed or did not finish within its bound ($got)"
+        return
+    fi
     got=$(cat "$out_file" 2>/dev/null || echo "NONE")
     if [[ "$got" == *"connectivity=OK"* ]]; then
         pass "T11: ARP round-trip succeeded through tap fd with vnet_hdr framing ($got)"
@@ -497,7 +555,7 @@ test_t10_open_port_gating() {
         fail "T10: slot 3 state=$state before Free-slot rejection check"
         return 1
     fi
-    if err=$(TAPFD_SOCKET=/tmp/never_listened.sock ${SWITCH_BIN} open-port ${SW_NAME} --port=3 2>&1); then
+    if err=$(TAPFD_SOCKET="$TAP_TMP_DIR/never-listened.sock" ${SWITCH_BIN} open-port ${SW_NAME} --port=3 2>&1); then
         fail "T10: open-port on unattached (Free) slot 3 unexpectedly succeeded"
     else
         if [[ "$err" == *"port not attached"* ]]; then
@@ -520,7 +578,7 @@ test_t10_open_port_gating() {
         fail "T10: slot 2 state=$state before Reserved-slot rejection check"
         return 1
     fi
-    if err=$(TAPFD_SOCKET=/tmp/never_listened.sock ${SWITCH_BIN} open-port ${SW_NAME} --port=2 2>&1); then
+    if err=$(TAPFD_SOCKET="$TAP_TMP_DIR/never-listened.sock" ${SWITCH_BIN} open-port ${SW_NAME} --port=2 2>&1); then
         fail "T10: open-port on Reserved slot 2 unexpectedly succeeded"
     else
         if [[ "$err" == *"port not attached"* ]]; then
